@@ -1,0 +1,6 @@
+dbcensus
+dist/
+*.html
+*.csv
+snapshot*.json
+.DS_Store
