@@ -18,6 +18,9 @@ type Scanner interface {
 	Service() string
 	// Scan returns all resources visible in the given region. cfg is already
 	// scoped to the target account and region.
+	// On error, return the resources gathered so far along with the error;
+	// the runner keeps partial results and records the error in the failure
+	// ledger.
 	Scan(ctx context.Context, cfg aws.Config, region, accountID string) ([]model.Resource, error)
 }
 

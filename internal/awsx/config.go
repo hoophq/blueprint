@@ -18,6 +18,11 @@ import (
 
 // fallbackRegion is only used to bootstrap global calls (STS, DescribeRegions)
 // when the profile has no region configured.
+//
+// Note this fallback is partition-blind: GovCloud or China-partition
+// credentials with no configured region would send the bootstrap STS call to
+// the commercial-partition endpoint and fail. Users in those partitions must
+// set a region explicitly (AWS_REGION or the profile's region setting).
 const fallbackRegion = "us-east-1"
 
 // Load resolves the default credential chain, optionally pinning a profile.

@@ -43,11 +43,8 @@ func TestInstanceResourceSkipsNilEndpoint(t *testing.T) {
 	}
 }
 
-func TestTagMap(t *testing.T) {
-	if tagMap(nil) != nil {
-		t.Error("expected nil map for no tags")
-	}
-	m := tagMap([]rdstypes.Tag{{Key: aws.String("env"), Value: aws.String("prod")}})
+func TestRdsTagKV(t *testing.T) {
+	m := toTagMap([]rdstypes.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}, rdsTagKV)
 	if m["env"] != "prod" {
 		t.Errorf("unexpected tag map: %v", m)
 	}

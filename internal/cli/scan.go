@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,17 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	if err != nil {
 		return nil, fmt.Errorf("verifying credentials: %w", err)
 	}
+	// pflag's CSV parsing turns "us-east-1," into ["us-east-1",""]; empty
+	// tokens would become scan units with an empty region and spam the
+	// failure ledger, so trim and drop them up front.
+	regions = cleanRegions(regions)
+	if cmd.Flags().Changed("regions") && len(regions) == 0 {
+		return nil, errors.New("--regions was set but contains no region names (empty entries are dropped)")
+	}
+	// explicitRegions is non-empty only when the user passed --regions; org
+	// mode then applies it verbatim to every member account instead of each
+	// account's own enabled-region list.
+	explicitRegions := regions
 	if len(regions) == 0 {
 		regions, err = awsx.EnabledRegions(ctx, cfg)
 		if err != nil {
@@ -85,9 +97,12 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	fmt.Fprintf(cmd.OutOrStdout(), "dbcensus %s — account %s, %d region(s), read-only scan\n",
 		Version, account, len(regions))
 
-	var targets []scan.Target
+	var (
+		targets     []scan.Target
+		preFailures []model.Failure
+	)
 	if org {
-		targets, err = orgmode.Targets(ctx, cfg, account, roleName, regions)
+		targets, preFailures, err = orgmode.Targets(ctx, cfg, account, roleName, regions, explicitRegions)
 		if err != nil {
 			return nil, err
 		}
@@ -106,15 +121,33 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 			}
 		},
 	}
-	return runner.Run(ctx, targets, Version), nil
+	snap := runner.Run(ctx, targets, Version)
+	// Org-mode pre-scan failures (unassumable member roles) belong in the
+	// same ledger as per-unit scan failures.
+	snap.Failures = append(snap.Failures, preFailures...)
+	return snap, nil
+}
+
+// cleanRegions trims whitespace and drops empty tokens from a --regions list.
+func cleanRegions(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		if r = strings.TrimSpace(r); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, formats []string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
-	stamp := snap.GeneratedAt.Format("2006-01-02")
+	// GeneratedAt is UTC; stamp filenames in local time so an evening scan
+	// does not get tomorrow's date.
+	stamp := snap.GeneratedAt.Local().Format("2006-01-02")
 	written := []string{}
+	var errs []error
 	for _, f := range formats {
 		var (
 			path string
@@ -135,11 +168,14 @@ func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, forma
 		}
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "  ! %s output: %v\n", f, err)
+			errs = append(errs, fmt.Errorf("%s output: %w", f, err))
 			continue
 		}
 		written = append(written, path)
 	}
 
+	// The terminal summary always renders, even when some outputs failed;
+	// the joined error still forces a non-zero exit.
 	render.Terminal(cmd.OutOrStdout(), snap, written)
-	return nil
+	return errors.Join(errs...)
 }

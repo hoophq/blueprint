@@ -7,4 +7,6 @@
 //   - dynamodb.go: DynamoDB tables
 //   - elasticache.go: ElastiCache clusters + serverless caches
 //   - redshift.go: Redshift clusters + serverless
+//   - tags.go: shared helpers (tag-map conversion, GB rounding, tag-failure
+//     aggregation) used by all scanners
 package scanners

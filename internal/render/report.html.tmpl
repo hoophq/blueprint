@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>dbcensus report</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #2a78d6;
+    --warning: #fab219;
+    --warning-wash: rgba(250, 178, 25, 0.14);
+    --hover: rgba(11, 11, 11, 0.04);
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+      --warning-wash: rgba(250, 178, 25, 0.10);
+      --hover: rgba(255, 255, 255, 0.05);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  main { max-width: 1240px; margin: 0 auto; padding: 0 24px 24px; }
+
+  header {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 28px 24px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 24px;
+  }
+  header h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  header .subtitle { color: var(--ink-2); font-size: 13px; margin-left: 10px; }
+  header .meta { text-align: right; color: var(--ink-2); font-size: 12.5px; }
+  header .meta span { display: block; }
+
+  .banner {
+    background: var(--warning-wash);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warning);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 0 0 18px;
+  }
+  .banner summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  .banner summary .banner-icon { margin-right: 6px; }
+  .banner summary .banner-hint { font-weight: 400; color: var(--ink-2); font-size: 12px; margin-left: 8px; }
+  .banner ul { margin: 10px 0 2px; padding-left: 24px; }
+  .banner li { margin: 4px 0; font-size: 13px; }
+  .banner li .mono { font-family: var(--mono); font-size: 12px; }
+  .banner li .failure-error { color: var(--ink-2); }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 0 0 20px;
+  }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .tile-label { font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .tile-value { font-size: 28px; font-weight: 600; line-height: 1.15; }
+
+  .empty {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 28px 32px;
+    margin: 0 0 20px;
+  }
+  .empty h2 { margin: 0 0 8px; font-size: 17px; }
+  .empty p { margin: 0 0 8px; color: var(--ink-2); }
+  .empty ul { margin: 0; padding-left: 22px; color: var(--ink-2); }
+  .empty li { margin: 4px 0; }
+  .empty .mono { font-family: var(--mono); font-size: 12.5px; }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 12px;
+  }
+  .controls input[type="search"] {
+    flex: 1 1 260px;
+    max-width: 440px;
+    padding: 8px 12px;
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+  }
+  .controls input[type="search"]:focus,
+  .controls select:focus,
+  .th-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .controls label { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .controls select {
+    padding: 7px 8px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+  }
+  .controls .count { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    padding: 0;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+  }
+  .th-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    padding: 9px 10px;
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  thead th.num .th-btn { justify-content: flex-end; }
+  .th-btn:hover { color: var(--ink); }
+  .th-btn .dir { font-size: 9px; color: var(--accent); min-width: 10px; }
+  tbody td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--hover); }
+  tbody tr.group-row td {
+    background: var(--page);
+    font-weight: 600;
+    font-size: 12.5px;
+    padding: 8px 10px;
+  }
+  tbody tr.group-row:hover td { background: var(--page); }
+  .group-count { color: var(--ink-2); font-weight: 400; margin-left: 8px; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--ink-2); font-size: 11px; }
+  .dim { color: var(--muted); }
+  tr.no-match td { padding: 18px 12px; text-align: center; }
+
+  footer {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 8px 24px 28px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>dbcensus</h1><span class="subtitle">managed database census</span>
+  </div>
+  <div class="meta">
+    <span id="generated-at"></span>
+    <span id="coverage"></span>
+  </div>
+</header>
+
+<main>
+  <section id="failures-banner" class="banner" hidden>
+    <details>
+      <summary><span class="banner-icon">&#9888;</span><span id="failures-title"></span><span class="banner-hint">expand for details</span></summary>
+      <ul id="failures-list"></ul>
+    </details>
+  </section>
+
+  <section class="tiles" id="tiles" aria-label="Sprawl summary"></section>
+
+  <section id="empty-state" class="empty" hidden>
+    <h2>No databases found</h2>
+    <p>The scan completed but discovered no managed databases. Possible causes:</p>
+    <ul>
+      <li>The credentials point at the wrong AWS account or profile.</li>
+      <li>The scanned regions host no managed databases &mdash; try scanning more regions.</li>
+      <li>The role is missing read permissions (for example <span class="mono">rds:DescribeDBInstances</span>, <span class="mono">dynamodb:ListTables</span>, <span class="mono">elasticache:DescribeCacheClusters</span>).</li>
+      <li>Databases are self-hosted on EC2 &mdash; dbcensus only sees AWS-managed services.</li>
+    </ul>
+  </section>
+
+  <section id="table-section">
+    <div class="controls">
+      <input id="filter" type="search" placeholder="Filter by name, engine, ARN, or tag" aria-label="Filter databases">
+      <label>Group by
+        <select id="groupby">
+          <option value="none" selected>none</option>
+          <option value="service">service</option>
+          <option value="engine">engine</option>
+          <option value="environment">environment</option>
+          <option value="region">region</option>
+          <option value="account">account</option>
+        </select>
+      </label>
+      <span id="row-count" class="count"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="census">
+        <thead><tr id="head-row"></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Generated by dbcensus &middot; read-only scan, control-plane metadata only &middot; this file is self-contained and renders fully offline.
+</footer>
+
+<script type="application/json" id="dbcensus-data">__DBCENSUS_JSON__</script>
+<script>
+(function () {
+  "use strict";
+
+  var data = JSON.parse(document.getElementById("dbcensus-data").textContent);
+  var resources = data.resources || [];
+  var failures = data.failures || [];
+
+  // Precompute one lowercase haystack per row for the free-text filter.
+  resources.forEach(function (r) {
+    var hay = [r.name, r.engine, r.engine_version, r.arn, r.service, r.kind,
+      r.region, r.account_id, r.environment, r.owner, r.status, r.instance_class];
+    if (r.tags) {
+      Object.keys(r.tags).forEach(function (k) {
+        hay.push(k, r.tags[k], k + "=" + r.tags[k]);
+      });
+    }
+    r._hay = hay.filter(Boolean).join("\n").toLowerCase();
+  });
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null && text !== "") e.textContent = text;
+    return e;
+  }
+
+  // ---- Header meta -------------------------------------------------------
+  var gen = new Date(data.generated_at);
+  var genEl = document.getElementById("generated-at");
+  genEl.textContent = "Generated " + (isNaN(gen.getTime()) ? String(data.generated_at) : gen.toLocaleString());
+  genEl.title = String(data.generated_at);
+
+  function coverage(items, noun) {
+    items = items || [];
+    var n = items.length;
+    var label = n + " " + noun + (n === 1 ? "" : "s");
+    if (n === 0) return label;
+    var shown = items.slice(0, 4).join(", ");
+    var extra = n > 4 ? " +" + (n - 4) + " more" : "";
+    return label + " (" + shown + extra + ")";
+  }
+  document.getElementById("coverage").textContent =
+    coverage(data.accounts, "account") + " · " + coverage(data.regions, "region") + " scanned";
+
+  // ---- Failures banner (honesty ledger) ----------------------------------
+  if (failures.length > 0) {
+    document.getElementById("failures-banner").hidden = false;
+    document.getElementById("failures-title").textContent =
+      "Incomplete coverage — " + failures.length + " scan unit" + (failures.length === 1 ? "" : "s") + " failed";
+    var list = document.getElementById("failures-list");
+    failures.forEach(function (f) {
+      var li = el("li");
+      li.appendChild(el("span", "mono", [f.account_id, f.region, f.service].filter(Boolean).join(" / ")));
+      li.appendChild(document.createTextNode(" — "));
+      li.appendChild(el("span", "failure-error", f.error));
+      list.appendChild(li);
+    });
+  }
+
+  // ---- Stat tiles ---------------------------------------------------------
+  var seen = { engines: {}, regions: {}, accounts: {} };
+  var noOwner = 0, noEnv = 0;
+  resources.forEach(function (r) {
+    if (r.engine) seen.engines[r.engine] = true;
+    if (r.region) seen.regions[r.region] = true;
+    if (r.account_id) seen.accounts[r.account_id] = true;
+    if (!r.owner) noOwner++;
+    if (!r.environment) noEnv++;
+  });
+  var tiles = [
+    { label: "Databases", value: resources.length },
+    { label: "Engines", value: Object.keys(seen.engines).length },
+    { label: "Regions", value: Object.keys(seen.regions).length },
+    { label: "Accounts", value: Object.keys(seen.accounts).length },
+    { label: "Missing owner tag", value: noOwner },
+    { label: "Missing environment tag", value: noEnv }
+  ];
+  var tilesEl = document.getElementById("tiles");
+  tiles.forEach(function (t) {
+    var tile = el("div", "tile");
+    tile.appendChild(el("div", "tile-label", t.label));
+    tile.appendChild(el("div", "tile-value", t.value.toLocaleString()));
+    tilesEl.appendChild(tile);
+  });
+
+  // ---- Empty state --------------------------------------------------------
+  if (resources.length === 0) {
+    document.getElementById("empty-state").hidden = false;
+    document.getElementById("table-section").hidden = true;
+    return;
+  }
+
+  // ---- Table --------------------------------------------------------------
+  var COLUMNS = [
+    { key: "name", label: "Name" },
+    { key: "service", label: "Service" },
+    { key: "engine", label: "Engine" },
+    { key: "instance_class", label: "Class" },
+    { key: "storage_gb", label: "Storage", num: true },
+    { key: "region", label: "Region" },
+    { key: "account_id", label: "Account" },
+    { key: "environment", label: "Environment" },
+    { key: "owner", label: "Owner" },
+    { key: "status", label: "Status" }
+  ];
+  var GROUP_FIELD = { service: "service", engine: "engine", environment: "environment", region: "region", account: "account_id" };
+
+  var filterEl = document.getElementById("filter");
+  var groupEl = document.getElementById("groupby");
+  var countEl = document.getElementById("row-count");
+  var tbody = document.getElementById("rows");
+  var sortKey = null;
+  var sortDir = 1;
+
+  var headRow = document.getElementById("head-row");
+  COLUMNS.forEach(function (c) {
+    var th = document.createElement("th");
+    th.scope = "col";
+    if (c.num) th.className = "num";
+    var btn = el("button", "th-btn");
+    btn.type = "button";
+    btn.appendChild(el("span", "", c.label));
+    var dir = el("span", "dir");
+    btn.appendChild(dir);
+    btn.addEventListener("click", function () {
+      if (sortKey === c.key) {
+        if (sortDir === 1) { sortDir = -1; } else { sortKey = null; sortDir = 1; }
+      } else {
+        sortKey = c.key;
+        sortDir = 1;
+      }
+      updateSortIndicators();
+      render();
+    });
+    th.appendChild(btn);
+    headRow.appendChild(th);
+    c._th = th;
+    c._dir = dir;
+  });
+
+  function updateSortIndicators() {
+    COLUMNS.forEach(function (c) {
+      var active = c.key === sortKey;
+      c._dir.textContent = active ? (sortDir === 1 ? "▲" : "▼") : "";
+      c._th.setAttribute("aria-sort", active ? (sortDir === 1 ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function sortValue(r, key) {
+    if (key === "storage_gb") return r.storage_gb || 0;
+    return String(r[key] || "").toLowerCase();
+  }
+
+  // compareRows orders by the column value; equal engine names are tie-broken
+  // by engine_version compared numerically, so "15.4" sorts after "9.6".
+  function compareRows(a, b, key) {
+    var av = sortValue(a, key);
+    var bv = sortValue(b, key);
+    if (typeof av === "number") return av - bv;
+    if (av !== bv) return av < bv ? -1 : 1;
+    if (key === "engine") {
+      return String(a.engine_version || "").localeCompare(String(b.engine_version || ""), undefined, { numeric: true });
+    }
+    return 0;
+  }
+
+  function cellOrDash(v, cls) {
+    var c = el("td", cls);
+    if (v) {
+      c.textContent = v;
+    } else {
+      c.textContent = "—";
+      c.className = (cls ? cls + " " : "") + "dim";
+    }
+    return c;
+  }
+
+  function buildRow(r) {
+    var tr = document.createElement("tr");
+
+    var name = el("td", "mono", r.name || "");
+    if (r.arn) name.title = r.arn;
+    tr.appendChild(name);
+
+    var svc = el("td", "", "");
+    svc.appendChild(el("span", "", r.service || ""));
+    if (r.kind) {
+      svc.appendChild(document.createTextNode(" "));
+      svc.appendChild(el("span", "sub", r.kind));
+    }
+    tr.appendChild(svc);
+
+    var eng = el("td", "", "");
+    eng.appendChild(el("span", "", r.engine || ""));
+    if (r.engine_version) {
+      eng.appendChild(document.createTextNode(" "));
+      eng.appendChild(el("span", "sub", r.engine_version));
+    }
+    tr.appendChild(eng);
+
+    tr.appendChild(cellOrDash(r.instance_class, "mono"));
+
+    tr.appendChild(cellOrDash(r.storage_gb > 0 ? r.storage_gb.toLocaleString() + " GB" : "", "num"));
+
+    tr.appendChild(cellOrDash(r.region, "mono"));
+    tr.appendChild(cellOrDash(r.account_id, "mono"));
+    tr.appendChild(cellOrDash(r.environment, ""));
+    tr.appendChild(cellOrDash(r.owner, ""));
+    tr.appendChild(cellOrDash(r.status, ""));
+    return tr;
+  }
+
+  function currentRows() {
+    var q = filterEl.value.trim().toLowerCase();
+    var rows = resources;
+    if (q) {
+      var terms = q.split(/\s+/);
+      rows = resources.filter(function (r) {
+        return terms.every(function (t) { return r._hay.indexOf(t) !== -1; });
+      });
+    }
+    if (sortKey) {
+      rows = rows.slice().sort(function (a, b) {
+        return sortDir * compareRows(a, b, sortKey);
+      });
+    }
+    return rows;
+  }
+
+  function render() {
+    var rows = currentRows();
+    var frag = document.createDocumentFragment();
+    var groupBy = groupEl.value;
+
+    if (rows.length === 0) {
+      var tr = el("tr", "no-match");
+      var td = el("td", "dim", "No databases match the current filter.");
+      td.colSpan = COLUMNS.length;
+      tr.appendChild(td);
+      frag.appendChild(tr);
+    } else if (groupBy !== "none" && GROUP_FIELD[groupBy]) {
+      var field = GROUP_FIELD[groupBy];
+      var groups = {};
+      var order = [];
+      rows.forEach(function (r) {
+        var v = String(r[field] || "");
+        if (!Object.prototype.hasOwnProperty.call(groups, v)) {
+          groups[v] = [];
+          order.push(v);
+        }
+        groups[v].push(r);
+      });
+      order.sort(function (a, b) {
+        if (a === "") return 1;
+        if (b === "") return -1;
+        return groups[b].length - groups[a].length || (a < b ? -1 : a > b ? 1 : 0);
+      });
+      order.forEach(function (v) {
+        var gtr = el("tr", "group-row");
+        var gtd = document.createElement("td");
+        gtd.colSpan = COLUMNS.length;
+        gtd.appendChild(el("span", "group-name", v || (groupBy === "environment" ? "no environment tag" : "(none)")));
+        gtd.appendChild(el("span", "group-count", groups[v].length.toLocaleString()));
+        gtr.appendChild(gtd);
+        frag.appendChild(gtr);
+        groups[v].forEach(function (r) { frag.appendChild(buildRow(r)); });
+      });
+    } else {
+      rows.forEach(function (r) { frag.appendChild(buildRow(r)); });
+    }
+
+    tbody.replaceChildren(frag);
+    countEl.textContent = rows.length.toLocaleString() + " of " + resources.length.toLocaleString() + " databases";
+  }
+
+  var debounceTimer = null;
+  filterEl.addEventListener("input", function () {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(render, 150);
+  });
+  groupEl.addEventListener("change", render);
+
+  updateSortIndicators();
+  render();
+})();
+</script>
+</body>
+</html>

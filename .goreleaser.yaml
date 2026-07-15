@@ -1,0 +1,58 @@
+version: 2
+
+project_name: dbcensus
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: dbcensus
+    main: .
+    binary: dbcensus
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/hoophq/dbcensus/internal/cli.Version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+brews:
+  - name: dbcensus
+    repository:
+      owner: hoophq
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/hoophq/dbcensus
+    description: Read-only census of every managed database reachable from your AWS credentials
+    license: MIT
+    install: |
+      bin.install "dbcensus"
+    test: |
+      system "#{bin}/dbcensus", "--version"

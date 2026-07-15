@@ -102,6 +102,19 @@ func (s *Snapshot) Summarize() Summary {
 	return sum
 }
 
+// Finalize prepares a snapshot for output: derives tag-based fields on every
+// resource and sorts Resources, Regions, and Accounts. Regions and Accounts
+// are collected from map/API iteration upstream, so sorting here is what
+// makes JSON artifacts byte-for-byte deterministic.
+func (s *Snapshot) Finalize() {
+	for i := range s.Resources {
+		s.Resources[i].DeriveEnvOwner()
+	}
+	s.Sort()
+	sort.Strings(s.Regions)
+	sort.Strings(s.Accounts)
+}
+
 // Sort orders resources deterministically: account, region, service, name.
 func (s *Snapshot) Sort() {
 	sort.Slice(s.Resources, func(i, j int) bool {

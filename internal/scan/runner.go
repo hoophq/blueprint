@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -60,7 +61,13 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 		wg.Add(1)
 		go func(u unit) {
 			defer wg.Done()
-			sem <- struct{}{}
+			// The acquire is ctx-aware so a canceled run stops issuing new
+			// SDK calls instead of still draining the whole unit queue.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
 
 			cfg := u.target.Cfg.Copy()
@@ -69,9 +76,12 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 
 			// Partial results are kept even on error: the failure ledger
 			// records what could not be seen, without discarding what was.
+			// User-initiated cancellation is not a coverage gap, though —
+			// recording it would flood the ledger with one entry per
+			// in-flight unit.
 			mu.Lock()
 			snap.Resources = append(snap.Resources, resources...)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				snap.Failures = append(snap.Failures, model.Failure{
 					AccountID: u.target.AccountID,
 					Region:    u.region,
@@ -88,9 +98,6 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 	}
 	wg.Wait()
 
-	for i := range snap.Resources {
-		snap.Resources[i].DeriveEnvOwner()
-	}
-	snap.Sort()
+	snap.Finalize()
 	return snap
 }

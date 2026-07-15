@@ -31,7 +31,7 @@ func (rdsScanner) Scan(ctx context.Context, cfg aws.Config, region, accountID st
 	for clusters.HasMorePages() {
 		page, err := clusters.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		for _, c := range page.DBClusters {
 			out = append(out, clusterResource(c, region, accountID))
@@ -42,7 +42,7 @@ func (rdsScanner) Scan(ctx context.Context, cfg aws.Config, region, accountID st
 	for instances.HasMorePages() {
 		page, err := instances.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		for _, inst := range page.DBInstances {
 			// Cluster members are already represented by their cluster.
@@ -71,7 +71,7 @@ func clusterResource(c rdstypes.DBCluster, region, accountID string) model.Resou
 		Region:        region,
 		AccountID:     accountID,
 		CreatedAt:     c.ClusterCreateTime,
-		Tags:          tagMap(c.TagList),
+		Tags:          toTagMap(c.TagList, rdsTagKV),
 	}
 }
 
@@ -95,7 +95,7 @@ func instanceResource(inst rdstypes.DBInstance, region, accountID string) model.
 		Region:        region,
 		AccountID:     accountID,
 		CreatedAt:     inst.InstanceCreateTime,
-		Tags:          tagMap(inst.TagList),
+		Tags:          toTagMap(inst.TagList, rdsTagKV),
 	}
 }
 
@@ -113,13 +113,4 @@ func classifyEngine(engine string) string {
 	}
 }
 
-func tagMap(tags []rdstypes.Tag) map[string]string {
-	if len(tags) == 0 {
-		return nil
-	}
-	m := make(map[string]string, len(tags))
-	for _, t := range tags {
-		m[aws.ToString(t.Key)] = aws.ToString(t.Value)
-	}
-	return m
-}
+func rdsTagKV(t rdstypes.Tag) (*string, *string) { return t.Key, t.Value }

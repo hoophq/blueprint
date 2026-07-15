@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DbcensusReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "rds:Describe*",
+        "dynamodb:ListTables",
+        "dynamodb:DescribeTable",
+        "dynamodb:ListTagsOfResource",
+        "elasticache:Describe*",
+        "elasticache:ListTagsForResource",
+        "redshift:Describe*",
+        "redshift-serverless:List*",
+        "ec2:DescribeRegions",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DbcensusOrgListAccounts",
+      "Effect": "Allow",
+      "Action": "organizations:ListAccounts",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DbcensusAssumeMemberRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::*:role/${RoleName}"
+    }
+  ]
+}
