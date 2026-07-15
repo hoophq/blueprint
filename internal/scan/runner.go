@@ -67,7 +67,10 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 			cfg.Region = u.region
 			resources, err := u.scanner.Scan(ctx, cfg, u.region, u.target.AccountID)
 
+			// Partial results are kept even on error: the failure ledger
+			// records what could not be seen, without discarding what was.
 			mu.Lock()
+			snap.Resources = append(snap.Resources, resources...)
 			if err != nil {
 				snap.Failures = append(snap.Failures, model.Failure{
 					AccountID: u.target.AccountID,
@@ -75,8 +78,6 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 					Service:   u.scanner.Service(),
 					Error:     err.Error(),
 				})
-			} else {
-				snap.Resources = append(snap.Resources, resources...)
 			}
 			mu.Unlock()
 
