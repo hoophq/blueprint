@@ -31,6 +31,7 @@ func scanCmd() *cobra.Command {
 		formats     []string
 		concurrency int
 		demoMode    bool
+		noOpen      bool
 	)
 
 	cmd := &cobra.Command{
@@ -53,7 +54,7 @@ func scanCmd() *cobra.Command {
 				}
 			}
 
-			return writeOutputs(cmd, snap, outDir, formats)
+			return writeOutputs(cmd, snap, outDir, formats, !noOpen && isTerminal(os.Stdout))
 		},
 	}
 
@@ -65,6 +66,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&formats, "formats", []string{"html", "json"}, "outputs to write: html, json, csv")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max concurrent AWS API scan units")
 	cmd.Flags().BoolVar(&demoMode, "demo", false, "render outputs from built-in fixture data (no AWS calls)")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "do not open the HTML report in the browser after the scan")
 	return cmd
 }
 
@@ -139,7 +141,7 @@ func cleanRegions(in []string) []string {
 	return out
 }
 
-func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, formats []string) error {
+func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, formats []string, openHTML bool) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -147,6 +149,7 @@ func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, forma
 	// does not get tomorrow's date.
 	stamp := snap.GeneratedAt.Local().Format("2006-01-02")
 	written := []string{}
+	htmlPath := ""
 	var errs []error
 	for _, f := range formats {
 		var (
@@ -172,10 +175,16 @@ func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, forma
 			continue
 		}
 		written = append(written, path)
+		if strings.EqualFold(strings.TrimSpace(f), "html") {
+			htmlPath = path
+		}
 	}
 
 	// The terminal summary always renders, even when some outputs failed;
 	// the joined error still forces a non-zero exit.
 	render.Terminal(cmd.OutOrStdout(), snap, written)
+	if openHTML && htmlPath != "" {
+		openBrowser(htmlPath)
+	}
 	return errors.Join(errs...)
 }
