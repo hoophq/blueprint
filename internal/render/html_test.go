@@ -206,13 +206,12 @@ func TestHTMLEmptySnapshot(t *testing.T) {
 	}
 }
 
-// TestHTMLNavigationLinksAllowlisted verifies the only external hrefs in the
-// report are the two navigation anchors (hoop.dev and the GitHub repo).
-// Anything else would break the offline promise.
+// TestHTMLNavigationLinksAllowlisted verifies the only external href in the
+// report is the footer's navigation anchor to the GitHub repo. Anything else
+// would break the offline promise.
 func TestHTMLNavigationLinksAllowlisted(t *testing.T) {
 	html := renderDemo(t)
 	allowed := map[string]bool{
-		"https://hoop.dev":                    true,
 		"https://github.com/hoophq/blueprint": true,
 	}
 	found := map[string]int{}
@@ -231,16 +230,15 @@ func TestHTMLNavigationLinksAllowlisted(t *testing.T) {
 	}
 }
 
-// TestHTMLBrandAndAttribution checks the redesigned shell: the hoop logo mark,
+// TestHTMLBrandAndAttribution checks the simplified shell: the hoop logo mark,
 // the attribution-tier vocabulary, and that a fully attributed fixture
 // database ships in the data block for the tier computation to classify.
 func TestHTMLBrandAndAttribution(t *testing.T) {
 	html := renderDemo(t)
 	for _, needle := range []string{
 		"M96.4167 71.4077", // first path of the hoop logo mark
-		"hoop.dev",
-		"Database Census Report",
-		"Attribution Score",
+		"blueprint",
+		"Attribution score",
 		"Untagged",
 		"Partially attributed",
 		"Fully attributed",
@@ -256,5 +254,31 @@ func TestHTMLBrandAndAttribution(t *testing.T) {
 	}
 	if !strings.Contains(html, `"owner":"payments"`) {
 		t.Error("expected orders-prod's derived owner in the JSON block")
+	}
+}
+
+// TestHTMLEnvironmentAndStatusTags checks the inventory tag pills ship in the
+// shell: the CSS variants and the JS classifiers that color environment
+// buckets and status lifecycle states. Rendering is client-side, so the test
+// asserts the components exist rather than the painted rows.
+func TestHTMLEnvironmentAndStatusTags(t *testing.T) {
+	html := renderDemo(t)
+	for _, needle := range []string{
+		".tag-green", ".tag-amber", ".tag-red", ".tag-blue", ".tag-purple", ".tag-cyan",
+		"function envClass", "function statusClass", "tag-dot",
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("report is missing tag component marker %q", needle)
+		}
+	}
+	// The demo fixture must keep exercising the semantic buckets: healthy,
+	// stopped, paused, and storage-full statuses all appear in the data block.
+	for _, status := range []string{
+		`"status":"available"`, `"status":"active"`,
+		`"status":"stopped"`, `"status":"paused"`, `"status":"storage-full"`,
+	} {
+		if !strings.Contains(html, status) {
+			t.Errorf("demo data is missing a fixture with %s", status)
+		}
 	}
 }
