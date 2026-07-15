@@ -10,6 +10,10 @@ ElastiCache, Redshift — **entirely from your machine**.
 
 Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
 
+[![Release](https://img.shields.io/github/v/release/hoophq/blueprint?color=4fb477&label=release)](https://github.com/hoophq/blueprint/releases/latest)
+[![CI](https://github.com/hoophq/blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/hoophq/blueprint/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 <img src="docs/assets/report.png" alt="The blueprint HTML report: 46 databases across 2 accounts, attribution score, engines breakdown, and an inventory table with environment and status tags" width="760">
 
 </div>
