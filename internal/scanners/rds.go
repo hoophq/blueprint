@@ -72,6 +72,11 @@ func clusterResource(c rdstypes.DBCluster, region, accountID string) model.Resou
 		AccountID:     accountID,
 		CreatedAt:     c.ClusterCreateTime,
 		Tags:          toTagMap(c.TagList, rdsTagKV),
+		// Passed through as-is: PubliclyAccessible is only set by the API for
+		// Multi-AZ DB clusters and stays nil ("not reported") for Aurora.
+		PubliclyAccessible:  c.PubliclyAccessible,
+		Encrypted:           c.StorageEncrypted,
+		BackupRetentionDays: c.BackupRetentionPeriod,
 	}
 }
 
@@ -96,6 +101,10 @@ func instanceResource(inst rdstypes.DBInstance, region, accountID string) model.
 		AccountID:     accountID,
 		CreatedAt:     inst.InstanceCreateTime,
 		Tags:          toTagMap(inst.TagList, rdsTagKV),
+
+		PubliclyAccessible:  inst.PubliclyAccessible,
+		Encrypted:           inst.StorageEncrypted,
+		BackupRetentionDays: inst.BackupRetentionPeriod,
 	}
 }
 

@@ -16,7 +16,7 @@ var csvHeader = []string{
 	"arn", "service", "kind", "name", "engine", "engine_version",
 	"instance_class", "storage_gb", "multi_az", "status", "endpoint",
 	"region", "account_id", "created_at", "environment", "owner", "tags",
-	"eol", "eol_date",
+	"eol", "eol_date", "publicly_accessible", "encrypted", "backup_retention_days",
 }
 
 // CSV writes one row per resource for spreadsheet/script consumption.
@@ -83,7 +83,26 @@ func csvRow(r model.Resource) []string {
 		guardFormula(joinTags(r.Tags)),
 		strconv.FormatBool(r.EOL),
 		r.EOLDate, // fixed YYYY-MM-DD format, never a formula trigger
+		boolPtrCell(r.PubliclyAccessible),
+		boolPtrCell(r.Encrypted),
+		int32PtrCell(r.BackupRetentionDays),
 	}
+}
+
+// boolPtrCell renders a tri-state boolean: empty when the service did not
+// report the field, true/false otherwise.
+func boolPtrCell(v *bool) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatBool(*v)
+}
+
+func int32PtrCell(v *int32) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatInt(int64(*v), 10)
 }
 
 // guardFormula defends against spreadsheet formula injection (CSV injection):

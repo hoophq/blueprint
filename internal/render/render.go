@@ -34,6 +34,10 @@ func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 	if sum.EOL > 0 {
 		fmt.Fprintf(w, "  ⚠ %d on end-of-life engine versions (upstream support ended)\n", sum.EOL)
 	}
+	if sum.Exposed > 0 {
+		fmt.Fprintf(w, "  ⚠ %d exposed — %d publicly accessible · %d unencrypted · %d without backups\n",
+			sum.Exposed, sum.Public, sum.Unencrypted, sum.NoBackups)
+	}
 	if len(sum.Services) > 0 {
 		fmt.Fprintf(w, "  by service: %s\n", formatCounts(sum.Services))
 	}

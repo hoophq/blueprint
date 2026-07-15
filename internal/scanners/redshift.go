@@ -87,6 +87,12 @@ func redshiftClusterResource(c redshifttypes.Cluster, region, accountID string) 
 		AccountID:     accountID,
 		CreatedAt:     c.ClusterCreateTime,
 		Tags:          toTagMap(c.Tags, func(t redshifttypes.Tag) (*string, *string) { return t.Key, t.Value }),
+
+		PubliclyAccessible: c.PubliclyAccessible,
+		Encrypted:          c.Encrypted,
+		// Retention 0 means automated snapshots are disabled — the same
+		// "no backups" signal BackupRetentionPeriod carries on RDS.
+		BackupRetentionDays: c.AutomatedSnapshotRetentionPeriod,
 	}
 }
 
@@ -111,6 +117,9 @@ func workgroupResource(w rsstypes.Workgroup, region, accountID string) model.Res
 		Region:        region,
 		AccountID:     accountID,
 		CreatedAt:     w.CreationDate,
+		// Serverless namespaces are always encrypted and have no retention
+		// knob, so only public accessibility is reported.
+		PubliclyAccessible: w.PubliclyAccessible,
 	}
 }
 

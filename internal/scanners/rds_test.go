@@ -49,3 +49,31 @@ func TestRdsTagKV(t *testing.T) {
 		t.Errorf("unexpected tag map: %v", m)
 	}
 }
+
+func TestInstanceResourceExposureFields(t *testing.T) {
+	pub, enc := true, false
+	days := int32(0)
+	inst := rdstypes.DBInstance{
+		DBInstanceIdentifier:  aws.String("exposed-db"),
+		Engine:                aws.String("mysql"),
+		PubliclyAccessible:    &pub,
+		StorageEncrypted:      &enc,
+		BackupRetentionPeriod: &days,
+	}
+	r := instanceResource(inst, "us-east-1", "1")
+	if r.PubliclyAccessible == nil || !*r.PubliclyAccessible {
+		t.Error("PubliclyAccessible not passed through")
+	}
+	if r.Encrypted == nil || *r.Encrypted {
+		t.Error("StorageEncrypted=false not passed through")
+	}
+	if r.BackupRetentionDays == nil || *r.BackupRetentionDays != 0 {
+		t.Error("BackupRetentionPeriod=0 not passed through")
+	}
+
+	// Fields the API did not return stay nil (tri-state honesty).
+	r = instanceResource(rdstypes.DBInstance{DBInstanceIdentifier: aws.String("bare")}, "us-east-1", "1")
+	if r.PubliclyAccessible != nil || r.Encrypted != nil || r.BackupRetentionDays != nil {
+		t.Error("absent API fields must stay nil, not default to a value")
+	}
+}

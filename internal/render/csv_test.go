@@ -51,7 +51,7 @@ func TestCSVDemoSnapshot(t *testing.T) {
 		"arn", "service", "kind", "name", "engine", "engine_version",
 		"instance_class", "storage_gb", "multi_az", "status", "endpoint",
 		"region", "account_id", "created_at", "environment", "owner", "tags",
-		"eol", "eol_date",
+		"eol", "eol_date", "publicly_accessible", "encrypted", "backup_retention_days",
 	}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header has %d columns, want %d", len(records[0]), len(wantHeader))
@@ -76,24 +76,27 @@ func TestCSVDemoSnapshot(t *testing.T) {
 		t.Fatalf("no row with arn %q", arn)
 	}
 	checks := map[string]string{
-		"service":        "rds",
-		"kind":           "instance",
-		"name":           "orders-prod",
-		"engine":         "postgres",
-		"engine_version": "15.4",
-		"instance_class": "db.r6g.xlarge",
-		"storage_gb":     "500",
-		"multi_az":       "true",
-		"status":         "available",
-		"endpoint":       "orders-prod.c9k2hxu3qapb.us-east-1.rds.amazonaws.com",
-		"region":         "us-east-1",
-		"account_id":     "111111111111",
-		"created_at":     "2019-03-14T10:30:00Z",
-		"environment":    "production",
-		"owner":          "payments",
-		"tags":           "app=orders;environment=production;owner=payments",
-		"eol":            "false", // postgres 15.4 is in support
-		"eol_date":       "",
+		"service":               "rds",
+		"kind":                  "instance",
+		"name":                  "orders-prod",
+		"engine":                "postgres",
+		"engine_version":        "15.4",
+		"instance_class":        "db.r6g.xlarge",
+		"storage_gb":            "500",
+		"multi_az":              "true",
+		"status":                "available",
+		"endpoint":              "orders-prod.c9k2hxu3qapb.us-east-1.rds.amazonaws.com",
+		"region":                "us-east-1",
+		"account_id":            "111111111111",
+		"created_at":            "2019-03-14T10:30:00Z",
+		"environment":           "production",
+		"owner":                 "payments",
+		"tags":                  "app=orders;environment=production;owner=payments",
+		"eol":                   "false", // postgres 15.4 is in support
+		"eol_date":              "",
+		"publicly_accessible":   "false",
+		"encrypted":             "true",
+		"backup_retention_days": "7",
 	}
 	for name, want := range checks {
 		if got := row[c[name]]; got != want {
@@ -154,6 +157,13 @@ func TestCSVEdgeCases(t *testing.T) {
 	bare := records[1]
 	if got := bare[c["created_at"]]; got != "" {
 		t.Errorf("nil CreatedAt rendered as %q, want empty", got)
+	}
+	// Tri-state exposure fields: nil pointers render as empty cells, not as
+	// false/0, so "not reported" stays distinguishable in spreadsheets too.
+	for _, col := range []string{"publicly_accessible", "encrypted", "backup_retention_days"} {
+		if got := bare[c[col]]; got != "" {
+			t.Errorf("nil %s rendered as %q, want empty", col, got)
+		}
 	}
 	if got := bare[c["tags"]]; got != "" {
 		t.Errorf("nil Tags rendered as %q, want empty", got)

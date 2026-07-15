@@ -27,7 +27,7 @@ func Snapshot(version string) *model.Snapshot {
 		GeneratedAt: time.Now().UTC(),
 		Accounts:    []string{acctProd, acctStaging},
 		Regions:     []string{"us-east-1", "us-west-2", "sa-east-1", "eu-west-1"},
-		Resources:   resources(),
+		Resources:   applyExposure(resources()),
 		Failures: []model.Failure{
 			{AccountID: acctProd, Region: "sa-east-1", Service: model.ServiceElastiCache,
 				Error: "AccessDenied: User is not authorized to perform elasticache:DescribeCacheClusters"},
@@ -227,6 +227,49 @@ func resources() []model.Resource {
 			tags("environment", "staging", "owner", "compliance")),
 	}
 }
+
+// applyExposure fills exposure fields the way the real scanners report them:
+// the RDS family and Redshift always carry all three, Aurora clusters have no
+// public-accessibility flag, Redshift serverless only reports public access,
+// ElastiCache Redis reports encryption and snapshot retention, and memcached
+// and DynamoDB report nothing. A few fixtures are deliberately risky so the
+// report has exposure rows to show.
+func applyExposure(rs []model.Resource) []model.Resource {
+	public := map[string]bool{"legacy-crm": true, "data-residency-poc": true}
+	unencrypted := map[string]bool{"legacy-crm": true, "qa-sandbox": true}
+	noBackups := map[string]bool{"legacy-crm": true, "qa-sandbox": true, "load-test-db": true}
+	for i := range rs {
+		r := &rs[i]
+		switch r.Service {
+		case model.ServiceRDS, model.ServiceDocumentDB, model.ServiceNeptune:
+			r.PubliclyAccessible = ptr(public[r.Name])
+			fallthrough
+		case model.ServiceAurora:
+			r.Encrypted = ptr(!unencrypted[r.Name])
+			days := int32(7)
+			if noBackups[r.Name] {
+				days = 0
+			}
+			r.BackupRetentionDays = &days
+		case model.ServiceRedshift:
+			r.PubliclyAccessible = ptr(false)
+			if r.Kind != "serverless" {
+				r.Encrypted = ptr(true)
+				days := int32(1)
+				r.BackupRetentionDays = &days
+			}
+		case model.ServiceElastiCache:
+			if r.Engine == "redis" {
+				r.Encrypted = ptr(true)
+				days := int32(1)
+				r.BackupRetentionDays = &days
+			}
+		}
+	}
+	return rs
+}
+
+func ptr[T any](v T) *T { return &v }
 
 // res builds one fixture resource with a service-appropriate ARN.
 func res(account, region, svc, kind, name, engine, version, class string,

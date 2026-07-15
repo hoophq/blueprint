@@ -112,6 +112,9 @@ func replicationGroupResource(g ectypes.ReplicationGroup, region, accountID stri
 		Region:        region,
 		AccountID:     accountID,
 		CreatedAt:     g.ReplicationGroupCreateTime,
+		// ElastiCache is VPC-only (no public-accessibility flag to report).
+		Encrypted:           g.AtRestEncryptionEnabled,
+		BackupRetentionDays: g.SnapshotRetentionLimit,
 	}
 }
 
@@ -135,6 +138,9 @@ func cacheClusterResource(c ectypes.CacheCluster, region, accountID string) mode
 		Region:        region,
 		AccountID:     accountID,
 		CreatedAt:     c.CacheClusterCreateTime,
+
+		Encrypted:           c.AtRestEncryptionEnabled,
+		BackupRetentionDays: c.SnapshotRetentionLimit,
 	}
 }
 

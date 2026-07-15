@@ -273,6 +273,24 @@ func TestHTMLEOLMarkers(t *testing.T) {
 	}
 }
 
+// TestHTMLExposureMarkers checks the exposure feature ships end to end: the
+// KPI label plus the deliberately risky legacy-crm fixture (public,
+// unencrypted, no backups) present in the embedded data with explicit risky
+// values, and the tri-state contract (nil fields absent from JSON).
+func TestHTMLExposureMarkers(t *testing.T) {
+	html := renderDemo(t)
+	for _, needle := range []string{
+		"Exposed",
+		`"publicly_accessible":true`,
+		`"encrypted":false`,
+		`"backup_retention_days":0`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("report is missing exposure marker %q", needle)
+		}
+	}
+}
+
 // TestHTMLEnvironmentAndStatusTags checks the inventory tag pills ship in the
 // shell: the CSS variants and the JS classifiers that color environment
 // buckets and status lifecycle states. Rendering is client-side, so the test

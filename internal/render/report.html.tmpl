@@ -90,7 +90,7 @@
   .banner li .failure-error { color: rgba(247, 247, 247, 0.45); }
 
   /* ── Stat strip + attribution bar ── */
-  .rr-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; }
+  .rr-kpis { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; }
   .rr-kpi { padding: 0 18px; border-right: 1px solid rgba(247, 247, 247, 0.07); }
   .rr-kpi:first-child { padding-left: 0; }
   .rr-kpi:last-child { border-right: none; padding-right: 0; }
@@ -481,6 +481,12 @@
     return "untagged";
   }
 
+  // Exposure flags are tri-state in the data: absent means the service does
+  // not report the field, so only explicit risky values count.
+  function isExposed(r) {
+    return r.publicly_accessible === true || r.encrypted === false || r.backup_retention_days === 0;
+  }
+
   // Precompute the tier and one lowercase haystack per row for the filter.
   resources.forEach(function (r) {
     r._tier = tierOf(r);
@@ -488,6 +494,10 @@
     var hay = [r.name, r.engine, r.engine_version, r.arn, r.service, r.kind,
       r.region, r.account_id, r.environment, r.owner, r.status, r.instance_class];
     if (r.eol) hay.push("eol");
+    if (isExposed(r)) hay.push("exposed");
+    if (r.publicly_accessible === true) hay.push("public");
+    if (r.encrypted === false) hay.push("unencrypted");
+    if (r.backup_retention_days === 0) hay.push("no-backups");
     if (r.tags) {
       Object.keys(r.tags).forEach(function (k) {
         hay.push(k, r.tags[k], k + "=" + r.tags[k]);
@@ -556,11 +566,13 @@
   var seen = { engines: {}, accounts: {} };
   var noOwner = 0;
   var eolCount = 0;
+  var exposedCount = 0;
   resources.forEach(function (r) {
     if (r.engine) seen.engines[r.engine] = true;
     if (r.account_id) seen.accounts[r.account_id] = true;
     if (!r.owner) noOwner++;
     if (r.eol) eolCount++;
+    if (isExposed(r)) exposedCount++;
   });
 
   var kpisEl = document.getElementById("kpis");
@@ -585,6 +597,9 @@
   addStat("End-of-life", eolCount.toLocaleString(),
     eolCount === 0 ? "no EOL engine versions" : "upstream support ended",
     eolCount === 0 ? { ok: true } : { bad: true });
+  addStat("Exposed", exposedCount.toLocaleString(),
+    exposedCount === 0 ? "no exposure flags" : "public, unencrypted, or no backups",
+    exposedCount === 0 ? { ok: true } : { bad: true });
   addStat("Scan failures", failures.length.toLocaleString(),
     failures.length === 0 ? "every scan unit succeeded" : "see incomplete-coverage details above",
     { ok: failures.length === 0 });
@@ -849,7 +864,20 @@
     tr.appendChild(cellOrDash(r.account_id, "mono"));
     tr.appendChild(tagCell(r.environment, envClass(r.environment || ""), false));
     tr.appendChild(cellOrDash(r.owner, ""));
-    tr.appendChild(tagCell(r.status, statusClass(r.status || ""), true));
+    var statusTd = tagCell(r.status, statusClass(r.status || ""), true);
+    if (r.publicly_accessible === true) {
+      statusTd.appendChild(document.createTextNode(" "));
+      statusTd.appendChild(el("span", "tag tag-red", "public"));
+    }
+    if (r.encrypted === false) {
+      statusTd.appendChild(document.createTextNode(" "));
+      statusTd.appendChild(el("span", "tag tag-amber", "unencrypted"));
+    }
+    if (r.backup_retention_days === 0) {
+      statusTd.appendChild(document.createTextNode(" "));
+      statusTd.appendChild(el("span", "tag tag-amber", "no backups"));
+    }
+    tr.appendChild(statusTd);
     return tr;
   }
 

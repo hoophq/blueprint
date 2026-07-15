@@ -44,6 +44,21 @@ type Resource struct {
 	// EOLDate carries that date as YYYY-MM-DD.
 	EOL     bool   `json:"eol,omitempty"`
 	EOLDate string `json:"eol_date,omitempty"`
+	// Exposure booleans straight from the describe responses, pointer-typed
+	// because absence must stay distinguishable from a healthy value: nil
+	// means the service does not report the field (honesty guardrail —
+	// reported, never inferred).
+	PubliclyAccessible  *bool  `json:"publicly_accessible,omitempty"`
+	Encrypted           *bool  `json:"encrypted,omitempty"`
+	BackupRetentionDays *int32 `json:"backup_retention_days,omitempty"`
+}
+
+// Exposed reports whether any collected exposure flag is in its risky state:
+// publicly accessible, storage not encrypted, or automated backups disabled.
+func (r *Resource) Exposed() bool {
+	return (r.PubliclyAccessible != nil && *r.PubliclyAccessible) ||
+		(r.Encrypted != nil && !*r.Encrypted) ||
+		(r.BackupRetentionDays != nil && *r.BackupRetentionDays == 0)
 }
 
 // Failure records a scan unit the tool could NOT see, so coverage claims
@@ -77,6 +92,10 @@ type Summary struct {
 	NoOwner      int
 	NoEnv        int
 	EOL          int
+	Public       int
+	Unencrypted  int
+	NoBackups    int
+	Exposed      int
 	Failures     int
 }
 
@@ -106,6 +125,18 @@ func (s *Snapshot) Summarize() Summary {
 		}
 		if r.EOL {
 			sum.EOL++
+		}
+		if r.PubliclyAccessible != nil && *r.PubliclyAccessible {
+			sum.Public++
+		}
+		if r.Encrypted != nil && !*r.Encrypted {
+			sum.Unencrypted++
+		}
+		if r.BackupRetentionDays != nil && *r.BackupRetentionDays == 0 {
+			sum.NoBackups++
+		}
+		if r.Exposed() {
+			sum.Exposed++
 		}
 	}
 	return sum
