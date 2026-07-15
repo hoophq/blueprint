@@ -129,4 +129,4 @@ blueprint phones home to no one. No usage analytics, no crash reporting, no upda
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT © [hoop.dev](https://hoop.dev) — built by the team behind [hoop](https://github.com/hoophq/hoop). See [LICENSE](LICENSE).
