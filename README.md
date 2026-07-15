@@ -123,10 +123,6 @@ Requirements:
 
 Accounts where the role is missing or untrusting do not abort the scan: they show up as failures in the ledger, and everything else is still scanned.
 
-## Honest coverage
-
-blueprint maps every managed database reachable from the AWS credentials you give it — nothing more, and it tells you what it couldn't see. Every scan unit (account × region × service) that fails — access denied, missing role, throttling that outlasted retries — is recorded in a failure ledger shown in the terminal summary and included in the JSON and HTML outputs (the CSV contains resource rows only; pair it with the JSON when coverage matters). A census that silently skips what it can't reach isn't a census.
-
 ## Zero telemetry
 
 blueprint phones home to no one. No usage analytics, no crash reporting, no update checks, not even anonymous pings. The only network calls it makes are to AWS APIs, using the credentials you provide. Output files are written to your local disk and go nowhere unless you send them somewhere.
