@@ -59,6 +59,8 @@ blueprint scan --org --role-name blueprint-readonly
 blueprint scan --formats html,json,csv  # choose outputs (default: html,json)
 blueprint scan --out ./reports          # directory for output files (default: .)
 blueprint scan --no-open                # don't open the HTML report in the browser
+blueprint scan --compare last.json      # diff against a previous census JSON
+blueprint scan --compare last.json --fail-on-change  # non-zero exit on differences
 blueprint scan --demo                   # render from fixture data, no AWS calls
 ```
 

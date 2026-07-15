@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hoophq/blueprint/internal/awsx"
 	"github.com/hoophq/blueprint/internal/demo"
+	"github.com/hoophq/blueprint/internal/diff"
 	"github.com/hoophq/blueprint/internal/model"
 	"github.com/hoophq/blueprint/internal/orgmode"
 	"github.com/hoophq/blueprint/internal/render"
@@ -30,8 +32,10 @@ func scanCmd() *cobra.Command {
 		outDir      string
 		formats     []string
 		concurrency int
-		demoMode    bool
-		noOpen      bool
+		demoMode     bool
+		noOpen       bool
+		comparePath  string
+		failOnChange bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,7 +58,13 @@ func scanCmd() *cobra.Command {
 				}
 			}
 
-			return writeOutputs(cmd, snap, outDir, formats, !noOpen && isTerminal(os.Stdout))
+			if err := writeOutputs(cmd, snap, outDir, formats, !noOpen && isTerminal(os.Stdout)); err != nil {
+				return err
+			}
+			if comparePath != "" {
+				return compareAgainst(cmd, snap, comparePath, failOnChange)
+			}
+			return nil
 		},
 	}
 
@@ -67,6 +77,8 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max concurrent AWS API scan units")
 	cmd.Flags().BoolVar(&demoMode, "demo", false, "render outputs from built-in fixture data (no AWS calls)")
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "do not open the HTML report in the browser after the scan")
+	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against (new/removed/changed databases)")
+	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when --compare finds differences")
 	return cmd
 }
 
@@ -128,6 +140,27 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	// same ledger as per-unit scan failures.
 	snap.Failures = append(snap.Failures, preFailures...)
 	return snap, nil
+}
+
+// compareAgainst diffs the fresh snapshot against a previous census JSON and
+// prints the changes. With failOnChange, any difference becomes an error so
+// scripts can gate on the exit code.
+func compareAgainst(cmd *cobra.Command, snap *model.Snapshot, path string, failOnChange bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading --compare file: %w", err)
+	}
+	var prev model.Snapshot
+	if err := json.Unmarshal(data, &prev); err != nil {
+		return fmt.Errorf("parsing --compare file %s (expected a blueprint census JSON): %w", path, err)
+	}
+	d := diff.Compare(&prev, snap)
+	d.Write(cmd.OutOrStdout(), filepath.Base(path))
+	if failOnChange && !d.Empty() {
+		return fmt.Errorf("differences vs %s: %d new, %d removed, %d changed",
+			filepath.Base(path), len(d.Added), len(d.Removed), len(d.Changed))
+	}
+	return nil
 }
 
 // cleanRegions trims whitespace and drops empty tokens from a --regions list.
