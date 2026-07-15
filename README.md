@@ -18,22 +18,22 @@ Past a few hundred resources, nobody has ground truth on their databases anymore
 
 ## Quickstart
 
-Homebrew (available with the v0.1 release):
+Homebrew (macOS & Linux):
 
 ```sh
 brew install hoophq/tap/blueprint
 ```
 
-Install script (available with the v0.1 release):
+Install script (macOS & Linux; verifies the release checksum, installs to `/usr/local/bin` or `~/.local/bin`):
 
 ```sh
-curl -fsSL https://blueprint.hoop.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hoophq/blueprint/main/install.sh | sh
 ```
 
-From source (Go 1.26+; works today):
+From source (Go 1.26+):
 
 ```sh
-go install github.com/hoophq/blueprint@main
+go install github.com/hoophq/blueprint@latest
 ```
 
 Then, with AWS credentials available (env vars, `~/.aws` profile, SSO — the standard chain):
