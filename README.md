@@ -1,6 +1,20 @@
-# blueprint
+<div align="center">
 
-Past a few hundred resources, nobody has ground truth on their databases anymore: instances accumulate across regions, accounts, and teams faster than any spreadsheet or wiki page keeps up. blueprint is a read-only census of every managed database reachable from your AWS credentials. It runs locally on your machine, calls only AWS APIs, and writes its output (terminal summary, HTML report, JSON, CSV) to your local disk. Nothing leaves your machine.
+# 📐 blueprint
+
+### What databases are you actually running?
+
+`blueprint` is a read-only census of every managed database reachable from
+your AWS credentials — RDS, Aurora, DocumentDB, Neptune, DynamoDB,
+ElastiCache, Redshift — **entirely from your machine**.
+
+Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
+
+<img src="docs/assets/report.png" alt="The blueprint HTML report: 46 databases across 2 accounts, attribution score, engines breakdown, and an inventory table with environment and status tags" width="760">
+
+</div>
+
+Past a few hundred resources, nobody has ground truth on their databases anymore: instances accumulate across regions, accounts, and teams faster than any spreadsheet or wiki page keeps up. blueprint runs locally, calls only AWS APIs, and writes its output (terminal summary, HTML report, JSON, CSV) to your local disk. Nothing leaves your machine.
 
 ## Quickstart
 
