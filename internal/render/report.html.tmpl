@@ -3,266 +3,704 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
 <title>dbcensus report</title>
 <style>
-  :root {
-    color-scheme: light dark;
-    --page: #f9f9f7;
-    --surface: #fcfcfb;
-    --ink: #0b0b0b;
-    --ink-2: #52514e;
-    --muted: #898781;
-    --hairline: #e1e0d9;
-    --border: rgba(11, 11, 11, 0.10);
-    --accent: #2a78d6;
-    --warning: #fab219;
-    --warning-wash: rgba(250, 178, 25, 0.14);
-    --hover: rgba(11, 11, 11, 0.04);
-    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --page: #0d0d0d;
-      --surface: #1a1a19;
-      --ink: #ffffff;
-      --ink-2: #c3c2b7;
-      --muted: #898781;
-      --hairline: #2c2c2a;
-      --border: rgba(255, 255, 255, 0.10);
-      --accent: #3987e5;
-      --warning-wash: rgba(250, 178, 25, 0.10);
-      --hover: rgba(255, 255, 255, 0.05);
-    }
-  }
-
+  /* dbcensus report — dark-first hoop.dev brand shell. Single file, no
+     external resources: font-family names only, everything inline. */
+  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    background: var(--page);
-    color: var(--ink);
-    font-family: var(--font);
+    min-height: 100vh;
+    background: #0c0c0c;
+    color: #F7F7F7;
+    font-family: Inter, system-ui, -apple-system, sans-serif;
     font-size: 14px;
     line-height: 1.45;
+    position: relative;
   }
-  main { max-width: 1240px; margin: 0 auto; padding: 0 24px 24px; }
+  [hidden] { display: none !important; }
 
-  header {
-    max-width: 1240px;
+  /* ── Animated background grid ── */
+  .hoop-bg-grid {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(247, 247, 247, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(247, 247, 247, 0.04) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 75%);
+    mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 75%);
+    animation: hoopGridShift 24s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes hoopGridShift {
+    0%   { background-position: 0 0, 0 0; }
+    100% { background-position: 48px 48px, 48px 48px; }
+  }
+
+  /* The prototype uses 1000px; the census inventory carries 10 columns, so
+     the page runs slightly wider to keep attribution columns on screen. */
+  .rr-page {
+    position: relative;
+    max-width: 1140px;
     margin: 0 auto;
-    padding: 28px 24px 20px;
+    padding: 56px 40px 100px;
+  }
+
+  /* ── Top brand ── */
+  .rr-top {
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px 24px;
-  }
-  header h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
-  header .subtitle { color: var(--ink-2); font-size: 13px; margin-left: 10px; }
-  header .meta { text-align: right; color: var(--ink-2); font-size: 12.5px; }
-  header .meta span { display: block; }
-
-  .banner {
-    background: var(--warning-wash);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--warning);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin: 0 0 18px;
-  }
-  .banner summary { cursor: pointer; font-weight: 600; font-size: 14px; }
-  .banner summary .banner-icon { margin-right: 6px; }
-  .banner summary .banner-hint { font-weight: 400; color: var(--ink-2); font-size: 12px; margin-left: 8px; }
-  .banner ul { margin: 10px 0 2px; padding-left: 24px; }
-  .banner li { margin: 4px 0; font-size: 13px; }
-  .banner li .mono { font-family: var(--mono); font-size: 12px; }
-  .banner li .failure-error { color: var(--ink-2); }
-
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    align-items: center;
+    justify-content: center;
     gap: 12px;
-    margin: 0 0 20px;
+    margin-bottom: 32px;
   }
-  .tile {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
+  .rr-top-logo {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: #F7F7F7;
   }
-  .tile-label { font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
-  .tile-value { font-size: 28px; font-weight: 600; line-height: 1.15; }
 
-  .empty {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 28px 32px;
-    margin: 0 0 20px;
+  /* ── Generated-report window ── */
+  .rr-window {
+    background: rgba(247, 247, 247, 0.03);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   }
-  .empty h2 { margin: 0 0 8px; font-size: 17px; }
-  .empty p { margin: 0 0 8px; color: var(--ink-2); }
-  .empty ul { margin: 0; padding-left: 22px; color: var(--ink-2); }
-  .empty li { margin: 4px 0; }
-  .empty .mono { font-family: var(--mono); font-size: 12.5px; }
-
-  .controls {
+  .rr-window-bar {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
-    margin: 0 0 12px;
+    padding: 13px 18px;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.07);
+    background: rgba(247, 247, 247, 0.03);
   }
-  .controls input[type="search"] {
-    flex: 1 1 260px;
-    max-width: 440px;
-    padding: 8px 12px;
+  .rr-dots { display: flex; gap: 6px; }
+  .rr-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(247, 247, 247, 0.12);
+  }
+  .rr-window-name {
+    margin-left: 4px;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: rgba(247, 247, 247, 0.4);
+  }
+  .rr-window-meta {
+    margin-left: auto;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    color: rgba(247, 247, 247, 0.3);
+  }
+  .rr-body { padding: 32px; }
+
+  /* ── Headline + run metadata ── */
+  .rr-headline {
+    padding-bottom: 28px;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.07);
+  }
+  .rr-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .rr-brand-name {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(247, 247, 247, 0.75);
+  }
+  .rr-brand-ver {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: rgba(247, 247, 247, 0.35);
+    background: rgba(247, 247, 247, 0.06);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 5px;
+    padding: 2px 7px;
+  }
+  .rr-title {
+    font-size: clamp(26px, 3.5vw, 34px);
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: #F7F7F7;
+    margin: 0 0 16px;
+    line-height: 1.1;
+  }
+  .rr-pitch {
+    font-size: 15px;
+    line-height: 1.6;
+    color: rgba(247, 247, 247, 0.55);
+    margin: 0 0 16px;
+    max-width: 640px;
+  }
+  .rr-pitch-link {
+    color: #F7F7F7;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .rr-pitch-link:hover { text-decoration: underline; }
+  .rr-meta-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .rr-meta-chip {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(247, 247, 247, 0.55);
+    background: rgba(247, 247, 247, 0.05);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 999px;
+    padding: 5px 13px;
+  }
+  .rr-meta-chip-ok {
+    color: #7fd1a8;
+    border-color: rgba(79, 180, 119, 0.3);
+    background: rgba(79, 180, 119, 0.08);
+  }
+
+  /* ── Failures banner (honesty ledger) ── */
+  .banner {
+    margin: 24px 0 0;
+    background: rgba(230, 162, 60, 0.07);
+    border: 1px solid rgba(230, 162, 60, 0.25);
+    border-left: 3px solid #e6a23c;
+    border-radius: 10px;
+    padding: 13px 18px;
+  }
+  .banner summary { cursor: pointer; font-weight: 600; font-size: 13.5px; color: #F7F7F7; }
+  .banner summary .banner-icon { margin-right: 6px; color: #e6a23c; }
+  .banner summary .banner-hint { font-weight: 400; color: rgba(247, 247, 247, 0.45); font-size: 12px; margin-left: 8px; }
+  .banner ul { margin: 12px 0 4px; padding-left: 22px; }
+  .banner li {
+    margin: 6px 0;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: rgba(247, 247, 247, 0.7);
+  }
+  .banner li .failure-error { color: rgba(247, 247, 247, 0.45); }
+
+  /* ── Summary: donut + score + breakdown ── */
+  .rr-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    align-items: center;
+    padding: 32px 0;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.07);
+  }
+  .rr-donut-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .rr-donut { position: relative; width: 200px; height: 200px; }
+  .rr-donut svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .rr-donut-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    pointer-events: none;
+  }
+  .rr-donut-big {
+    font-size: 52px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: #F7F7F7;
+    line-height: 1;
+  }
+  .rr-donut-cap { font-size: 12px; font-weight: 500; color: rgba(247, 247, 247, 0.4); }
+  .rr-donut-label { font-size: 12px; color: rgba(247, 247, 247, 0.35); }
+  .rr-summary-right { display: flex; flex-direction: column; gap: 12px; }
+  .rr-score {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 18px 24px;
+    background: rgba(247, 247, 247, 0.05);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 10px;
+  }
+  .rr-score-num {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: #F7F7F7;
+    line-height: 1;
+  }
+  .rr-score-denom { font-size: 20px; font-weight: 500; color: rgba(247, 247, 247, 0.35); }
+  .rr-score-label {
+    margin-left: auto;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(247, 247, 247, 0.55);
+  }
+  .rr-breakdown { display: flex; flex-direction: column; }
+  .rr-bd-row {
+    display: grid;
+    grid-template-columns: 4px 1fr auto auto;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 12px 12px 0;
     font: inherit;
-    color: var(--ink);
-    background: var(--surface);
-    border: 1px solid var(--hairline);
-    border-radius: 6px;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .rr-bd-row:hover { background: rgba(247, 247, 247, 0.04); }
+  .rr-bd-row-active { background: rgba(247, 247, 247, 0.07); }
+  .rr-bd-accent { width: 4px; align-self: stretch; min-height: 26px; border-radius: 2px; }
+  .rr-bd-label { font-size: 14px; font-weight: 500; color: rgba(247, 247, 247, 0.88); padding-left: 14px; }
+  .rr-bd-note {
+    font-size: 11px;
+    color: rgba(247, 247, 247, 0.38);
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding-left: 14px;
+    margin-top: 2px;
+  }
+  .rr-bd-sess {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: rgba(247, 247, 247, 0.45);
+  }
+  .rr-bd-pct {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: #F7F7F7;
+    min-width: 52px;
+    text-align: right;
+  }
+
+  /* ── KPI row ── */
+  .rr-kpis {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    padding: 24px 0;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.07);
+  }
+  .rr-kpi { padding: 0 20px; border-right: 1px solid rgba(247, 247, 247, 0.07); }
+  .rr-kpi:first-child { padding-left: 0; }
+  .rr-kpi:last-child { border-right: none; }
+  .rr-kpi-label { font-size: 11.5px; font-weight: 500; color: rgba(247, 247, 247, 0.42); }
+  .rr-kpi-num {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: #F7F7F7;
+    line-height: 1;
+    margin-top: 10px;
+  }
+  .rr-kpi-sub { font-size: 11.5px; color: rgba(247, 247, 247, 0.34); margin-top: 7px; }
+  .rr-kpi-sub-ok { color: #7fd1a8; }
+
+  /* ── Section ── */
+  .rr-section { padding: 28px 0; border-bottom: 1px solid rgba(247, 247, 247, 0.07); }
+  .rr-section:last-child { border-bottom: none; padding-bottom: 0; }
+  .rr-section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+  }
+  .rr-section-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: #F7F7F7; margin: 0; }
+  .rr-section-sub { font-size: 12px; color: rgba(247, 247, 247, 0.38); }
+  .rr-empty { font-size: 13px; color: rgba(247, 247, 247, 0.4); padding: 8px 0; }
+
+  /* shared bar */
+  .rr-bar-wrap { height: 6px; background: rgba(247, 247, 247, 0.06); border-radius: 3px; overflow: hidden; }
+  .rr-bar { height: 100%; background: rgba(247, 247, 247, 0.3); border-radius: 3px; }
+
+  /* ── Filter pills ── */
+  .rr-pii-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .rr-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(247, 247, 247, 0.55);
+    background: rgba(247, 247, 247, 0.05);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 999px;
+    padding: 5px 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .rr-filter:hover { border-color: rgba(247, 247, 247, 0.25); color: #F7F7F7; }
+  .rr-filter-active { background: #F7F7F7; border-color: #F7F7F7; color: #0c0c0c; }
+  .rr-filter-active:hover { color: #0c0c0c; }
+  .rr-filter-count {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    opacity: 0.6;
+  }
+
+  /* ── Engines rows ── */
+  .rr-pii-table { display: flex; flex-direction: column; }
+  .rr-eng-row {
+    display: grid;
+    grid-template-columns: 210px 1fr 120px 48px 90px;
+    align-items: center;
+    gap: 16px;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.05);
+  }
+  .rr-eng-row:last-child { border-bottom: none; }
+  .rr-eng-entity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .rr-eng-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  .rr-eng-name {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(247, 247, 247, 0.82);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rr-eng-family { font-size: 11px; color: rgba(247, 247, 247, 0.34); }
+  .rr-eng-total {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(247, 247, 247, 0.75);
+    text-align: right;
+  }
+  .rr-eng-regions {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    color: rgba(247, 247, 247, 0.38);
+    text-align: right;
+  }
+
+  /* ── Inventory controls + table ── */
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
+  .controls input[type="search"] {
+    flex: 1 1 240px;
+    max-width: 420px;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 13px;
+    color: #F7F7F7;
+    background: rgba(247, 247, 247, 0.05);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 8px;
+  }
+  .controls input[type="search"]::placeholder { color: rgba(247, 247, 247, 0.35); }
+  .controls label {
+    color: rgba(247, 247, 247, 0.45);
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .controls select {
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 12.5px;
+    color: #F7F7F7;
+    background: rgba(247, 247, 247, 0.05);
+    border: 1px solid rgba(247, 247, 247, 0.1);
+    border-radius: 8px;
   }
   .controls input[type="search"]:focus,
   .controls select:focus,
-  .th-btn:focus-visible {
-    outline: 2px solid var(--accent);
+  .th-btn:focus-visible,
+  .rr-bd-row:focus-visible,
+  .rr-filter:focus-visible,
+  .rr-cta:focus-visible {
+    outline: 2px solid rgba(247, 247, 247, 0.6);
     outline-offset: 1px;
   }
-  .controls label { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 6px; }
-  .controls select {
-    padding: 7px 8px;
-    font: inherit;
-    font-size: 13px;
-    color: var(--ink);
-    background: var(--surface);
-    border: 1px solid var(--hairline);
-    border-radius: 6px;
-  }
-  .controls .count { margin-left: auto; color: var(--muted); font-size: 12.5px; }
 
   .table-wrap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    background: rgba(247, 247, 247, 0.02);
+    border: 1px solid rgba(247, 247, 247, 0.08);
+    border-radius: 10px;
     overflow-x: auto;
   }
   table { width: 100%; border-collapse: collapse; }
   thead th {
     text-align: left;
     padding: 0;
-    border-bottom: 1px solid var(--hairline);
+    border-bottom: 1px solid rgba(247, 247, 247, 0.1);
     white-space: nowrap;
   }
   .th-btn {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 5px;
     width: 100%;
-    padding: 9px 10px;
+    padding: 10px;
     background: none;
     border: none;
-    font: inherit;
-    font-size: 12px;
+    font-family: inherit;
+    font-size: 11px;
     font-weight: 600;
-    color: var(--ink-2);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: rgba(247, 247, 247, 0.45);
     cursor: pointer;
   }
   thead th.num .th-btn { justify-content: flex-end; }
-  .th-btn:hover { color: var(--ink); }
-  .th-btn .dir { font-size: 9px; color: var(--accent); min-width: 10px; }
+  .th-btn:hover { color: #F7F7F7; }
+  .th-btn .dir { font-size: 9px; color: #F7F7F7; min-width: 10px; }
   tbody td {
-    padding: 7px 10px;
-    border-bottom: 1px solid var(--hairline);
+    padding: 7px 9px;
+    border-bottom: 1px solid rgba(247, 247, 247, 0.05);
     font-size: 13px;
+    color: rgba(247, 247, 247, 0.75);
     white-space: nowrap;
   }
+  tbody td .sub { display: block; margin-top: 1px; }
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover td { background: var(--hover); }
+  tbody tr:hover td { background: rgba(247, 247, 247, 0.03); }
   tbody tr.group-row td {
-    background: var(--page);
+    background: rgba(247, 247, 247, 0.045);
     font-weight: 600;
-    font-size: 12.5px;
-    padding: 8px 10px;
-  }
-  tbody tr.group-row:hover td { background: var(--page); }
-  .group-count { color: var(--ink-2); font-weight: 400; margin-left: 8px; }
-  td.mono, .mono { font-family: var(--mono); font-size: 12px; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .sub { color: var(--ink-2); font-size: 11px; }
-  .dim { color: var(--muted); }
-  tr.no-match td { padding: 18px 12px; text-align: center; }
-
-  footer {
-    max-width: 1240px;
-    margin: 0 auto;
-    padding: 8px 24px 28px;
-    color: var(--muted);
     font-size: 12px;
+    color: #F7F7F7;
+    padding: 9px 10px;
+  }
+  tbody tr.group-row:hover td { background: rgba(247, 247, 247, 0.045); }
+  .group-count { color: rgba(247, 247, 247, 0.45); font-weight: 400; margin-left: 8px; }
+  td.mono, .mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+  td.mono { color: rgba(247, 247, 247, 0.8); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .sub { color: rgba(247, 247, 247, 0.4); font-size: 11px; }
+  .dim { color: rgba(247, 247, 247, 0.3); }
+  tr.no-match td { padding: 20px 12px; text-align: center; }
+  .tier-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+    vertical-align: 0;
+  }
+
+  /* ── Empty state ── */
+  .empty h2 { margin: 0 0 8px; font-size: 17px; color: #F7F7F7; }
+  .empty p { margin: 0 0 8px; color: rgba(247, 247, 247, 0.55); }
+  .empty ul { margin: 0; padding-left: 22px; color: rgba(247, 247, 247, 0.55); }
+  .empty li { margin: 4px 0; }
+  .empty .mono { color: rgba(247, 247, 247, 0.75); font-size: 12.5px; }
+
+  /* ── CTA — white call-out to the open source repo ── */
+  .rr-cta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 28px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+    background: #F5F5F3;
+    border-radius: 16px;
+    padding: 32px 36px;
+    text-decoration: none;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .rr-cta:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); }
+  .rr-cta-text { min-width: 240px; }
+  .rr-cta-title { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; color: #111111; margin: 0 0 6px; }
+  .rr-cta-body { font-size: 14px; line-height: 1.55; color: #555555; margin: 0; max-width: 460px; }
+  .rr-cta-btn {
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #F7F7F7;
+    background: #111111;
+    border-radius: 8px;
+    padding: 11px 22px;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+  }
+  .rr-cta:hover .rr-cta-btn { opacity: 0.9; }
+
+  /* ── Footer ── */
+  .rr-foot {
+    margin-top: 28px;
+    text-align: center;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    color: rgba(247, 247, 247, 0.3);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 760px) {
+    .rr-summary { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 680px) {
+    .rr-eng-row { grid-template-columns: 1fr auto; }
+    .rr-eng-family, .rr-eng-row .rr-bar-wrap, .rr-eng-regions { display: none; }
+  }
+  @media (max-width: 600px) {
+    .rr-page { padding: 32px 16px 80px; }
+    .rr-body { padding: 22px 18px; }
+    .rr-window-meta { display: none; }
+    .rr-kpis { grid-template-columns: 1fr; gap: 20px 0; }
+    .rr-kpi { padding-left: 0; border-right: none; }
+    .rr-cta { padding: 26px 24px; }
   }
 </style>
 </head>
 <body>
 
-<header>
-  <div>
-    <h1>dbcensus</h1><span class="subtitle">managed database census</span>
+<div class="hoop-bg-grid" aria-hidden="true"></div>
+
+<div class="rr-page">
+
+  <div class="rr-top">
+    <svg width="40" height="40" viewBox="0 0 148 148" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M96.4167 71.4077C99.0238 71.5517 101.631 71.7389 104.238 71.9118L106.6 72.0558C114.055 73.1865 121.677 71.9359 128.38 68.4821C135.083 65.0282 140.525 59.5473 143.931 52.82C147.337 46.0928 148.533 38.4622 147.349 31.0153C146.166 23.5685 142.662 16.685 137.338 11.3455C132.014 6.00604 125.14 2.48279 117.697 1.27765C110.254 0.0725119 102.62 1.24695 95.8826 4.63367C89.1456 8.02038 83.6491 13.4467 80.176 20.1396C76.7029 26.8325 75.4304 34.4507 76.5397 41.909C76.5397 42.73 76.6405 43.551 76.6982 44.372C76.871 46.9791 77.0582 49.6005 77.1879 52.2076C77.5862 56.2358 77.0945 60.3023 75.7475 64.1194C74.7082 66.7342 73.1556 69.1144 71.1816 71.1196C69.1658 73.1255 66.7584 74.6945 64.1094 75.7287C60.2922 77.0757 56.2257 77.5675 52.1976 77.1691C49.5905 77.0395 46.9691 76.8522 44.362 76.6794L41.899 76.5209C34.4419 75.414 26.8257 76.688 20.1348 80.1613C13.4439 83.6347 8.01933 89.1305 4.63351 95.8662C1.24769 102.602 0.0732001 110.234 1.27728 117.676C2.48136 125.118 6.00262 131.99 11.3397 137.315C16.6768 142.639 23.5576 146.144 31.0024 147.33C38.4472 148.516 46.0766 147.324 52.8041 143.922C59.5317 140.52 65.0144 135.082 68.4718 128.383C71.9292 121.684 73.1849 114.065 72.0602 106.61C72.0602 105.818 71.9738 105.04 71.9162 104.248C71.7433 101.641 71.5561 99.0338 71.412 96.4268C71.0353 92.3933 71.5517 88.3263 72.9244 84.515C73.9445 81.8936 75.4939 79.5106 77.476 77.5148C79.4819 75.5453 81.8621 73.9976 84.4761 72.9633C88.2932 71.5717 92.3705 71.0405 96.4167 71.4077Z" fill="#F7F7F7"/>
+      <path d="M36.7283 63.0103C51.238 63.0103 63.0005 51.2478 63.0005 36.7381C63.0005 22.2283 51.238 10.4658 36.7283 10.4658C22.2185 10.4658 10.4561 22.2283 10.4561 36.7381C10.4561 51.2478 22.2185 63.0103 36.7283 63.0103Z" fill="#F7F7F7"/>
+      <path d="M111.944 138.226C126.454 138.226 138.216 126.464 138.216 111.954C138.216 97.4441 126.454 85.6816 111.944 85.6816C97.4344 85.6816 85.6719 97.4441 85.6719 111.954C85.6719 126.464 97.4344 138.226 111.944 138.226Z" fill="#F7F7F7"/>
+    </svg>
+    <span class="rr-top-logo">hoop.dev</span>
   </div>
-  <div class="meta">
-    <span id="generated-at"></span>
-    <span id="coverage"></span>
+
+  <div class="rr-window">
+    <div class="rr-window-bar">
+      <div class="rr-dots"><span class="rr-dot"></span><span class="rr-dot"></span><span class="rr-dot"></span></div>
+      <span class="rr-window-name">dbcensus report</span>
+      <span class="rr-window-meta">generated locally &middot; <span id="window-gen"></span></span>
+    </div>
+
+    <div class="rr-body">
+
+      <div class="rr-headline">
+        <div class="rr-brand">
+          <svg width="18" height="18" viewBox="0 0 148 148" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M96.4167 71.4077C99.0238 71.5517 101.631 71.7389 104.238 71.9118L106.6 72.0558C114.055 73.1865 121.677 71.9359 128.38 68.4821C135.083 65.0282 140.525 59.5473 143.931 52.82C147.337 46.0928 148.533 38.4622 147.349 31.0153C146.166 23.5685 142.662 16.685 137.338 11.3455C132.014 6.00604 125.14 2.48279 117.697 1.27765C110.254 0.0725119 102.62 1.24695 95.8826 4.63367C89.1456 8.02038 83.6491 13.4467 80.176 20.1396C76.7029 26.8325 75.4304 34.4507 76.5397 41.909C76.5397 42.73 76.6405 43.551 76.6982 44.372C76.871 46.9791 77.0582 49.6005 77.1879 52.2076C77.5862 56.2358 77.0945 60.3023 75.7475 64.1194C74.7082 66.7342 73.1556 69.1144 71.1816 71.1196C69.1658 73.1255 66.7584 74.6945 64.1094 75.7287C60.2922 77.0757 56.2257 77.5675 52.1976 77.1691C49.5905 77.0395 46.9691 76.8522 44.362 76.6794L41.899 76.5209C34.4419 75.414 26.8257 76.688 20.1348 80.1613C13.4439 83.6347 8.01933 89.1305 4.63351 95.8662C1.24769 102.602 0.0732001 110.234 1.27728 117.676C2.48136 125.118 6.00262 131.99 11.3397 137.315C16.6768 142.639 23.5576 146.144 31.0024 147.33C38.4472 148.516 46.0766 147.324 52.8041 143.922C59.5317 140.52 65.0144 135.082 68.4718 128.383C71.9292 121.684 73.1849 114.065 72.0602 106.61C72.0602 105.818 71.9738 105.04 71.9162 104.248C71.7433 101.641 71.5561 99.0338 71.412 96.4268C71.0353 92.3933 71.5517 88.3263 72.9244 84.515C73.9445 81.8936 75.4939 79.5106 77.476 77.5148C79.4819 75.5453 81.8621 73.9976 84.4761 72.9633C88.2932 71.5717 92.3705 71.0405 96.4167 71.4077Z" fill="#F7F7F7"/>
+            <path d="M36.7283 63.0103C51.238 63.0103 63.0005 51.2478 63.0005 36.7381C63.0005 22.2283 51.238 10.4658 36.7283 10.4658C22.2185 10.4658 10.4561 22.2283 10.4561 36.7381C10.4561 51.2478 22.2185 63.0103 36.7283 63.0103Z" fill="#F7F7F7"/>
+            <path d="M111.944 138.226C126.454 138.226 138.216 126.464 138.216 111.954C138.216 97.4441 126.454 85.6816 111.944 85.6816C97.4344 85.6816 85.6719 97.4441 85.6719 111.954C85.6719 126.464 97.4344 138.226 111.944 138.226Z" fill="#F7F7F7"/>
+          </svg>
+          <span class="rr-brand-name">dbcensus</span>
+          <span class="rr-brand-ver" id="brand-ver"></span>
+        </div>
+        <h1 class="rr-title">Database Census Report</h1>
+        <p class="rr-pitch">Generated locally by the open-source CLI. hoop.dev brings governed access to every one of these databases &mdash; for humans and AI agents. <a href="https://hoop.dev" target="_blank" rel="noreferrer" class="rr-pitch-link">Get to know hoop.dev &rarr;</a></p>
+        <div class="rr-meta-row">
+          <span class="rr-meta-chip" id="chip-scope"></span>
+          <span class="rr-meta-chip" id="chip-count"></span>
+          <span class="rr-meta-chip">read-only &middot; describe calls only</span>
+          <span class="rr-meta-chip rr-meta-chip-ok">Computed locally &middot; nothing leaves your machine</span>
+        </div>
+      </div>
+
+      <section id="failures-banner" class="banner" hidden>
+        <details>
+          <summary><span class="banner-icon">&#9888;</span><span id="failures-title"></span><span class="banner-hint">expand for details</span></summary>
+          <ul id="failures-list"></ul>
+        </details>
+      </section>
+
+      <div class="rr-summary" id="summary">
+        <div class="rr-donut-wrap">
+          <div class="rr-donut" id="donut">
+            <div class="rr-donut-center">
+              <div class="rr-donut-big" id="donut-big"></div>
+              <div class="rr-donut-cap" id="donut-cap"></div>
+            </div>
+          </div>
+          <div class="rr-donut-label">Databases by attribution &middot; click to filter</div>
+        </div>
+        <div class="rr-summary-right">
+          <div class="rr-score">
+            <span class="rr-score-num" id="score-num"></span>
+            <span class="rr-score-denom">/100</span>
+            <span class="rr-score-label">Attribution Score</span>
+          </div>
+          <div class="rr-breakdown" id="breakdown"></div>
+        </div>
+      </div>
+
+      <div class="rr-kpis" id="kpis"></div>
+
+      <section id="empty-state" class="rr-section empty" hidden>
+        <h2>No databases found</h2>
+        <p>The scan completed but discovered no managed databases. Possible causes:</p>
+        <ul>
+          <li>The credentials point at the wrong AWS account or profile.</li>
+          <li>The scanned regions host no managed databases &mdash; try scanning more regions.</li>
+          <li>The role is missing read permissions (for example <span class="mono">rds:DescribeDBInstances</span>, <span class="mono">dynamodb:ListTables</span>, <span class="mono">elasticache:DescribeCacheClusters</span>).</li>
+          <li>Databases are self-hosted on EC2 &mdash; dbcensus only sees AWS-managed services.</li>
+        </ul>
+      </section>
+
+      <section class="rr-section" id="engines-section">
+        <div class="rr-section-head">
+          <h2 class="rr-section-title">Engines</h2>
+          <span class="rr-section-sub" id="engines-sub"></span>
+        </div>
+        <div class="rr-pii-filters" id="service-filters"></div>
+        <div class="rr-pii-table" id="engine-rows"></div>
+      </section>
+
+      <section class="rr-section" id="table-section">
+        <div class="rr-section-head">
+          <h2 class="rr-section-title">Inventory</h2>
+          <span class="rr-section-sub" id="row-count"></span>
+        </div>
+        <div class="controls">
+          <input id="filter" type="search" placeholder="Filter by name, engine, ARN, or tag" aria-label="Filter databases">
+          <label>Group by
+            <select id="groupby">
+              <option value="none" selected>none</option>
+              <option value="service">service</option>
+              <option value="engine">engine</option>
+              <option value="environment">environment</option>
+              <option value="region">region</option>
+              <option value="account">account</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table id="census">
+            <thead><tr id="head-row"></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
   </div>
-</header>
 
-<main>
-  <section id="failures-banner" class="banner" hidden>
-    <details>
-      <summary><span class="banner-icon">&#9888;</span><span id="failures-title"></span><span class="banner-hint">expand for details</span></summary>
-      <ul id="failures-list"></ul>
-    </details>
-  </section>
-
-  <section class="tiles" id="tiles" aria-label="Sprawl summary"></section>
-
-  <section id="empty-state" class="empty" hidden>
-    <h2>No databases found</h2>
-    <p>The scan completed but discovered no managed databases. Possible causes:</p>
-    <ul>
-      <li>The credentials point at the wrong AWS account or profile.</li>
-      <li>The scanned regions host no managed databases &mdash; try scanning more regions.</li>
-      <li>The role is missing read permissions (for example <span class="mono">rds:DescribeDBInstances</span>, <span class="mono">dynamodb:ListTables</span>, <span class="mono">elasticache:DescribeCacheClusters</span>).</li>
-      <li>Databases are self-hosted on EC2 &mdash; dbcensus only sees AWS-managed services.</li>
-    </ul>
-  </section>
-
-  <section id="table-section">
-    <div class="controls">
-      <input id="filter" type="search" placeholder="Filter by name, engine, ARN, or tag" aria-label="Filter databases">
-      <label>Group by
-        <select id="groupby">
-          <option value="none" selected>none</option>
-          <option value="service">service</option>
-          <option value="engine">engine</option>
-          <option value="environment">environment</option>
-          <option value="region">region</option>
-          <option value="account">account</option>
-        </select>
-      </label>
-      <span id="row-count" class="count"></span>
+  <a href="https://github.com/hoophq/dbcensus" target="_blank" rel="noreferrer" class="rr-cta">
+    <div class="rr-cta-text">
+      <p class="rr-cta-title">Run it yourself, or read the source.</p>
+      <p class="rr-cta-body">dbcensus is open source. Install the CLI, inspect every line, and contribute on GitHub.</p>
     </div>
-    <div class="table-wrap">
-      <table id="census">
-        <thead><tr id="head-row"></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
+    <span class="rr-cta-btn">View on GitHub &rarr;</span>
+  </a>
 
-<footer>
-  Generated by dbcensus &middot; read-only scan, control-plane metadata only &middot; this file is self-contained and renders fully offline.
-</footer>
+  <footer class="rr-foot">read-only scan &middot; control-plane metadata only &middot; this file renders fully offline</footer>
+
+</div>
 
 <script type="application/json" id="dbcensus-data">__DBCENSUS_JSON__</script>
 <script>
@@ -273,8 +711,37 @@
   var resources = data.resources || [];
   var failures = data.failures || [];
 
-  // Precompute one lowercase haystack per row for the free-text filter.
+  // Attribution tiers: ownership hygiene computed from owner/environment tags.
+  var TIERS = [
+    { key: "untagged", label: "Untagged", note: "no owner or environment tag", color: "#e5484d", count: 0 },
+    { key: "partial", label: "Partially attributed", note: "missing owner or environment", color: "#e6a23c", count: 0 },
+    { key: "full", label: "Fully attributed", note: "owner and environment tagged", color: "#4fb477", count: 0 }
+  ];
+  var TIER_BY_KEY = {};
+  TIERS.forEach(function (t) { TIER_BY_KEY[t.key] = t; });
+
+  // Categorical service palette tuned for the #0c0c0c page.
+  var SERVICE_COLORS = {
+    rds: "#5a9cf8",
+    aurora: "#8b7cf6",
+    documentdb: "#4fb477",
+    neptune: "#38bdf8",
+    dynamodb: "#e6a23c",
+    elasticache: "#e5484d",
+    redshift: "#f472b6"
+  };
+  var SERVICE_FALLBACK = "rgba(247,247,247,0.35)";
+
+  function tierOf(r) {
+    if (r.owner && r.environment) return "full";
+    if (r.owner || r.environment) return "partial";
+    return "untagged";
+  }
+
+  // Precompute the tier and one lowercase haystack per row for the filter.
   resources.forEach(function (r) {
+    r._tier = tierOf(r);
+    TIER_BY_KEY[r._tier].count++;
     var hay = [r.name, r.engine, r.engine_version, r.arn, r.service, r.kind,
       r.region, r.account_id, r.environment, r.owner, r.status, r.instance_class];
     if (r.tags) {
@@ -292,25 +759,28 @@
     return e;
   }
 
-  // ---- Header meta -------------------------------------------------------
-  var gen = new Date(data.generated_at);
-  var genEl = document.getElementById("generated-at");
-  genEl.textContent = "Generated " + (isNaN(gen.getTime()) ? String(data.generated_at) : gen.toLocaleString());
-  genEl.title = String(data.generated_at);
-
-  function coverage(items, noun) {
-    items = items || [];
-    var n = items.length;
-    var label = n + " " + noun + (n === 1 ? "" : "s");
-    if (n === 0) return label;
-    var shown = items.slice(0, 4).join(", ");
-    var extra = n > 4 ? " +" + (n - 4) + " more" : "";
-    return label + " (" + shown + extra + ")";
+  function plural(n, noun) {
+    return n.toLocaleString() + " " + noun + (n === 1 ? "" : "s");
   }
-  document.getElementById("coverage").textContent =
-    coverage(data.accounts, "account") + " · " + coverage(data.regions, "region") + " scanned";
 
-  // ---- Failures banner (honesty ledger) ----------------------------------
+  // ---- Window bar + headline metadata -------------------------------------
+  var gen = new Date(data.generated_at);
+  var genEl = document.getElementById("window-gen");
+  genEl.textContent = isNaN(gen.getTime())
+    ? String(data.generated_at || "")
+    : gen.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  genEl.title = String(data.generated_at || "");
+
+  var verEl = document.getElementById("brand-ver");
+  if (data.version) { verEl.textContent = String(data.version); } else { verEl.hidden = true; }
+
+  var accounts = data.accounts || [];
+  var regions = data.regions || [];
+  document.getElementById("chip-scope").textContent =
+    plural(accounts.length, "account") + " · " + plural(regions.length, "region") + " scanned";
+  document.getElementById("chip-count").textContent = plural(resources.length, "database");
+
+  // ---- Failures banner (honesty ledger) ------------------------------------
   if (failures.length > 0) {
     document.getElementById("failures-banner").hidden = false;
     document.getElementById("failures-title").textContent =
@@ -325,40 +795,219 @@
     });
   }
 
-  // ---- Stat tiles ---------------------------------------------------------
-  var seen = { engines: {}, regions: {}, accounts: {} };
-  var noOwner = 0, noEnv = 0;
-  resources.forEach(function (r) {
-    if (r.engine) seen.engines[r.engine] = true;
-    if (r.region) seen.regions[r.region] = true;
-    if (r.account_id) seen.accounts[r.account_id] = true;
-    if (!r.owner) noOwner++;
-    if (!r.environment) noEnv++;
-  });
-  var tiles = [
-    { label: "Databases", value: resources.length },
-    { label: "Engines", value: Object.keys(seen.engines).length },
-    { label: "Regions", value: Object.keys(seen.regions).length },
-    { label: "Accounts", value: Object.keys(seen.accounts).length },
-    { label: "Missing owner tag", value: noOwner },
-    { label: "Missing environment tag", value: noEnv }
-  ];
-  var tilesEl = document.getElementById("tiles");
-  tiles.forEach(function (t) {
-    var tile = el("div", "tile");
-    tile.appendChild(el("div", "tile-label", t.label));
-    tile.appendChild(el("div", "tile-value", t.value.toLocaleString()));
-    tilesEl.appendChild(tile);
-  });
-
-  // ---- Empty state --------------------------------------------------------
+  // ---- Empty state ----------------------------------------------------------
   if (resources.length === 0) {
     document.getElementById("empty-state").hidden = false;
-    document.getElementById("table-section").hidden = true;
+    ["summary", "kpis", "engines-section", "table-section"].forEach(function (id) {
+      document.getElementById(id).hidden = true;
+    });
     return;
   }
 
-  // ---- Table --------------------------------------------------------------
+  var total = resources.length;
+
+  // Cross-section filter state. Tier, service, and free text compose via AND.
+  var activeTier = null;
+  var activeService = null;
+
+  // ---- Donut + score + breakdown --------------------------------------------
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var C = 2 * Math.PI * 80;
+
+  TIERS.forEach(function (t) { t.pct = Math.round((t.count / total) * 100); });
+
+  var donutWrap = document.getElementById("donut");
+  var svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 200 200");
+  var base = document.createElementNS(SVG_NS, "circle");
+  base.setAttribute("cx", "100");
+  base.setAttribute("cy", "100");
+  base.setAttribute("r", "80");
+  base.setAttribute("fill", "none");
+  base.setAttribute("stroke", "rgba(247,247,247,0.06)");
+  base.setAttribute("stroke-width", "22");
+  svg.appendChild(base);
+
+  var acc = 0;
+  TIERS.forEach(function (t) {
+    if (t.count === 0) return;
+    var seg = (t.count / total) * C;
+    var dash = Math.max(seg - 7, 0.5);
+    var c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("cx", "100");
+    c.setAttribute("cy", "100");
+    c.setAttribute("r", "80");
+    c.setAttribute("fill", "none");
+    c.setAttribute("stroke", t.color);
+    c.setAttribute("stroke-width", "22");
+    c.setAttribute("stroke-linecap", "butt");
+    c.setAttribute("stroke-dasharray", dash + " " + (C - dash));
+    c.setAttribute("stroke-dashoffset", String(-(acc / total) * C));
+    c.style.cursor = "pointer";
+    c.style.transition = "opacity 0.18s";
+    c.addEventListener("click", function () { setTier(t.key); });
+    t._seg = c;
+    svg.appendChild(c);
+    acc += t.count;
+  });
+  donutWrap.insertBefore(svg, donutWrap.firstChild);
+
+  var donutBig = document.getElementById("donut-big");
+  var donutCap = document.getElementById("donut-cap");
+
+  document.getElementById("score-num").textContent =
+    String(Math.round((100 * TIER_BY_KEY.full.count) / total));
+
+  var breakdown = document.getElementById("breakdown");
+  TIERS.forEach(function (t) {
+    var btn = el("button", "rr-bd-row");
+    btn.type = "button";
+    var accent = el("span", "rr-bd-accent");
+    accent.style.background = t.color;
+    btn.appendChild(accent);
+    var txt = el("div");
+    txt.appendChild(el("div", "rr-bd-label", t.label));
+    txt.appendChild(el("div", "rr-bd-note", t.note));
+    btn.appendChild(txt);
+    btn.appendChild(el("span", "rr-bd-sess", plural(t.count, "db")));
+    btn.appendChild(el("span", "rr-bd-pct", t.pct + "%"));
+    btn.addEventListener("click", function () { setTier(t.key); });
+    t._row = btn;
+    breakdown.appendChild(btn);
+  });
+
+  function setTier(key) {
+    activeTier = activeTier === key ? null : key;
+    syncTierUI();
+    render();
+  }
+
+  function syncTierUI() {
+    TIERS.forEach(function (t) {
+      if (t._seg) t._seg.style.opacity = activeTier && activeTier !== t.key ? "0.18" : "1";
+      if (t._row) t._row.className = "rr-bd-row" + (activeTier === t.key ? " rr-bd-row-active" : "");
+    });
+    var sel = activeTier ? TIER_BY_KEY[activeTier] : null;
+    donutBig.textContent = (sel ? sel.count : total).toLocaleString();
+    donutCap.textContent = sel ? sel.label : (total === 1 ? "database" : "databases");
+  }
+
+  // ---- KPI row ---------------------------------------------------------------
+  var seen = { engines: {}, accounts: {} };
+  var noOwner = 0;
+  resources.forEach(function (r) {
+    if (r.engine) seen.engines[r.engine] = true;
+    if (r.account_id) seen.accounts[r.account_id] = true;
+    if (!r.owner) noOwner++;
+  });
+  var kpis = [
+    { label: "Databases discovered", num: total.toLocaleString(),
+      sub: plural(Object.keys(seen.engines).length, "engine") + " · " + plural(Object.keys(seen.accounts).length, "account") },
+    { label: "Missing owner tag", num: noOwner.toLocaleString(),
+      sub: Math.round((100 * noOwner) / total) + "% of all databases" },
+    { label: "Scan failures", num: failures.length.toLocaleString(),
+      sub: failures.length === 0 ? "every scan unit succeeded" : "see incomplete-coverage details above",
+      ok: failures.length === 0 }
+  ];
+  var kpisEl = document.getElementById("kpis");
+  kpis.forEach(function (k) {
+    var box = el("div", "rr-kpi");
+    box.appendChild(el("div", "rr-kpi-label", k.label));
+    box.appendChild(el("div", "rr-kpi-num", k.num));
+    box.appendChild(el("div", "rr-kpi-sub" + (k.ok ? " rr-kpi-sub-ok" : ""), k.sub));
+    kpisEl.appendChild(box);
+  });
+
+  // ---- Engines ----------------------------------------------------------------
+  var engineMap = {};
+  var engineRows = [];
+  var serviceCounts = {};
+  var serviceOrder = [];
+  resources.forEach(function (r) {
+    var key = r.engine || "(unknown)";
+    var e = engineMap[key];
+    if (!e) {
+      e = engineMap[key] = { name: key, service: r.service || "", count: 0, versions: {}, regions: {} };
+      engineRows.push(e);
+    }
+    e.count++;
+    if (r.engine_version) e.versions[r.engine_version] = true;
+    if (r.region) e.regions[r.region] = true;
+    if (r.service) {
+      if (!Object.prototype.hasOwnProperty.call(serviceCounts, r.service)) {
+        serviceCounts[r.service] = 0;
+        serviceOrder.push(r.service);
+      }
+      serviceCounts[r.service]++;
+    }
+  });
+  engineRows.sort(function (a, b) {
+    return b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  });
+  serviceOrder.sort(function (a, b) {
+    return serviceCounts[b] - serviceCounts[a] || (a < b ? -1 : a > b ? 1 : 0);
+  });
+
+  var pillWrap = document.getElementById("service-filters");
+  var pills = [];
+  function addPill(label, svc, count) {
+    var btn = el("button", "rr-filter");
+    btn.type = "button";
+    btn.appendChild(el("span", "", label));
+    btn.appendChild(el("span", "rr-filter-count", count.toLocaleString()));
+    btn.addEventListener("click", function () {
+      activeService = svc === null ? null : (activeService === svc ? null : svc);
+      syncPills();
+      renderEngines();
+      render();
+    });
+    btn._svc = svc;
+    pills.push(btn);
+    pillWrap.appendChild(btn);
+  }
+  addPill("All", null, total);
+  serviceOrder.forEach(function (svc) { addPill(svc, svc, serviceCounts[svc]); });
+
+  function syncPills() {
+    pills.forEach(function (p) {
+      p.className = "rr-filter" + (p._svc === activeService ? " rr-filter-active" : "");
+    });
+  }
+
+  var engRowsEl = document.getElementById("engine-rows");
+  var engSubEl = document.getElementById("engines-sub");
+
+  function renderEngines() {
+    var rows = engineRows.filter(function (e) { return !activeService || e.service === activeService; });
+    var max = 1;
+    rows.forEach(function (e) { if (e.count > max) max = e.count; });
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (e) {
+      var row = el("div", "rr-eng-row");
+      var entity = el("div", "rr-eng-entity");
+      var dot = el("span", "rr-eng-dot");
+      dot.style.background = SERVICE_COLORS[e.service] || SERVICE_FALLBACK;
+      entity.appendChild(dot);
+      entity.appendChild(el("span", "rr-eng-name", e.name));
+      row.appendChild(entity);
+      var nver = Object.keys(e.versions).length;
+      row.appendChild(el("div", "rr-eng-family", nver > 0 ? e.service + " · " + plural(nver, "version") : e.service));
+      var barWrap = el("div", "rr-bar-wrap");
+      var bar = el("div", "rr-bar");
+      bar.style.width = Math.round((e.count / max) * 100) + "%";
+      barWrap.appendChild(bar);
+      row.appendChild(barWrap);
+      row.appendChild(el("div", "rr-eng-total", e.count.toLocaleString()));
+      row.appendChild(el("div", "rr-eng-regions", plural(Object.keys(e.regions).length, "region")));
+      frag.appendChild(row);
+    });
+    if (rows.length === 0) frag.appendChild(el("div", "rr-empty", "No engines for this service."));
+    engRowsEl.replaceChildren(frag);
+    engSubEl.textContent = plural(rows.length, "engine") + " · " +
+      (activeService ? activeService : plural(serviceOrder.length, "service"));
+  }
+
+  // ---- Inventory table ----------------------------------------------------
   var COLUMNS = [
     { key: "name", label: "Name" },
     { key: "service", label: "Service" },
@@ -446,7 +1095,12 @@
   function buildRow(r) {
     var tr = document.createElement("tr");
 
-    var name = el("td", "mono", r.name || "");
+    var name = el("td", "mono");
+    var tierDot = el("span", "tier-dot");
+    tierDot.style.background = TIER_BY_KEY[r._tier].color;
+    tierDot.title = TIER_BY_KEY[r._tier].label;
+    name.appendChild(tierDot);
+    name.appendChild(document.createTextNode(r.name || ""));
     if (r.arn) name.title = r.arn;
     tr.appendChild(name);
 
@@ -480,15 +1134,19 @@
 
   function currentRows() {
     var q = filterEl.value.trim().toLowerCase();
-    var rows = resources;
-    if (q) {
-      var terms = q.split(/\s+/);
-      rows = resources.filter(function (r) {
-        return terms.every(function (t) { return r._hay.indexOf(t) !== -1; });
-      });
-    }
+    var terms = q ? q.split(/\s+/) : null;
+    var rows = resources.filter(function (r) {
+      if (activeTier && r._tier !== activeTier) return false;
+      if (activeService && r.service !== activeService) return false;
+      if (terms) {
+        for (var i = 0; i < terms.length; i++) {
+          if (r._hay.indexOf(terms[i]) === -1) return false;
+        }
+      }
+      return true;
+    });
     if (sortKey) {
-      rows = rows.slice().sort(function (a, b) {
+      rows.sort(function (a, b) {
         return sortDir * compareRows(a, b, sortKey);
       });
     }
@@ -502,7 +1160,7 @@
 
     if (rows.length === 0) {
       var tr = el("tr", "no-match");
-      var td = el("td", "dim", "No databases match the current filter.");
+      var td = el("td", "dim", "No databases match the current filters.");
       td.colSpan = COLUMNS.length;
       tr.appendChild(td);
       frag.appendChild(tr);
@@ -538,7 +1196,7 @@
     }
 
     tbody.replaceChildren(frag);
-    countEl.textContent = rows.length.toLocaleString() + " of " + resources.length.toLocaleString() + " databases";
+    countEl.textContent = rows.length.toLocaleString() + " of " + total.toLocaleString() + " databases";
   }
 
   var debounceTimer = null;
@@ -548,6 +1206,9 @@
   });
   groupEl.addEventListener("change", render);
 
+  syncTierUI();
+  syncPills();
+  renderEngines();
   updateSortIndicators();
   render();
 })();

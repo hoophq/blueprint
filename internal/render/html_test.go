@@ -4,12 +4,28 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/hoophq/dbcensus/internal/demo"
 	"github.com/hoophq/dbcensus/internal/model"
 )
+
+// renderDemo renders the demo snapshot to a temp file and returns the HTML.
+func renderDemo(t *testing.T) string {
+	t.Helper()
+	snap := demo.Snapshot("test")
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := HTML(snap, path); err != nil {
+		t.Fatalf("HTML() error: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	return string(b)
+}
 
 func TestHTMLReportSelfContained(t *testing.T) {
 	snap := demo.Snapshot("test")
@@ -34,11 +50,13 @@ func TestHTMLReportSelfContained(t *testing.T) {
 		t.Error("report does not contain known demo resource name orders-prod")
 	}
 
-	// Offline promise: zero external loads. The report ships no src/href
-	// pointing at http(s) at all, no <link> tags, no CSS imports.
+	// Offline promise: zero resource loads. No scripts, styles, images, or
+	// fonts from the network, no <link> tags, no CSS imports. Anchor
+	// navigation hrefs are allowed but checked against an exact allowlist in
+	// TestHTMLNavigationLinksAllowlisted.
 	for _, needle := range []string{
 		`src="http`, `src='http`,
-		`href="http`, `href='http`,
+		`href='http`,
 		`url(http`, "@import",
 		"<link", "integrity=",
 	} {
@@ -185,5 +203,58 @@ func TestHTMLEmptySnapshot(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "No databases found") {
 		t.Error("report is missing the empty-state hint")
+	}
+}
+
+// TestHTMLNavigationLinksAllowlisted verifies the only external hrefs in the
+// report are the two navigation anchors (hoop.dev and the GitHub repo).
+// Anything else would break the offline promise.
+func TestHTMLNavigationLinksAllowlisted(t *testing.T) {
+	html := renderDemo(t)
+	allowed := map[string]bool{
+		"https://hoop.dev":                   true,
+		"https://github.com/hoophq/dbcensus": true,
+	}
+	found := map[string]int{}
+	for _, m := range regexp.MustCompile(`href="(http[^"]*)"`).FindAllStringSubmatch(html, -1) {
+		found[m[1]]++
+	}
+	for url := range found {
+		if !allowed[url] {
+			t.Errorf("report links to disallowed external URL %q", url)
+		}
+	}
+	for url := range allowed {
+		if found[url] == 0 {
+			t.Errorf("report is missing the expected navigation link to %q", url)
+		}
+	}
+}
+
+// TestHTMLBrandAndAttribution checks the redesigned shell: the hoop logo mark,
+// the attribution-tier vocabulary, and that a fully attributed fixture
+// database ships in the data block for the tier computation to classify.
+func TestHTMLBrandAndAttribution(t *testing.T) {
+	html := renderDemo(t)
+	for _, needle := range []string{
+		"M96.4167 71.4077", // first path of the hoop logo mark
+		"hoop.dev",
+		"Database Census Report",
+		"Attribution Score",
+		"Untagged",
+		"Partially attributed",
+		"Fully attributed",
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("report is missing %q", needle)
+		}
+	}
+	// orders-prod carries both owner and environment tags, so the JS tier
+	// computation has a fully attributed row to classify.
+	if !strings.Contains(html, `"name":"orders-prod"`) {
+		t.Error("expected fixture database orders-prod in the JSON block")
+	}
+	if !strings.Contains(html, `"owner":"payments"`) {
+		t.Error("expected orders-prod's derived owner in the JSON block")
 	}
 }
