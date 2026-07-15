@@ -39,6 +39,11 @@ type Resource struct {
 	// imported, never inferred). Empty means "no matching tag".
 	Environment string `json:"environment,omitempty"`
 	Owner       string `json:"owner,omitempty"`
+	// EOL marks engines whose upstream end-of-life date has passed, per the
+	// table baked into the binary (see eol.go for scope and exclusions);
+	// EOLDate carries that date as YYYY-MM-DD.
+	EOL     bool   `json:"eol,omitempty"`
+	EOLDate string `json:"eol_date,omitempty"`
 }
 
 // Failure records a scan unit the tool could NOT see, so coverage claims
@@ -71,6 +76,7 @@ type Summary struct {
 	Environments map[string]int
 	NoOwner      int
 	NoEnv        int
+	EOL          int
 	Failures     int
 }
 
@@ -98,6 +104,9 @@ func (s *Snapshot) Summarize() Summary {
 		} else {
 			sum.Environments[r.Environment]++
 		}
+		if r.EOL {
+			sum.EOL++
+		}
 	}
 	return sum
 }
@@ -107,8 +116,10 @@ func (s *Snapshot) Summarize() Summary {
 // are collected from map/API iteration upstream, so sorting here is what
 // makes JSON artifacts byte-for-byte deterministic.
 func (s *Snapshot) Finalize() {
+	now := time.Now()
 	for i := range s.Resources {
 		s.Resources[i].DeriveEnvOwner()
+		s.Resources[i].DeriveEOL(now)
 	}
 	s.Sort()
 	sort.Strings(s.Regions)

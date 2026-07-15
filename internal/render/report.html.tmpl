@@ -90,7 +90,7 @@
   .banner li .failure-error { color: rgba(247, 247, 247, 0.45); }
 
   /* ── Stat strip + attribution bar ── */
-  .rr-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; }
+  .rr-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; }
   .rr-kpi { padding: 0 18px; border-right: 1px solid rgba(247, 247, 247, 0.07); }
   .rr-kpi:first-child { padding-left: 0; }
   .rr-kpi:last-child { border-right: none; padding-right: 0; }
@@ -106,6 +106,7 @@
   .rr-kpi-denom { font-size: 15px; font-weight: 500; color: rgba(247, 247, 247, 0.35); margin-left: 2px; }
   .rr-kpi-sub { font-size: 11.5px; color: rgba(247, 247, 247, 0.34); margin-top: 7px; }
   .rr-kpi-sub-ok { color: #7fd1a8; }
+  .rr-kpi-sub-bad { color: #f08a8e; }
 
   .rr-attr-bar {
     display: flex;
@@ -344,7 +345,7 @@
 
   /* ── Responsive ── */
   @media (max-width: 900px) {
-    .rr-kpis { grid-template-columns: repeat(2, 1fr); gap: 18px 24px; }
+    .rr-kpis { grid-template-columns: repeat(3, 1fr); gap: 18px 24px; }
     .rr-kpi { border-right: none; padding: 0; }
   }
   @media (max-width: 680px) {
@@ -486,6 +487,7 @@
     TIER_BY_KEY[r._tier].count++;
     var hay = [r.name, r.engine, r.engine_version, r.arn, r.service, r.kind,
       r.region, r.account_id, r.environment, r.owner, r.status, r.instance_class];
+    if (r.eol) hay.push("eol");
     if (r.tags) {
       Object.keys(r.tags).forEach(function (k) {
         hay.push(k, r.tags[k], k + "=" + r.tags[k]);
@@ -553,10 +555,12 @@
   // ---- Stat strip -----------------------------------------------------------
   var seen = { engines: {}, accounts: {} };
   var noOwner = 0;
+  var eolCount = 0;
   resources.forEach(function (r) {
     if (r.engine) seen.engines[r.engine] = true;
     if (r.account_id) seen.accounts[r.account_id] = true;
     if (!r.owner) noOwner++;
+    if (r.eol) eolCount++;
   });
 
   var kpisEl = document.getElementById("kpis");
@@ -566,7 +570,10 @@
     var numEl = el("div", "rr-kpi-num", num);
     if (opts && opts.denom) numEl.appendChild(el("span", "rr-kpi-denom", opts.denom));
     box.appendChild(numEl);
-    box.appendChild(el("div", "rr-kpi-sub" + (opts && opts.ok ? " rr-kpi-sub-ok" : ""), sub));
+    var subCls = "rr-kpi-sub";
+    if (opts && opts.ok) subCls += " rr-kpi-sub-ok";
+    if (opts && opts.bad) subCls += " rr-kpi-sub-bad";
+    box.appendChild(el("div", subCls, sub));
     kpisEl.appendChild(box);
   }
   addStat("Databases", total.toLocaleString(),
@@ -575,6 +582,9 @@
     "owner + environment tagged", { denom: "/100" });
   addStat("Untagged", TIER_BY_KEY.untagged.count.toLocaleString(), "no owner or environment");
   addStat("Missing owner", noOwner.toLocaleString(), Math.round((100 * noOwner) / total) + "% of all databases");
+  addStat("End-of-life", eolCount.toLocaleString(),
+    eolCount === 0 ? "no EOL engine versions" : "upstream support ended",
+    eolCount === 0 ? { ok: true } : { bad: true });
   addStat("Scan failures", failures.length.toLocaleString(),
     failures.length === 0 ? "every scan unit succeeded" : "see incomplete-coverage details above",
     { ok: failures.length === 0 });
@@ -822,6 +832,12 @@
     if (r.engine_version) {
       eng.appendChild(document.createTextNode(" "));
       eng.appendChild(el("span", "sub", r.engine_version));
+    }
+    if (r.eol) {
+      eng.appendChild(document.createTextNode(" "));
+      var eol = el("span", "tag tag-red", "EOL");
+      if (r.eol_date) eol.title = "upstream end of life: " + r.eol_date;
+      eng.appendChild(eol);
     }
     tr.appendChild(eng);
 

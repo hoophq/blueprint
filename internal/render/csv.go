@@ -16,6 +16,7 @@ var csvHeader = []string{
 	"arn", "service", "kind", "name", "engine", "engine_version",
 	"instance_class", "storage_gb", "multi_az", "status", "endpoint",
 	"region", "account_id", "created_at", "environment", "owner", "tags",
+	"eol", "eol_date",
 }
 
 // CSV writes one row per resource for spreadsheet/script consumption.
@@ -80,6 +81,8 @@ func csvRow(r model.Resource) []string {
 		guardFormula(r.Environment),
 		guardFormula(r.Owner),
 		guardFormula(joinTags(r.Tags)),
+		strconv.FormatBool(r.EOL),
+		r.EOLDate, // fixed YYYY-MM-DD format, never a formula trigger
 	}
 }
 

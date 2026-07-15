@@ -51,6 +51,7 @@ func TestCSVDemoSnapshot(t *testing.T) {
 		"arn", "service", "kind", "name", "engine", "engine_version",
 		"instance_class", "storage_gb", "multi_az", "status", "endpoint",
 		"region", "account_id", "created_at", "environment", "owner", "tags",
+		"eol", "eol_date",
 	}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header has %d columns, want %d", len(records[0]), len(wantHeader))
@@ -91,6 +92,8 @@ func TestCSVDemoSnapshot(t *testing.T) {
 		"environment":    "production",
 		"owner":          "payments",
 		"tags":           "app=orders;environment=production;owner=payments",
+		"eol":            "false", // postgres 15.4 is in support
+		"eol_date":       "",
 	}
 	for name, want := range checks {
 		if got := row[c[name]]; got != want {

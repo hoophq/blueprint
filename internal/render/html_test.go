@@ -257,6 +257,22 @@ func TestHTMLBrandAndAttribution(t *testing.T) {
 	}
 }
 
+// TestHTMLEOLMarkers checks the EOL feature ships end to end: the KPI label
+// in the shell and derived eol fields in the embedded demo data (legacy-crm
+// runs mysql 5.7.44, EOL upstream since 2023-10-31).
+func TestHTMLEOLMarkers(t *testing.T) {
+	html := renderDemo(t)
+	for _, needle := range []string{
+		"End-of-life",
+		`"eol":true`,
+		`"eol_date":"2023-10-31"`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("report is missing EOL marker %q", needle)
+		}
+	}
+}
+
 // TestHTMLEnvironmentAndStatusTags checks the inventory tag pills ship in the
 // shell: the CSS variants and the JS classifiers that color environment
 // buckets and status lifecycle states. Rendering is client-side, so the test

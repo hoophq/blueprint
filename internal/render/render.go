@@ -31,6 +31,9 @@ func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 	fmt.Fprintf(w, "  %d databases  ·  %d engines  ·  %d regions  ·  %d account(s)\n",
 		sum.Total, len(sum.Engines), countNonZero(sum.Regions), len(sum.Accounts))
 	fmt.Fprintf(w, "  %d without owner tag  ·  %d without environment tag\n", sum.NoOwner, sum.NoEnv)
+	if sum.EOL > 0 {
+		fmt.Fprintf(w, "  ⚠ %d on end-of-life engine versions (upstream support ended)\n", sum.EOL)
+	}
 	if len(sum.Services) > 0 {
 		fmt.Fprintf(w, "  by service: %s\n", formatCounts(sum.Services))
 	}
