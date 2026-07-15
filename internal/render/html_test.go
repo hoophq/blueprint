@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hoophq/dbcensus/internal/demo"
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/demo"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 // renderDemo renders the demo snapshot to a temp file and returns the HTML.
@@ -65,7 +65,7 @@ func TestHTMLReportSelfContained(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(html, `<script type="application/json" id="dbcensus-data">`) {
+	if !strings.Contains(html, `<script type="application/json" id="blueprint-data">`) {
 		t.Error("report does not contain the embedded JSON data block")
 	}
 	if strings.Contains(html, dataMarker) {
@@ -212,8 +212,8 @@ func TestHTMLEmptySnapshot(t *testing.T) {
 func TestHTMLNavigationLinksAllowlisted(t *testing.T) {
 	html := renderDemo(t)
 	allowed := map[string]bool{
-		"https://hoop.dev":                   true,
-		"https://github.com/hoophq/dbcensus": true,
+		"https://hoop.dev":                    true,
+		"https://github.com/hoophq/blueprint": true,
 	}
 	found := map[string]int{}
 	for _, m := range regexp.MustCompile(`href="(http[^"]*)"`).FindAllStringSubmatch(html, -1) {

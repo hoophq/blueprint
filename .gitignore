@@ -1,7 +1,7 @@
-dbcensus
+blueprint
 dist/
 *.html
 *.csv
-dbcensus-*.json
+blueprint-*.json
 snapshot*.json
 .DS_Store

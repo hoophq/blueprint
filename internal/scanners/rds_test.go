@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 func TestClassifyEngine(t *testing.T) {

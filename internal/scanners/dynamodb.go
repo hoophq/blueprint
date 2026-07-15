@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/scan"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scan"
 )
 
 // dynamoDBScanner lists every table in the region, then describes each one to

@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 // Scanner enumerates one AWS service in one (account, region) pair.

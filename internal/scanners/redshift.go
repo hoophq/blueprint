@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
 	rsstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/scan"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scan"
 )
 
 // redshiftScanner covers provisioned Redshift clusters and Redshift

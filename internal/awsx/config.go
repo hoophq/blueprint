@@ -1,4 +1,4 @@
-// Package awsx wraps AWS credential/config loading. dbcensus never stores
+// Package awsx wraps AWS credential/config loading. blueprint never stores
 // credentials of its own: everything rides the standard AWS credential chain
 // (env vars, ~/.aws profiles, SSO, credential_process, instance roles).
 package awsx

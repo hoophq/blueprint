@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>dbcensus report</title>
+<title>blueprint report</title>
 <style>
-  /* dbcensus report — dark-first hoop.dev brand shell. Single file, no
+  /* blueprint report — dark-first hoop.dev brand shell. Single file, no
      external resources: font-family names only, everything inline. */
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -586,7 +586,7 @@
   <div class="rr-window">
     <div class="rr-window-bar">
       <div class="rr-dots"><span class="rr-dot"></span><span class="rr-dot"></span><span class="rr-dot"></span></div>
-      <span class="rr-window-name">dbcensus report</span>
+      <span class="rr-window-name">blueprint report</span>
       <span class="rr-window-meta">generated locally &middot; <span id="window-gen"></span></span>
     </div>
 
@@ -599,7 +599,7 @@
             <path d="M36.7283 63.0103C51.238 63.0103 63.0005 51.2478 63.0005 36.7381C63.0005 22.2283 51.238 10.4658 36.7283 10.4658C22.2185 10.4658 10.4561 22.2283 10.4561 36.7381C10.4561 51.2478 22.2185 63.0103 36.7283 63.0103Z" fill="#F7F7F7"/>
             <path d="M111.944 138.226C126.454 138.226 138.216 126.464 138.216 111.954C138.216 97.4441 126.454 85.6816 111.944 85.6816C97.4344 85.6816 85.6719 97.4441 85.6719 111.954C85.6719 126.464 97.4344 138.226 111.944 138.226Z" fill="#F7F7F7"/>
           </svg>
-          <span class="rr-brand-name">dbcensus</span>
+          <span class="rr-brand-name">blueprint</span>
           <span class="rr-brand-ver" id="brand-ver"></span>
         </div>
         <h1 class="rr-title">Database Census Report</h1>
@@ -648,7 +648,7 @@
           <li>The credentials point at the wrong AWS account or profile.</li>
           <li>The scanned regions host no managed databases &mdash; try scanning more regions.</li>
           <li>The role is missing read permissions (for example <span class="mono">rds:DescribeDBInstances</span>, <span class="mono">dynamodb:ListTables</span>, <span class="mono">elasticache:DescribeCacheClusters</span>).</li>
-          <li>Databases are self-hosted on EC2 &mdash; dbcensus only sees AWS-managed services.</li>
+          <li>Databases are self-hosted on EC2 &mdash; blueprint only sees AWS-managed services.</li>
         </ul>
       </section>
 
@@ -690,10 +690,10 @@
     </div>
   </div>
 
-  <a href="https://github.com/hoophq/dbcensus" target="_blank" rel="noreferrer" class="rr-cta">
+  <a href="https://github.com/hoophq/blueprint" target="_blank" rel="noreferrer" class="rr-cta">
     <div class="rr-cta-text">
       <p class="rr-cta-title">Run it yourself, or read the source.</p>
-      <p class="rr-cta-body">dbcensus is open source. Install the CLI, inspect every line, and contribute on GitHub.</p>
+      <p class="rr-cta-body">blueprint is open source. Install the CLI, inspect every line, and contribute on GitHub.</p>
     </div>
     <span class="rr-cta-btn">View on GitHub &rarr;</span>
   </a>
@@ -702,12 +702,12 @@
 
 </div>
 
-<script type="application/json" id="dbcensus-data">__DBCENSUS_JSON__</script>
+<script type="application/json" id="blueprint-data">__BLUEPRINT_JSON__</script>
 <script>
 (function () {
   "use strict";
 
-  var data = JSON.parse(document.getElementById("dbcensus-data").textContent);
+  var data = JSON.parse(document.getElementById("blueprint-data").textContent);
   var resources = data.resources || [];
   var failures = data.failures || [];
 

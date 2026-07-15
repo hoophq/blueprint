@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
 
-	"github.com/hoophq/dbcensus/internal/awsx"
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/scan"
+	"github.com/hoophq/blueprint/internal/awsx"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scan"
 )
 
 // validateConcurrency bounds the per-account role-validation fan-out.
@@ -32,7 +32,7 @@ func partitionFromARN(arn string) string {
 	return "aws"
 }
 
-// roleARN builds the ARN of the role dbcensus assumes in a member account,
+// roleARN builds the ARN of the role blueprint assumes in a member account,
 // within the given partition.
 func roleARN(partition, accountID, roleName string) string {
 	return "arn:" + partition + ":iam::" + accountID + ":role/" + roleName

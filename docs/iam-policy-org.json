@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "DbcensusReadOnly",
+      "Sid": "BlueprintReadOnly",
       "Effect": "Allow",
       "Action": [
         "rds:Describe*",
@@ -19,13 +19,13 @@
       "Resource": "*"
     },
     {
-      "Sid": "DbcensusOrgListAccounts",
+      "Sid": "BlueprintOrgListAccounts",
       "Effect": "Allow",
       "Action": "organizations:ListAccounts",
       "Resource": "*"
     },
     {
-      "Sid": "DbcensusAssumeMemberRole",
+      "Sid": "BlueprintAssumeMemberRole",
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
       "Resource": "arn:aws:iam::*:role/${RoleName}"

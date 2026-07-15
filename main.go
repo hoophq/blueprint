@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hoophq/dbcensus/internal/cli"
+	"github.com/hoophq/blueprint/internal/cli"
 )
 
 func main() {

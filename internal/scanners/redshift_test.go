@@ -7,7 +7,7 @@ import (
 	redshifttypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
 	rsstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 func TestMbToGB(t *testing.T) {

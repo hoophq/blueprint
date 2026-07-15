@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ectypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 func TestInReplicationGroup(t *testing.T) {

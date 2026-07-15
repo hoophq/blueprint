@@ -10,15 +10,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hoophq/dbcensus/internal/awsx"
-	"github.com/hoophq/dbcensus/internal/demo"
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/orgmode"
-	"github.com/hoophq/dbcensus/internal/render"
-	"github.com/hoophq/dbcensus/internal/scan"
+	"github.com/hoophq/blueprint/internal/awsx"
+	"github.com/hoophq/blueprint/internal/demo"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/orgmode"
+	"github.com/hoophq/blueprint/internal/render"
+	"github.com/hoophq/blueprint/internal/scan"
 
 	// Scanner implementations self-register via init().
-	_ "github.com/hoophq/dbcensus/internal/scanners"
+	_ "github.com/hoophq/blueprint/internal/scanners"
 )
 
 func scanCmd() *cobra.Command {
@@ -94,7 +94,7 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 			return nil, err
 		}
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "dbcensus %s — account %s, %d region(s), read-only scan\n",
+	fmt.Fprintf(cmd.OutOrStdout(), "blueprint %s — account %s, %d region(s), read-only scan\n",
 		Version, account, len(regions))
 
 	var (
@@ -155,13 +155,13 @@ func writeOutputs(cmd *cobra.Command, snap *model.Snapshot, outDir string, forma
 		)
 		switch strings.ToLower(strings.TrimSpace(f)) {
 		case "json":
-			path = filepath.Join(outDir, "dbcensus-"+stamp+".json")
+			path = filepath.Join(outDir, "blueprint-"+stamp+".json")
 			err = render.JSON(snap, path)
 		case "csv":
-			path = filepath.Join(outDir, "dbcensus-"+stamp+".csv")
+			path = filepath.Join(outDir, "blueprint-"+stamp+".csv")
 			err = render.CSV(snap, path)
 		case "html":
-			path = filepath.Join(outDir, "dbcensus-"+stamp+".html")
+			path = filepath.Join(outDir, "blueprint-"+stamp+".html")
 			err = render.HTML(snap, path)
 		default:
 			err = fmt.Errorf("unknown format %q", f)

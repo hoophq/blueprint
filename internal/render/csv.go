@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 // csvHeader is the fixed column order for the CSV renderer.

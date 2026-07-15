@@ -1,4 +1,4 @@
-module github.com/hoophq/dbcensus
+module github.com/hoophq/blueprint
 
 go 1.26.5
 

@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/elasticache"
 	ectypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
 
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/scan"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scan"
 )
 
 // elastiCacheScanner covers the three ElastiCache shapes without double

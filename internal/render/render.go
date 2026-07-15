@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 // JSON writes the full snapshot as pretty-printed JSON.
@@ -27,7 +27,7 @@ func JSON(snap *model.Snapshot, path string) error {
 // ledger of anything the scan could not see.
 func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 	sum := snap.Summarize()
-	fmt.Fprintf(w, "\n━━ dbcensus ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "\n━━ blueprint ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(w, "  %d databases  ·  %d engines  ·  %d regions  ·  %d account(s)\n",
 		sum.Total, len(sum.Engines), countNonZero(sum.Regions), len(sum.Accounts))
 	fmt.Fprintf(w, "  %d without owner tag  ·  %d without environment tag\n", sum.NoOwner, sum.NoEnv)

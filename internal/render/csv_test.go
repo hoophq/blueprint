@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hoophq/dbcensus/internal/demo"
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/demo"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 func renderAndParse(t *testing.T, snap *model.Snapshot) [][]string {

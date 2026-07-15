@@ -1,13 +1,13 @@
 // Package demo provides a built-in fixture snapshot so anyone can render the
-// report without AWS credentials (dbcensus scan --demo).
+// report without AWS credentials (blueprint scan --demo).
 package demo
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/hoophq/dbcensus/internal/model"
-	"github.com/hoophq/dbcensus/internal/scanners"
+	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scanners"
 )
 
 // Fixture account IDs.

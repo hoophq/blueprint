@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hoophq/dbcensus/internal/model"
+	"github.com/hoophq/blueprint/internal/model"
 )
 
 // reportTemplate is the single-file report shell. It contains all CSS/JS
@@ -17,7 +17,7 @@ import (
 //go:embed report.html.tmpl
 var reportTemplate string
 
-const dataMarker = "__DBCENSUS_JSON__"
+const dataMarker = "__BLUEPRINT_JSON__"
 
 // HTML writes the browsable map: a fully self-contained single-file report
 // (data embedded, no external assets, renders offline).
