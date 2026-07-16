@@ -31,6 +31,9 @@ build + tests on every push.
 - `internal/orgmode`: AWS Organizations fan-out via assume-role.
 - `internal/demo`: fixture snapshot behind `--demo` (also used by tests).
 - `internal/diff`: `--compare` census diffing, matched by ARN.
+- `internal/history`: local scan archive (`~/.blueprint/history/`, override
+  `BLUEPRINT_HISTORY_DIR`), bucketed by scope (accounts+regions); every scan
+  auto-diffs against the previous one of the same scope. Local-only.
 
 ## Invariants — do not break these
 

@@ -63,10 +63,28 @@ blueprint scan --org --role-name blueprint-readonly
 blueprint scan --formats html,json,csv  # choose outputs (default: html,json)
 blueprint scan --out ./reports          # directory for output files (default: .)
 blueprint scan --no-open                # don't open the HTML report in the browser
-blueprint scan --compare last.json      # diff against a previous census JSON
-blueprint scan --compare last.json --fail-on-change  # non-zero exit on differences
+blueprint scan --compare last.json      # diff against a specific census JSON instead of history
+blueprint scan --fail-on-change         # non-zero exit when the diff finds differences
+blueprint scan --no-history             # don't archive this scan or auto-diff
 blueprint scan --demo                   # render from fixture data, no AWS calls
 ```
+
+## History
+
+Every scan is archived locally under `~/.blueprint/history/` (override with
+`BLUEPRINT_HISTORY_DIR`), and the next scan of the same scope automatically
+shows what changed:
+
+```
+━━ changes vs last scan (Jun 12, 2026 · 33 days ago) ━━
+  +2 new  ·  −1 removed  ·  ~1 changed
+  + reporting-replica (rds postgres, us-east-1)
+  ~ orders-prod (rds, us-east-1): engine_version 13.13 → 15.4
+```
+
+Scans are bucketed by scope (accounts + regions), so scanning a different
+account or region set never diffs against the wrong baseline. Each scope
+keeps its last 30 censuses; history lives on your disk and nowhere else.
 
 ## What gets scanned
 

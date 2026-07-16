@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/hoophq/blueprint/internal/awsx"
 	"github.com/hoophq/blueprint/internal/demo"
 	"github.com/hoophq/blueprint/internal/diff"
+	"github.com/hoophq/blueprint/internal/history"
 	"github.com/hoophq/blueprint/internal/model"
 	"github.com/hoophq/blueprint/internal/orgmode"
 	"github.com/hoophq/blueprint/internal/render"
@@ -36,6 +38,7 @@ func scanCmd() *cobra.Command {
 		noOpen       bool
 		comparePath  string
 		failOnChange bool
+		noHistory    bool
 	)
 
 	cmd := &cobra.Command{
@@ -62,9 +65,18 @@ func scanCmd() *cobra.Command {
 				return err
 			}
 			if comparePath != "" {
-				return compareAgainst(cmd, snap, comparePath, failOnChange)
+				// An explicit baseline wins over the automatic one; the scan
+				// is still archived so the history stays continuous.
+				err := compareAgainst(cmd, snap, comparePath, failOnChange)
+				if !noHistory {
+					saveHistory(cmd, snap)
+				}
+				return err
 			}
-			return nil
+			if noHistory {
+				return nil
+			}
+			return autoDiff(cmd, snap, failOnChange)
 		},
 	}
 
@@ -77,8 +89,9 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max concurrent AWS API scan units")
 	cmd.Flags().BoolVar(&demoMode, "demo", false, "render outputs from built-in fixture data (no AWS calls)")
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "do not open the HTML report in the browser after the scan")
-	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against (new/removed/changed databases)")
-	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when --compare finds differences")
+	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against instead of the automatic history baseline")
+	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when the diff (auto or --compare) finds differences")
+	cmd.Flags().BoolVar(&noHistory, "no-history", false, "do not archive this scan in local history or auto-diff against the previous one")
 	return cmd
 }
 
@@ -161,6 +174,60 @@ func compareAgainst(cmd *cobra.Command, snap *model.Snapshot, path string, failO
 			filepath.Base(path), len(d.Added), len(d.Removed), len(d.Changed))
 	}
 	return nil
+}
+
+// autoDiff archives the scan in local history and diffs it against the
+// previous census of the same scope (accounts + regions), so "what changed
+// since last time" is part of every scan with zero user effort. History
+// failures degrade to warnings: an unwritable home directory must never fail
+// a successful scan.
+func autoDiff(cmd *cobra.Command, snap *model.Snapshot, failOnChange bool) error {
+	root, err := history.Dir()
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  ! history disabled: %v\n", err)
+		return nil
+	}
+	prev, err := history.Latest(root, history.ScopeKey(snap))
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  ! reading history baseline: %v\n", err)
+	}
+	saveHistory(cmd, snap)
+	if prev == nil {
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"\n  history: first census for this scope — the next scan will show what changed (%s)\n", root)
+		return nil
+	}
+	d := diff.Compare(prev, snap)
+	d.Write(cmd.OutOrStdout(), "last scan ("+sinceLabel(prev.GeneratedAt)+")")
+	if failOnChange && !d.Empty() {
+		return fmt.Errorf("differences vs last scan: %d new, %d removed, %d changed",
+			len(d.Added), len(d.Removed), len(d.Changed))
+	}
+	return nil
+}
+
+// saveHistory archives the snapshot, downgrading failures to a warning.
+func saveHistory(cmd *cobra.Command, snap *model.Snapshot) {
+	root, err := history.Dir()
+	if err == nil {
+		_, err = history.Save(root, snap)
+	}
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  ! saving scan to history: %v\n", err)
+	}
+}
+
+// sinceLabel renders a baseline timestamp as "Jun 12, 2026 · 33 days ago".
+func sinceLabel(t time.Time) string {
+	label := t.Local().Format("Jan 2, 2006")
+	switch days := int(time.Since(t).Hours() / 24); {
+	case days <= 0:
+		return label + " · today"
+	case days == 1:
+		return label + " · yesterday"
+	default:
+		return fmt.Sprintf("%s · %d days ago", label, days)
+	}
 }
 
 // cleanRegions trims whitespace and drops empty tokens from a --regions list.
