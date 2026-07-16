@@ -48,20 +48,6 @@ build + tests on every push.
 - **Determinism**: JSON artifacts must stay byte-for-byte stable for a given
   snapshot (`Finalize` sorts everything).
 
-## Conventions
-
-- Conventional Commits (`feat(scan): … (ATR-132)`); reference the Linear
-  issue when the work maps to one.
-- Never stage `.claude/` (gitignored; contains local credentials).
-- Visual changes to `report.html.tmpl`: render `scan --demo`, screenshot,
-  and get the change validated before committing.
-- The EOL table in `internal/model/eol.go` is a dated snapshot — refresh it
-  alongside each release.
-- The README hero image (`docs/assets/report.png`) is generated from the
-  demo report wrapped in shot-only mac window chrome (curated 15-db dataset,
-  901px frame, ~70% zoom, Account column hidden) — regenerate after report
-  UI changes.
-
 ## Release
 
 Tag `vX.Y.Z` on main → `.github/workflows/release.yml` → goreleaser builds

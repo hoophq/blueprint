@@ -25,13 +25,13 @@ import (
 
 func scanCmd() *cobra.Command {
 	var (
-		profile     string
-		regions     []string
-		org         bool
-		roleName    string
-		outDir      string
-		formats     []string
-		concurrency int
+		profile      string
+		regions      []string
+		org          bool
+		roleName     string
+		outDir       string
+		formats      []string
+		concurrency  int
 		demoMode     bool
 		noOpen       bool
 		comparePath  string
