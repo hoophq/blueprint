@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -106,6 +107,9 @@ func groupFailures(failures []model.Failure) []failureGroup {
 		scope := strings.Join(parts, "/")
 		if rs := regions[k]; len(rs) > 0 {
 			sort.Strings(rs)
+			// Duplicate scan units (e.g. --regions us-east-1,us-east-1) must
+			// not render as "in us-east-1, us-east-1".
+			rs = slices.Compact(rs)
 			scope += " in " + strings.Join(rs, ", ")
 		}
 		out = append(out, failureGroup{scope: scope, err: k.err})
