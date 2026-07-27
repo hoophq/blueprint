@@ -14,6 +14,9 @@ func TestTerminalFailureRollup(t *testing.T) {
 		Failures: []model.Failure{
 			{AccountID: "1", Region: "us-west-2", Service: "rds", Error: "AccessDenied"},
 			{AccountID: "1", Region: "us-east-1", Service: "rds", Error: "AccessDenied"},
+			// Duplicate unit (e.g. --regions us-east-1,us-east-1): the region
+			// must not repeat in the rolled-up line.
+			{AccountID: "1", Region: "us-east-1", Service: "rds", Error: "AccessDenied"},
 			{AccountID: "1", Region: "", Service: "cost", Error: "boom"},
 		},
 	}
@@ -22,8 +25,9 @@ func TestTerminalFailureRollup(t *testing.T) {
 	out := buf.String()
 
 	// Identical (account, service, error) across regions rolls up into one
-	// line with a sorted region list; the header still counts every unit.
-	if !strings.Contains(out, "3 scan unit(s) failed") {
+	// line with a sorted, de-duplicated region list; the header still counts
+	// every unit.
+	if !strings.Contains(out, "4 scan unit(s) failed") {
 		t.Errorf("header does not count all units:\n%s", out)
 	}
 	if !strings.Contains(out, "- 1/rds in us-east-1, us-west-2: AccessDenied") {
