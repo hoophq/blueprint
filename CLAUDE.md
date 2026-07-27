@@ -2,8 +2,9 @@
 
 Read-only census of AWS-managed databases. Single Go binary, runs locally,
 writes local artifacts only. PLG wedge for hoop.dev — third tool in the
-family alongside leash and hooprs. Linear project: "Resources Mapping for
-DBAs" (team Attract, issues ATR-1xx).
+family alongside leash and hooprs. Linear (team Attract): "Resources
+Mapping for DBAs" shipped v1; current work is "Blueprint Evolution"
+(total AWS resource + cost census, ATR-170…187).
 
 ## Commands
 
@@ -16,6 +17,13 @@ gofmt -w internal/                              # format before committing
 
 There is no lint config beyond gofmt. CI (`.github/workflows/ci.yml`) runs
 build + tests on every push.
+
+## Workflow
+
+- One PR per Linear issue, branched on the issue's `gitBranchName`
+  (`perotto/atr-NNN-…`) so Linear auto-links. Never commit to main.
+- Qodo (qodo-code-review bot) reviews every PR automatically; run the
+  `qodo-pr-resolver` skill to address its findings before merge.
 
 ## Architecture
 
@@ -44,8 +52,14 @@ build + tests on every push.
   this plus script-breakout escaping. Keep everything inline.
 - **Honesty guardrails**: environment/owner come from tags only (imported,
   never inferred); scan units the tool could not see go to the failure
-  ledger; exposure fields are pointer-typed so "not reported" (nil) never
-  masquerades as a safe value.
+  ledger; any Resource field some service does not report is pointer-typed
+  (nil = "not reported" — e.g. exposure fields, MultiAZ), never a
+  zero-valued bool/int.
+- **Schema version**: bump `model.SchemaVersion` whenever a JSON field's
+  representation changes — diff/--compare refuse cross-schema baselines
+  instead of fabricating drift. `Snapshot.Services` is part of
+  `history.ScopeKey`, so adding a scanner starts fresh history buckets by
+  design.
 - **CSV**: cells are formula-injection guarded (`guardFormula`); keep new
   string columns guarded.
 - **Determinism**: JSON artifacts must stay byte-for-byte stable for a given
