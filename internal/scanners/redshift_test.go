@@ -78,8 +78,8 @@ func TestRedshiftClusterResource(t *testing.T) {
 	if r.InstanceClass != "ra3.xlplus" || r.EngineVersion != "1.0" {
 		t.Errorf("unexpected class/version: %+v", r)
 	}
-	if !r.MultiAZ {
-		t.Error("expected MultiAZ true for \"Enabled\"")
+	if r.MultiAZ == nil || !*r.MultiAZ {
+		t.Errorf("MultiAZ = %v, want pointer to true for \"Enabled\"", r.MultiAZ)
 	}
 	if r.StorageGB != 2 {
 		t.Errorf("StorageGB = %d, want 2 (rounded up)", r.StorageGB)
@@ -91,12 +91,13 @@ func TestRedshiftClusterResource(t *testing.T) {
 		t.Errorf("unexpected tags: %v", r.Tags)
 	}
 
-	// Nil endpoint and absent MultiAZ must not panic or mislead.
+	// Nil endpoint and absent MultiAZ must not panic or mislead: a field the
+	// API did not report stays nil rather than becoming false.
 	c.Endpoint = nil
 	c.MultiAZ = nil
 	r = redshiftClusterResource(c, "us-east-1", "123456789012")
-	if r.Endpoint != "" || r.MultiAZ {
-		t.Errorf("expected empty endpoint and MultiAZ false, got %+v", r)
+	if r.Endpoint != "" || r.MultiAZ != nil {
+		t.Errorf("expected empty endpoint and nil MultiAZ, got %+v", r)
 	}
 
 	// The ARN partition is derived from ClusterNamespaceArn when present.

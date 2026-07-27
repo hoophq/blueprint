@@ -1,8 +1,8 @@
 // Package history keeps a local archive of past censuses so every scan can
 // answer "what changed since last time" with zero user effort. Snapshots are
-// bucketed by scan scope (accounts + regions) so runs against different
-// estates never diff against each other. Everything lives under the local
-// history dir — nothing leaves the machine.
+// bucketed by scan scope (accounts + regions + services) so runs against
+// different estates never diff against each other. Everything lives under the
+// local history dir — nothing leaves the machine.
 package history
 
 import (
@@ -34,15 +34,19 @@ func Dir() (string, error) {
 	return filepath.Join(home, ".blueprint", "history"), nil
 }
 
-// ScopeKey derives the bucket for a snapshot from its accounts and regions.
-// Same accounts + same regions → same bucket; anything else is a different
-// census and must not be diffed against this one.
+// ScopeKey derives the bucket for a snapshot from its accounts, regions, and
+// scanned services. Same scope → same bucket; anything else is a different
+// census and must not be diffed against this one. Services are part of the
+// key because a scan covering fewer services diffed against a wider baseline
+// would report every unscanned resource as removed — phantom deletions.
 func ScopeKey(snap *model.Snapshot) string {
 	accounts := append([]string(nil), snap.Accounts...)
 	regions := append([]string(nil), snap.Regions...)
+	services := append([]string(nil), snap.Services...)
 	sort.Strings(accounts)
 	sort.Strings(regions)
-	sum := sha256.Sum256([]byte(strings.Join(accounts, ",") + "|" + strings.Join(regions, ",")))
+	sort.Strings(services)
+	sum := sha256.Sum256([]byte(strings.Join(accounts, ",") + "|" + strings.Join(regions, ",") + "|" + strings.Join(services, ",")))
 	return hex.EncodeToString(sum[:])[:12]
 }
 

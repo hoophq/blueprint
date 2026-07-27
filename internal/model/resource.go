@@ -20,21 +20,24 @@ const (
 
 // Resource is one discovered managed database, normalized across services.
 type Resource struct {
-	ARN           string            `json:"arn"`
-	Service       string            `json:"service"`
-	Kind          string            `json:"kind"` // instance | cluster | table | serverless
-	Name          string            `json:"name"`
-	Engine        string            `json:"engine"`
-	EngineVersion string            `json:"engine_version,omitempty"`
-	InstanceClass string            `json:"instance_class,omitempty"`
-	StorageGB     int32             `json:"storage_gb,omitempty"`
-	MultiAZ       bool              `json:"multi_az,omitempty"`
-	Status        string            `json:"status,omitempty"`
-	Endpoint      string            `json:"endpoint,omitempty"` // host only
-	Region        string            `json:"region"`
-	AccountID     string            `json:"account_id"`
-	CreatedAt     *time.Time        `json:"created_at,omitempty"`
-	Tags          map[string]string `json:"tags,omitempty"`
+	ARN           string `json:"arn"`
+	Service       string `json:"service"`
+	Kind          string `json:"kind"` // instance | cluster | table | serverless
+	Name          string `json:"name"`
+	Engine        string `json:"engine"`
+	EngineVersion string `json:"engine_version,omitempty"`
+	InstanceClass string `json:"instance_class,omitempty"`
+	StorageGB     int32  `json:"storage_gb,omitempty"`
+	// MultiAZ is pointer-typed like the exposure fields below: DynamoDB and
+	// the serverless shapes never report it, and nil ("not reported") must
+	// stay distinguishable from an explicit false (honesty guardrail).
+	MultiAZ   *bool             `json:"multi_az,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	Endpoint  string            `json:"endpoint,omitempty"` // host only
+	Region    string            `json:"region"`
+	AccountID string            `json:"account_id"`
+	CreatedAt *time.Time        `json:"created_at,omitempty"`
+	Tags      map[string]string `json:"tags,omitempty"`
 	// Environment and Owner are tag-derived only (PRD honesty guardrail:
 	// imported, never inferred). Empty means "no matching tag".
 	Environment string `json:"environment,omitempty"`
@@ -70,15 +73,29 @@ type Failure struct {
 	Error     string `json:"error"`
 }
 
+// SchemaVersion is the census artifact schema written by this binary.
+// Snapshots produced before versioning carry an implicit 0. Diffing across
+// schema versions is refused: field representation changes (e.g. multi_az
+// omitempty-bool → pointer) would otherwise surface as fabricated resource
+// drift on every row.
+const SchemaVersion = 1
+
 // Snapshot is the complete result of one scan run — the unit all renderers
 // consume and the JSON artifact written to disk.
 type Snapshot struct {
-	Version     string     `json:"version"`
-	GeneratedAt time.Time  `json:"generated_at"`
-	Accounts    []string   `json:"accounts"`
-	Regions     []string   `json:"regions"`
-	Resources   []Resource `json:"resources"`
-	Failures    []Failure  `json:"failures,omitempty"`
+	// Schema is the artifact schema version (SchemaVersion at write time).
+	Schema      int       `json:"schema"`
+	Version     string    `json:"version"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Accounts    []string  `json:"accounts"`
+	Regions     []string  `json:"regions"`
+	// Services lists the scanner services this scan attempted — the coverage
+	// scope, independent of what was found. Part of the history scope key so
+	// a scan with fewer scanners never diffs against a wider baseline (which
+	// would report every unscanned resource as removed).
+	Services  []string   `json:"services,omitempty"`
+	Resources []Resource `json:"resources"`
+	Failures  []Failure  `json:"failures,omitempty"`
 }
 
 // Summary holds the sprawl numbers shown in the terminal and report header.
@@ -153,11 +170,38 @@ func (s *Snapshot) Finalize() {
 		s.Resources[i].DeriveEOL(now)
 	}
 	s.Sort()
+	s.SortFailures()
 	sort.Strings(s.Regions)
 	sort.Strings(s.Accounts)
+	sort.Strings(s.Services)
 }
 
-// Sort orders resources deterministically: account, region, service, name.
+// SortFailures orders the failure ledger deterministically. The runner
+// appends failures in goroutine-completion order, so without this the JSON
+// artifact would differ between two identical runs. Exported because the CLI
+// appends org-mode pre-scan failures after Finalize and must re-sort.
+func (s *Snapshot) SortFailures() {
+	sort.Slice(s.Failures, func(i, j int) bool {
+		a, b := s.Failures[i], s.Failures[j]
+		if a.AccountID != b.AccountID {
+			return a.AccountID < b.AccountID
+		}
+		if a.Region != b.Region {
+			return a.Region < b.Region
+		}
+		if a.Service != b.Service {
+			return a.Service < b.Service
+		}
+		return a.Error < b.Error
+	})
+}
+
+// Sort orders resources deterministically: account, region, service, name,
+// with ARN as the final tie-break. The tie-break is load-bearing: names come
+// from optional tags for some resource types, so (account, region, service,
+// name) is not unique, the input order is goroutine-completion order, and
+// sort.Slice is unstable — without a unique key the JSON artifact would stop
+// being byte-for-byte deterministic.
 func (s *Snapshot) Sort() {
 	sort.Slice(s.Resources, func(i, j int) bool {
 		a, b := s.Resources[i], s.Resources[j]
@@ -170,6 +214,9 @@ func (s *Snapshot) Sort() {
 		if a.Service != b.Service {
 			return a.Service < b.Service
 		}
-		return a.Name < b.Name
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.ARN < b.ARN
 	})
 }

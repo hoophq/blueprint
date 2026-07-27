@@ -40,8 +40,11 @@ func TestReplicationGroupResource(t *testing.T) {
 	if r.Service != model.ServiceElastiCache || r.Kind != "cluster" {
 		t.Errorf("unexpected service/kind: %+v", r)
 	}
-	if r.Engine != "valkey" || r.InstanceClass != "cache.r7g.large" || !r.MultiAZ {
-		t.Errorf("unexpected engine/class/multiAZ: %+v", r)
+	if r.Engine != "valkey" || r.InstanceClass != "cache.r7g.large" {
+		t.Errorf("unexpected engine/class: %+v", r)
+	}
+	if r.MultiAZ == nil || !*r.MultiAZ {
+		t.Errorf("MultiAZ = %v, want pointer to true for MultiAZStatusEnabled", r.MultiAZ)
 	}
 	if r.Endpoint != "primary.rg-1.cache.amazonaws.com" {
 		t.Errorf("expected primary endpoint fallback, got %q", r.Endpoint)

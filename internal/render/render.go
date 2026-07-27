@@ -43,14 +43,74 @@ func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 	}
 	if sum.Failures > 0 {
 		fmt.Fprintf(w, "\n  ⚠ incomplete coverage — %d scan unit(s) failed:\n", sum.Failures)
-		for _, f := range snap.Failures {
-			fmt.Fprintf(w, "    - %s/%s %s: %s\n", f.AccountID, f.Region, f.Service, f.Error)
+		groups := groupFailures(snap.Failures)
+		for i, g := range groups {
+			if i == maxFailuresListed {
+				fmt.Fprintf(w, "    … and %d more (full ledger in the JSON output)\n", len(groups)-maxFailuresListed)
+				break
+			}
+			fmt.Fprintf(w, "    - %s: %s\n", g.scope, g.err)
 		}
 	}
 	for _, p := range written {
 		fmt.Fprintf(w, "  → %s\n", p)
 	}
 	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+}
+
+// maxFailuresListed caps terminal failure lines (after rollup) so one broken
+// permission boundary cannot flood stdout; the JSON ledger keeps every entry.
+const maxFailuresListed = 20
+
+type failureGroup struct{ scope, err string }
+
+// groupFailures rolls identical (account, service, error) failures across
+// regions into one line each — at many services × regions, "not authorized"
+// repeated per region would bury the distinct problems. Output is sorted for
+// deterministic rendering, and empty account/region components (global scan
+// units) are omitted rather than printed as dangling separators.
+func groupFailures(failures []model.Failure) []failureGroup {
+	type key struct{ account, service, err string }
+	regions := map[key][]string{}
+	for _, f := range failures {
+		k := key{f.AccountID, f.Service, f.Error}
+		if f.Region != "" {
+			regions[k] = append(regions[k], f.Region)
+		} else if _, ok := regions[k]; !ok {
+			regions[k] = nil
+		}
+	}
+	keys := make([]key, 0, len(regions))
+	for k := range regions {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.account != b.account {
+			return a.account < b.account
+		}
+		if a.service != b.service {
+			return a.service < b.service
+		}
+		return a.err < b.err
+	})
+	out := make([]failureGroup, 0, len(keys))
+	for _, k := range keys {
+		var parts []string
+		if k.account != "" {
+			parts = append(parts, k.account)
+		}
+		if k.service != "" {
+			parts = append(parts, k.service)
+		}
+		scope := strings.Join(parts, "/")
+		if rs := regions[k]; len(rs) > 0 {
+			sort.Strings(rs)
+			scope += " in " + strings.Join(rs, ", ")
+		}
+		out = append(out, failureGroup{scope: scope, err: k.err})
+	}
+	return out
 }
 
 func countNonZero(m map[string]int) int {
@@ -68,7 +128,14 @@ func formatCounts(m map[string]int) string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return m[keys[i]] > m[keys[j]] })
+	// Name tie-break: equal counts would otherwise order by map iteration,
+	// which visibly flickers between runs.
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s %d", k, m[k]))

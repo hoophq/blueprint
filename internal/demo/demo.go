@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hoophq/blueprint/internal/model"
+	"github.com/hoophq/blueprint/internal/scan"
 	"github.com/hoophq/blueprint/internal/scanners"
 )
 
@@ -23,11 +24,16 @@ const (
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
 	snap := &model.Snapshot{
+		Schema:      model.SchemaVersion,
 		Version:     version,
 		GeneratedAt: time.Now().UTC(),
 		Accounts:    []string{acctProd, acctStaging},
 		Regions:     []string{"us-east-1", "us-west-2", "sa-east-1", "eu-west-1"},
-		Resources:   applyExposure(resources()),
+		// The demo simulates a scan by this binary, so its coverage scope is
+		// the same scanner registry the real runner uses (importing
+		// internal/scanners above registers them).
+		Services:  registeredServices(),
+		Resources: applyExposure(resources()),
 		Failures: []model.Failure{
 			{AccountID: acctProd, Region: "sa-east-1", Service: model.ServiceElastiCache,
 				Error: "AccessDenied: User is not authorized to perform elasticache:DescribeCacheClusters"},
@@ -37,6 +43,14 @@ func Snapshot(version string) *model.Snapshot {
 	}
 	snap.Finalize()
 	return snap
+}
+
+func registeredServices() []string {
+	var out []string
+	for _, s := range scan.All() {
+		out = append(out, s.Service())
+	}
+	return out
 }
 
 func resources() []model.Resource {
@@ -240,6 +254,14 @@ func applyExposure(rs []model.Resource) []model.Resource {
 	noBackups := map[string]bool{"legacy-crm": true, "qa-sandbox": true, "load-test-db": true}
 	for i := range rs {
 		r := &rs[i]
+		// MultiAZ mirrors which control planes actually report it: the RDS
+		// family and provisioned Redshift/ElastiCache clusters do; DynamoDB
+		// and the serverless/standalone shapes never do — nil, not false.
+		if r.Service == model.ServiceDynamoDB ||
+			(r.Service == model.ServiceElastiCache && r.Kind != "cluster") ||
+			(r.Service == model.ServiceRedshift && r.Kind == "serverless") {
+			r.MultiAZ = nil
+		}
 		switch r.Service {
 		case model.ServiceRDS, model.ServiceDocumentDB, model.ServiceNeptune:
 			r.PubliclyAccessible = ptr(public[r.Name])
@@ -284,7 +306,7 @@ func res(account, region, svc, kind, name, engine, version, class string,
 		EngineVersion: version,
 		InstanceClass: class,
 		StorageGB:     storageGB,
-		MultiAZ:       multiAZ,
+		MultiAZ:       &multiAZ,
 		Status:        status,
 		Endpoint:      endpoint,
 		Region:        region,

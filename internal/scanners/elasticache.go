@@ -99,6 +99,12 @@ func replicationGroupResource(g ectypes.ReplicationGroup, region, accountID stri
 	} else if len(g.NodeGroups) > 0 && g.NodeGroups[0].PrimaryEndpoint != nil {
 		endpoint = aws.ToString(g.NodeGroups[0].PrimaryEndpoint.Address)
 	}
+	// MultiAZ is an enum; an empty value means the API did not report it,
+	// which must stay nil rather than becoming false.
+	var multiAZ *bool
+	if g.MultiAZ != "" {
+		multiAZ = aws.Bool(g.MultiAZ == ectypes.MultiAZStatusEnabled)
+	}
 	return model.Resource{
 		ARN:           aws.ToString(g.ARN),
 		Service:       model.ServiceElastiCache,
@@ -106,7 +112,7 @@ func replicationGroupResource(g ectypes.ReplicationGroup, region, accountID stri
 		Name:          aws.ToString(g.ReplicationGroupId),
 		Engine:        aws.ToString(g.Engine),
 		InstanceClass: aws.ToString(g.CacheNodeType),
-		MultiAZ:       g.MultiAZ == ectypes.MultiAZStatusEnabled,
+		MultiAZ:       multiAZ,
 		Status:        aws.ToString(g.Status),
 		Endpoint:      endpoint,
 		Region:        region,
