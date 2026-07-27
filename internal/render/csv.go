@@ -72,7 +72,7 @@ func csvRow(r model.Resource) []string {
 		guardFormula(r.EngineVersion),
 		guardFormula(r.InstanceClass),
 		strconv.FormatInt(int64(r.StorageGB), 10),
-		strconv.FormatBool(r.MultiAZ),
+		boolPtrCell(r.MultiAZ),
 		guardFormula(r.Status),
 		guardFormula(r.Endpoint),
 		guardFormula(r.Region),

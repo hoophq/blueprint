@@ -68,6 +68,12 @@ func redshiftClusterResource(c redshifttypes.Cluster, region, accountID string) 
 	if c.Endpoint != nil {
 		endpoint = aws.ToString(c.Endpoint.Address)
 	}
+	// MultiAZ arrives as a string ("Enabled"/"Disabled"); nil means the API
+	// did not report it and must stay nil, not become false.
+	var multiAZ *bool
+	if c.MultiAZ != nil {
+		multiAZ = aws.Bool(strings.EqualFold(aws.ToString(c.MultiAZ), "enabled"))
+	}
 	// The partition is not hardcoded: GovCloud/China clusters live in
 	// aws-us-gov/aws-cn. ClusterNamespaceArn (returned by DescribeClusters)
 	// carries the right partition; fall back to "aws" when it is absent.
@@ -80,7 +86,7 @@ func redshiftClusterResource(c redshifttypes.Cluster, region, accountID string) 
 		EngineVersion: aws.ToString(c.ClusterVersion),
 		InstanceClass: aws.ToString(c.NodeType),
 		StorageGB:     mbToGB(aws.ToInt64(c.TotalStorageCapacityInMegaBytes)),
-		MultiAZ:       strings.EqualFold(aws.ToString(c.MultiAZ), "enabled"),
+		MultiAZ:       multiAZ,
 		Status:        aws.ToString(c.ClusterStatus),
 		Endpoint:      endpoint,
 		Region:        region,

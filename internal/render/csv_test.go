@@ -158,18 +158,16 @@ func TestCSVEdgeCases(t *testing.T) {
 	if got := bare[c["created_at"]]; got != "" {
 		t.Errorf("nil CreatedAt rendered as %q, want empty", got)
 	}
-	// Tri-state exposure fields: nil pointers render as empty cells, not as
-	// false/0, so "not reported" stays distinguishable in spreadsheets too.
-	for _, col := range []string{"publicly_accessible", "encrypted", "backup_retention_days"} {
+	// Tri-state fields: nil pointers render as empty cells, not as false/0,
+	// so "not reported" stays distinguishable in spreadsheets too. multi_az
+	// joined this set when it became pointer-typed (DynamoDB never reports it).
+	for _, col := range []string{"multi_az", "publicly_accessible", "encrypted", "backup_retention_days"} {
 		if got := bare[c[col]]; got != "" {
 			t.Errorf("nil %s rendered as %q, want empty", col, got)
 		}
 	}
 	if got := bare[c["tags"]]; got != "" {
 		t.Errorf("nil Tags rendered as %q, want empty", got)
-	}
-	if got := bare[c["multi_az"]]; got != "false" {
-		t.Errorf("multi_az = %q, want %q", got, "false")
 	}
 	if got := bare[c["storage_gb"]]; got != "0" {
 		t.Errorf("storage_gb = %q, want %q", got, "0")

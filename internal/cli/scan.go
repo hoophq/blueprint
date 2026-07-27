@@ -150,8 +150,10 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	}
 	snap := runner.Run(ctx, targets, Version)
 	// Org-mode pre-scan failures (unassumable member roles) belong in the
-	// same ledger as per-unit scan failures.
+	// same ledger as per-unit scan failures; re-sort so the artifact stays
+	// deterministic after the append.
 	snap.Failures = append(snap.Failures, preFailures...)
+	snap.SortFailures()
 	return snap, nil
 }
 
@@ -166,6 +168,13 @@ func compareAgainst(cmd *cobra.Command, snap *model.Snapshot, path string, failO
 	var prev model.Snapshot
 	if err := json.Unmarshal(data, &prev); err != nil {
 		return fmt.Errorf("parsing --compare file %s (expected a blueprint census JSON): %w", path, err)
+	}
+	// Refuse cross-schema diffs instead of fabricating drift: field
+	// representations differ between schemas (e.g. an omitted bool vs an
+	// explicit pointer), which would surface as changes on every resource.
+	if prev.Schema != snap.Schema {
+		return fmt.Errorf("%s was written with census schema %d and this blueprint writes schema %d — diffing across schemas would report format changes as resource drift; re-scan with this version to create a comparable baseline",
+			filepath.Base(path), prev.Schema, snap.Schema)
 	}
 	d := diff.Compare(&prev, snap)
 	d.Write(cmd.OutOrStdout(), filepath.Base(path))
@@ -195,6 +204,15 @@ func autoDiff(cmd *cobra.Command, snap *model.Snapshot, failOnChange bool) error
 	if prev == nil {
 		fmt.Fprintf(cmd.OutOrStdout(),
 			"\n  history: first census for this scope — the next scan will show what changed (%s)\n", root)
+		return nil
+	}
+	// Same refusal as --compare: a cross-schema baseline (written by an older
+	// blueprint) would fabricate a mass-change event. The fresh scan is
+	// already archived, so the next run diffs normally.
+	if prev.Schema != snap.Schema {
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"\n  history: baseline was written with census schema %d (this blueprint writes %d) — skipping the diff; the next scan will diff against this one\n",
+			prev.Schema, snap.Schema)
 		return nil
 	}
 	d := diff.Compare(prev, snap)

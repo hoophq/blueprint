@@ -42,6 +42,25 @@ func TestScopeKeyBucketsByAccountsAndRegions(t *testing.T) {
 	}
 }
 
+// Service coverage is part of the scope: a scan with fewer scanners diffed
+// against a wider baseline would report every unscanned resource as removed.
+func TestScopeKeyIncludesServices(t *testing.T) {
+	base := func(services ...string) *model.Snapshot {
+		s := snap(time.Now(), []string{"1"}, []string{"us-east-1"})
+		s.Services = services
+		return s
+	}
+	a := base("dynamodb", "rds")
+	b := base("rds", "dynamodb") // order must not matter
+	c := base("rds")
+	if ScopeKey(a) != ScopeKey(b) {
+		t.Error("service order changed the scope key")
+	}
+	if ScopeKey(a) == ScopeKey(c) {
+		t.Error("different service coverage produced the same scope key")
+	}
+}
+
 func TestSaveAndLatestRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	acct := []string{"111111111111"}

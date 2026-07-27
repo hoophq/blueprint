@@ -32,7 +32,14 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 	if r.Concurrency <= 0 {
 		r.Concurrency = 8
 	}
-	snap := &model.Snapshot{Version: version, GeneratedAt: time.Now().UTC()}
+	snap := &model.Snapshot{Schema: model.SchemaVersion, Version: version, GeneratedAt: time.Now().UTC()}
+	seenServices := map[string]bool{}
+	for _, s := range r.Scanners {
+		if svc := s.Service(); !seenServices[svc] {
+			seenServices[svc] = true
+			snap.Services = append(snap.Services, svc)
+		}
+	}
 
 	type unit struct {
 		target  Target

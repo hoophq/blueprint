@@ -64,6 +64,26 @@ func TestRunnerCollectsResultsAndFailures(t *testing.T) {
 	}
 }
 
+func TestRunnerStampsSchemaAndServices(t *testing.T) {
+	noop := func(_, _ string) ([]model.Resource, error) { return nil, nil }
+	r := &Runner{Scanners: []Scanner{
+		&fakeScanner{name: "redshift", fn: noop},
+		&fakeScanner{name: "dynamodb", fn: noop},
+	}}
+	snap := r.Run(context.Background(), []Target{
+		{AccountID: "1", Regions: []string{"us-east-1"}},
+	}, "test")
+
+	if snap.Schema != model.SchemaVersion {
+		t.Errorf("Schema = %d, want %d", snap.Schema, model.SchemaVersion)
+	}
+	// Services records the coverage scope (what was attempted), sorted by
+	// Finalize regardless of registration order.
+	if len(snap.Services) != 2 || snap.Services[0] != "dynamodb" || snap.Services[1] != "redshift" {
+		t.Errorf("Services = %v, want [dynamodb redshift]", snap.Services)
+	}
+}
+
 func TestRunnerRespectsConcurrencyBound(t *testing.T) {
 	block := make(chan struct{})
 	s := &fakeScanner{name: "slow", fn: func(_, _ string) ([]model.Resource, error) {

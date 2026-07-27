@@ -86,11 +86,21 @@ func fieldChanges(o, n model.Resource) []FieldChange {
 	add("engine_version", o.EngineVersion, n.EngineVersion)
 	add("instance_class", o.InstanceClass, n.InstanceClass)
 	add("storage_gb", strconv.FormatInt(int64(o.StorageGB), 10), strconv.FormatInt(int64(n.StorageGB), 10))
-	add("multi_az", strconv.FormatBool(o.MultiAZ), strconv.FormatBool(n.MultiAZ))
+	add("multi_az", boolPtrStr(o.MultiAZ), boolPtrStr(n.MultiAZ))
 	add("status", o.Status, n.Status)
 	add("environment", o.Environment, n.Environment)
 	add("owner", o.Owner, n.Owner)
 	return out
+}
+
+// boolPtrStr renders a tri-state boolean for field comparison: empty when the
+// service did not report the field (rendered as "—" by orDash), so "not
+// reported" never drifts against an explicit false.
+func boolPtrStr(v *bool) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatBool(*v)
 }
 
 // maxListed caps per-bucket detail lines so a huge drift doesn't flood the
