@@ -20,6 +20,10 @@ func TestCostFlagsValidate(t *testing.T) {
 		{"defaults", costFlags{metric: cost.DefaultMetric, maxRequests: cost.DefaultMaxRequests}, ""},
 		{"every advertised metric", costFlags{metric: "net_unblended", maxRequests: 1}, ""},
 		{"typo", costFlags{metric: "amortised", maxRequests: 1}, "not valid"},
+		// Deliberately absent rather than overlooked: a blended rate is an
+		// intra-organization average, so a per-account blended figure
+		// reconciles to no invoice.
+		{"blended is not offered", costFlags{metric: "blended", maxRequests: 1}, "not valid"},
 		{"AWS name is not the flag value", costFlags{metric: "AmortizedCost", maxRequests: 1}, "not valid"},
 		{"empty metric", costFlags{metric: "", maxRequests: 1}, "not valid"},
 		// A zero budget would silently collect nothing; that is a mistake
