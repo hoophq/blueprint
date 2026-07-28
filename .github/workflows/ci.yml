@@ -17,6 +17,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The report's JS is evaluated under node by internal/render. Those tests
+      # skip when node is missing, which is right on a contributor's machine
+      # and wrong here — pin it rather than trust the runner image.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Build
         run: go build ./...
       - name: Vet

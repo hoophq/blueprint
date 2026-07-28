@@ -2,6 +2,7 @@ package render
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -64,6 +65,11 @@ func evalReportJS(t *testing.T, script string) string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
+		// Skipping is right on a contributor's machine and wrong in CI, where a
+		// silent skip would report coverage this suite is not providing.
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is required to evaluate the report's JS in CI")
+		}
 		t.Skip("node not installed; skipping report JS evaluation")
 	}
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
