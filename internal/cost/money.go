@@ -88,15 +88,26 @@ func allDigits(s string) bool {
 // finite decimal with at most as many places as the most precise input, and
 // FloatString at that width truncates nothing.
 func sum(amounts []amount) string {
-	total := new(big.Rat)
 	decimals := minDecimals
 	for _, a := range amounts {
-		total.Add(total, a.rat)
 		if a.decimals > decimals {
 			decimals = a.decimals
 		}
 	}
-	return total.FloatString(decimals)
+	return total(amounts).FloatString(decimals)
+}
+
+// total adds amounts exactly without rendering them.
+//
+// Comparisons go through this rather than through sum's string, so whether
+// two figures agree never depends on the width they happened to be formatted
+// at: "1.0" and "1.00" are the same money and must compare equal.
+func total(amounts []amount) *big.Rat {
+	t := new(big.Rat)
+	for _, a := range amounts {
+		t.Add(t, a.rat)
+	}
+	return t
 }
 
 // ChargeUSD renders n Cost Explorer requests as the dollar amount AWS charges

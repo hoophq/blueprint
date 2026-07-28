@@ -86,7 +86,15 @@ type CostReport struct {
 //
 //	Attributed + Unattributed == Total
 //
-// Services sums to Attributed, and UnattributedRecords sums to Unattributed.
+// and UnattributedRecords sums to Unattributed. Those all come from a single
+// query, so no arithmetic can leave a remainder.
+//
+// Services sums to Attributed too, but that one is a checked guarantee rather
+// than a structural one: the breakdown comes from a second Cost Explorer
+// query, and the collector verifies the two agree before publishing anything.
+// A report that reached this type therefore satisfies it — a run where the
+// queries disagreed produces no currencies at all and a ledger entry saying
+// so.
 type CostByCurrency struct {
 	// Currency is the unit Cost Explorer reported ("USD"). Empty means Cost
 	// Explorer reported no unit for these amounts — an unknown currency, not
