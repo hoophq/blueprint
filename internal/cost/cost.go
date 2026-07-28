@@ -70,10 +70,13 @@ const maxFilterAccounts = 100
 // invoice that month; the net variants are after discounts), which is why the
 // chosen metric is recorded in the report and why reports using different
 // metrics must not be compared.
+// BlendedCost is deliberately absent. It averages a rate across an
+// organization's accounts, so a per-account blended figure is an internal
+// chargeback artifact rather than what that account cost — it reconciles to no
+// invoice and would quietly make the per-account breakdown here fiction.
 var metricNames = map[string]string{
 	"amortized":     "AmortizedCost",
 	"unblended":     "UnblendedCost",
-	"blended":       "BlendedCost",
 	"net_amortized": "NetAmortizedCost",
 	"net_unblended": "NetUnblendedCost",
 }
@@ -182,18 +185,30 @@ func LastFullMonth(now time.Time) model.CostWindow {
 	}
 }
 
-// errBudget is returned when the run has spent its request budget.
-var errBudget = errors.New("cost explorer request budget exhausted")
+var (
+	// errBudget is returned when the run has spent its request budget.
+	errBudget = errors.New("cost explorer request budget exhausted")
+	// errMetricUnavailable is returned when a response carries no figure for
+	// the metric that was asked for. Substituting another metric, or treating
+	// the gap as zero, would both report a number nobody measured.
+	errMetricUnavailable = errors.New("cost explorer returned no value for the requested metric")
+)
 
 // meter counts billed requests and enforces the budget. Requests are issued
 // sequentially, which is what makes the cap exact — a concurrent fan-out
 // could overshoot it before the last goroutine checked.
 type meter struct {
 	n, max int
+	// blocked records that the budget actually stopped a request. Spending
+	// the last permitted request and finishing is a complete run, so this is
+	// deliberately not "n == max": that would label a successful collection
+	// truncated and send the reader looking for missing money.
+	blocked bool
 }
 
 func (m *meter) take() bool {
 	if m.n >= m.max {
+		m.blocked = true
 		return false
 	}
 	m.n++
@@ -206,6 +221,16 @@ type row struct {
 	account  string
 	currency string
 	amt      amount
+}
+
+// rowset is the complete result of one grouped query. It only ever describes
+// a query that finished: fetch returns the zero value with an error otherwise,
+// so there is no way for a caller to reach half a result set by accident.
+type rowset struct {
+	rows []row
+	// estimated is true when AWS flagged any period in the response as still
+	// being estimated, i.e. the month has closed but the bill has not settled.
+	estimated bool
 }
 
 // Collect runs the cost phase and returns the report plus any ledger entries.
@@ -237,8 +262,7 @@ func Collect(ctx context.Context, api API, opts Options) (*model.CostReport, []m
 
 	// The record-type call comes first because it is the authoritative one:
 	// it covers all spend in the window and yields the total that the
-	// attributed/unattributed partition must add up to. If the budget is
-	// tight, the breakdown is the part worth losing.
+	// attributed/unattributed partition must add up to.
 	records, recErr := fetch(ctx, api, m, opts, metric, cetypes.DimensionRecordType, nil)
 	if recErr != nil {
 		failures = append(failures, classify(opts, "reading cost by record type", recErr))
@@ -248,20 +272,44 @@ func Collect(ctx context.Context, api API, opts Options) (*model.CostReport, []m
 	// breakdown is exactly the attributed side of the partition. Without that
 	// filter it would also carry tax and credits under their own pseudo
 	// service names and would sum to the grand total instead.
-	var services []row
-	if len(records) > 0 || recErr == nil {
-		var svcErr error
+	//
+	// It is skipped when the record-type call failed: the rollup is going to
+	// be discarded either way, and there is no reason to bill the user for a
+	// second request whose answer cannot be published.
+	var services rowset
+	var svcErr error
+	if recErr == nil {
 		services, svcErr = fetch(ctx, api, m, opts, metric, cetypes.DimensionService, attributedRecordTypeValues())
 		if svcErr != nil {
 			failures = append(failures, classify(opts, "reading cost by service", svcErr))
 		}
 	}
 
-	report.Currencies = assemble(records, services)
+	// A partial rollup is not published. A truncated sum reads exactly like a
+	// complete one — it carries no mark saying which pages are missing — so it
+	// is worse than no figure at all: the reader reconciles it against an
+	// invoice, finds a gap, and has no way to tell whether the gap is a real
+	// finding or this tool giving up halfway. Half a service breakdown is the
+	// same problem one level down, since it would no longer sum to Attributed.
+	// The meter and the ledger still ship, so the run discloses what it spent
+	// and why it has nothing to show for it.
+	if recErr == nil && svcErr == nil {
+		report.Currencies = assemble(records.rows, services.rows)
+		// Only meaningful alongside a published rollup: with nothing to
+		// describe, "estimated: false" would be a claim about data that does
+		// not exist.
+		estimated := records.estimated || services.estimated
+		report.Estimated = &estimated
+		if estimated {
+			failures = append(failures, ledger(opts, "ce_estimated_data", fmt.Sprintf(
+				"AWS still marks %s as estimated, so these figures are not final and will change once the "+
+					"month is billed — they will not reconcile to the invoice yet", opts.Window.Label)))
+		}
+	}
 	report.Meter = model.CostMeter{
 		Requests:           m.n,
 		EstimatedChargeUSD: ChargeUSD(m.n),
-		Capped:             m.n >= m.max,
+		Capped:             m.blocked,
 	}
 	report.Sort()
 
@@ -289,7 +337,12 @@ func attributedRecordTypeValues() []string {
 // Results are always grouped by the requested dimension *and* by linked
 // account, so the account restriction can be applied to the response whether
 // or not it fitted into the request filter.
-func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, dim cetypes.Dimension, recordTypes []string) ([]row, error) {
+//
+// Every error path returns the zero rowset, discarding the pages that did
+// arrive. Those pages were paid for, but a partial sum cannot be told apart
+// from a complete one downstream, so handing them back would only offer a
+// caller the chance to publish a short total as a real one.
+func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, dim cetypes.Dimension, recordTypes []string) (rowset, error) {
 	want := make(map[string]bool, len(opts.Accounts))
 	for _, a := range opts.Accounts {
 		want[a] = true
@@ -312,23 +365,27 @@ func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, 
 		Filter: buildFilter(opts.Accounts, recordTypes),
 	}
 
-	var out []row
+	var out rowset
 	for {
 		if !m.take() {
-			return out, errBudget
+			return rowset{}, errBudget
 		}
 		page, err := api.GetCostAndUsage(ctx, in)
 		if err != nil {
-			return out, err
+			return rowset{}, err
 		}
 		if page == nil {
-			return out, errors.New("Cost Explorer returned no result")
+			return rowset{}, errors.New("Cost Explorer returned no result")
 		}
 		for _, result := range page.ResultsByTime {
+			// The SDK models this as a plain bool, so false means "AWS did not
+			// flag it" rather than a positive guarantee of finalization — but
+			// a true is unambiguous and is the case worth surfacing.
+			out.estimated = out.estimated || result.Estimated
 			for _, g := range result.Groups {
 				r, ok, err := toRow(g, metric)
 				if err != nil {
-					return out, err
+					return rowset{}, err
 				}
 				// A group outside the census is dropped rather than reported:
 				// with payer credentials the response covers accounts this
@@ -337,7 +394,7 @@ func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, 
 				if !ok || !want[r.account] {
 					continue
 				}
-				out = append(out, r)
+				out.rows = append(out.rows, r)
 			}
 		}
 		if aws.ToString(page.NextPageToken) == "" {
@@ -347,16 +404,24 @@ func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, 
 	}
 }
 
-// toRow converts one response group. The bool is false when the group carries
-// no amount for the requested metric — an absent figure, which is dropped
-// rather than recorded as zero.
+// toRow converts one response group. The bool is false for a group that is
+// not addressable — fewer keys than the two dimensions that were requested —
+// which carries no figure to lose.
+//
+// A group that is addressable but carries no amount for the requested metric
+// is an error, not a skip. Cost Explorer returns every metric it was asked
+// for, including an explicit "0", so an absent one means the metric itself is
+// unavailable for this account or window. Dropping such groups would quietly
+// understate the total; filling them with zero would invent a measurement; and
+// falling back to a different metric would answer a question nobody asked. The
+// run reports the gap and publishes nothing instead.
 func toRow(g cetypes.Group, metric string) (row, bool, error) {
 	if len(g.Keys) < 2 {
 		return row{}, false, nil
 	}
 	mv, ok := g.Metrics[metric]
 	if !ok || mv.Amount == nil {
-		return row{}, false, nil
+		return row{}, false, fmt.Errorf("%w: %s (group %q)", errMetricUnavailable, metric, g.Keys[0])
 	}
 	amt, err := parseAmount(*mv.Amount)
 	if err != nil {
@@ -498,8 +563,15 @@ func ledger(opts Options, kind, msg string) model.Failure {
 func classify(opts Options, what string, err error) model.Failure {
 	if errors.Is(err, errBudget) {
 		return ledger(opts, "ce_pagination_incomplete", fmt.Sprintf(
-			"%s: stopped after the per-run Cost Explorer request budget was reached, so this report is partial; "+
-				"raise --cost-max-requests to finish it (each request costs $0.01)", what))
+			"%s: stopped after the per-run Cost Explorer request budget was reached, so the pages already read "+
+				"were discarded rather than reported as a total; raise --cost-max-requests to finish it "+
+				"(each request costs $0.01)", what))
+	}
+	if errors.Is(err, errMetricUnavailable) {
+		return ledger(opts, "ce_metric_unavailable", fmt.Sprintf(
+			"%s: Cost Explorer returned no figure for this metric, so nothing was reported rather than a short "+
+				"total or a silently substituted metric — try another --cost-metric from %s (%v)",
+			what, strings.Join(Metrics(), ", "), err))
 	}
 
 	code, msg := apiError(err)

@@ -106,7 +106,7 @@ service and by account, from AWS Cost Explorer.
 
 ```sh
 blueprint scan --costs
-blueprint scan --costs --cost-metric unblended     # amortized (default), unblended, blended, net_amortized, net_unblended
+blueprint scan --costs --cost-metric unblended     # amortized (default), unblended, net_amortized, net_unblended
 blueprint scan --costs --cost-max-requests 5       # hard cap on billed requests (default 20)
 ```
 
@@ -130,6 +130,12 @@ Spend is partitioned into what Cost Explorer attributes to a service
 (`unattributed`) — and the two always sum to the total. Credits stay negative.
 Currencies are never mixed or assumed: an amount whose currency AWS did not
 report lands in its own bucket rather than being called USD.
+
+A month stays estimated for a few days after it closes. When AWS flags the data
+that way, the census records it and the run says so, because estimated figures
+still move and will not reconcile to the invoice yet. `BlendedCost` is not
+offered: it averages a rate across an organization's accounts, so a per-account
+blended figure is a chargeback artifact rather than what that account cost.
 
 Cost is deliberately invisible to history bucketing and to the resource diff,
 so turning `--costs` on or off never re-buckets your history or reports an
