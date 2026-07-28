@@ -68,3 +68,32 @@ func TestTableResource(t *testing.T) {
 		t.Errorf("unexpected tags: %v", r.Tags)
 	}
 }
+
+// Zero bytes is something DynamoDB says, not something it declines to say.
+// The figure refreshes roughly every six hours, so a zero can mean an empty
+// table or one too new to have been measured — the census cannot tell which,
+// and the honest record is the number the service returned. Dropping the key
+// would claim DynamoDB reported nothing, which is a different and false
+// statement, and it would hide every genuinely empty table.
+func TestTableResourceKeepsReportedZeroSize(t *testing.T) {
+	sized := func(size *int64) model.Resource {
+		return tableResource(ddbtypes.TableDescription{
+			TableArn:       aws.String("arn:aws:dynamodb:us-east-1:123456789012:table/t"),
+			TableName:      aws.String("t"),
+			TableSizeBytes: size,
+		}, nil, "us-east-1", "123456789012")
+	}
+
+	r := sized(aws.Int64(0))
+	got, ok := r.Measure(model.MeasureSizeBytes)
+	if !ok || got != 0 {
+		t.Errorf("size_bytes = (%d, %v) for a reported zero, want (0, true)", got, ok)
+	}
+
+	// And a description that carries no size at all stays key-absent, so the
+	// two remain distinguishable in the artifact.
+	silent := sized(nil)
+	if v, ok := silent.Measure(model.MeasureSizeBytes); ok {
+		t.Errorf("size_bytes = (%d, true) with no TableSizeBytes, want not reported", v)
+	}
+}

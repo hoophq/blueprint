@@ -3,6 +3,7 @@ package diff
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoophq/blueprint/internal/model"
 )
@@ -103,6 +104,102 @@ func TestCompareDriftsOnUnknownBagKeys(t *testing.T) {
 	}
 	if f := d.Changed[0].Fields[0]; f.Field != "some_future_key" || f.Old != "old-value" || f.New != "new-value" {
 		t.Errorf("field change = %+v, want some_future_key old-value → new-value", f)
+	}
+}
+
+// Every core field is compared, not just the handful the database-era diff
+// happened to list. A resource whose ARN holds still while its name, scope, or
+// creation time moves is drift the census watched happen — staying silent
+// about it would be the same failure as not scanning at all.
+func TestCompareDriftsOnEveryCoreField(t *testing.T) {
+	created := time.Date(2020, 5, 7, 12, 0, 0, 0, time.UTC)
+	recreated := time.Date(2026, 1, 9, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		field   string
+		mutate  func(*model.Resource)
+		wantOld string
+		wantNew string
+	}{
+		// Names come from a mutable Name tag on the resource types the census is
+		// growing into, so the same volume can be renamed under a stable ARN.
+		{"name", func(r *model.Resource) { r.Name = "renamed" }, "widget", "renamed"},
+		{"service", func(r *model.Resource) { r.Service = model.ServiceAurora }, model.ServiceRDS, model.ServiceAurora},
+		{"type", func(r *model.Resource) { r.Type = model.TypeRDSCluster }, model.TypeRDSInstance, model.TypeRDSCluster},
+		{"status", func(r *model.Resource) { r.Status = "stopped" }, "available", "stopped"},
+		{"region", func(r *model.Resource) { r.Region = "eu-west-1" }, "us-east-1", "eu-west-1"},
+		{"account_id", func(r *model.Resource) { r.AccountID = "222222222222" }, "111111111111", "222222222222"},
+		{"created_at", func(r *model.Resource) { r.CreatedAt = &recreated },
+			created.Format(time.RFC3339), recreated.Format(time.RFC3339)},
+		{"environment", func(r *model.Resource) { r.Environment = "staging" }, "production", "staging"},
+		{"owner", func(r *model.Resource) { r.Owner = "platform" }, "payments", "platform"},
+		{"publicly_accessible", func(r *model.Resource) { r.PubliclyAccessible = new(true) }, "false", "true"},
+		{"encrypted", func(r *model.Resource) { r.Encrypted = nil }, "true", ""},
+		{"tag:app", func(r *model.Resource) { r.Tags = map[string]string{"app": "billing"} }, "orders", "billing"},
+		{"tag:added", func(r *model.Resource) { r.Tags["added"] = "yes" }, "", "yes"},
+	}
+
+	base := func() model.Resource {
+		r := res("arn:a", "widget", "postgres", "15.4", "available")
+		r.CreatedAt = &created
+		r.Environment, r.Owner = "production", "payments"
+		r.PubliclyAccessible, r.Encrypted = new(false), new(true)
+		r.Tags = map[string]string{"app": "orders"}
+		return r
+	}
+
+	for _, c := range cases {
+		before, after := base(), base()
+		c.mutate(&after)
+
+		d := Compare(
+			&model.Snapshot{Resources: []model.Resource{before}},
+			&model.Snapshot{Resources: []model.Resource{after}},
+		)
+		if len(d.Changed) != 1 {
+			t.Errorf("%s: Changed = %+v, want one resource", c.field, d.Changed)
+			continue
+		}
+		fields := d.Changed[0].Fields
+		if len(fields) != 1 {
+			t.Errorf("%s: got %d field changes, want 1: %+v", c.field, len(fields), fields)
+			continue
+		}
+		if f := fields[0]; f.Field != c.field || f.Old != c.wantOld || f.New != c.wantNew {
+			t.Errorf("field change = %+v, want %s %q → %q", f, c.field, c.wantOld, c.wantNew)
+		}
+	}
+}
+
+// Retagging the environment moves both the tag and the field derived from it,
+// and the diff reports both: one is what AWS holds, the other is what the
+// census concluded from it.
+func TestCompareReportsTagAndDerivedFieldTogether(t *testing.T) {
+	before := res("arn:a", "widget", "postgres", "15.4", "available")
+	before.Tags = map[string]string{"environment": "production"}
+	before.Environment = "production"
+	after := res("arn:a", "widget", "postgres", "15.4", "available")
+	after.Tags = map[string]string{"environment": "staging"}
+	after.Environment = "staging"
+
+	d := Compare(
+		&model.Snapshot{Resources: []model.Resource{before}},
+		&model.Snapshot{Resources: []model.Resource{after}},
+	)
+	if len(d.Changed) != 1 {
+		t.Fatalf("Changed = %+v, want one resource", d.Changed)
+	}
+	got := map[string]string{}
+	for _, f := range d.Changed[0].Fields {
+		got[f.Field] = f.Old + " → " + f.New
+	}
+	for field, want := range map[string]string{
+		"environment":     "production → staging",
+		"tag:environment": "production → staging",
+	} {
+		if got[field] != want {
+			t.Errorf("%s = %q, want %q (all: %v)", field, got[field], want, got)
+		}
 	}
 }
 

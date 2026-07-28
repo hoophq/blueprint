@@ -80,6 +80,21 @@ func TestRedshiftClusterResource(t *testing.T) {
 		t.Errorf("unexpected tags: %v", r.Tags)
 	}
 
+	// Capacity the cluster reported as zero is stored as zero; capacity it did
+	// not report at all leaves the key absent. Collapsing the two would let a
+	// cluster whose storage figure has not landed yet read as an empty one.
+	c.TotalStorageCapacityInMegaBytes = aws.Int64(0)
+	r = redshiftClusterResource(c, "us-east-1", "123456789012")
+	if got, ok := r.Measure(model.MeasureSizeBytes); !ok || got != 0 {
+		t.Errorf("size_bytes = (%d, %v) for a reported zero, want (0, true)", got, ok)
+	}
+	c.TotalStorageCapacityInMegaBytes = nil
+	r = redshiftClusterResource(c, "us-east-1", "123456789012")
+	if v, ok := r.Measure(model.MeasureSizeBytes); ok {
+		t.Errorf("size_bytes = (%d, true) with no capacity reported, want absent", v)
+	}
+	c.TotalStorageCapacityInMegaBytes = aws.Int64(1025)
+
 	// Nil endpoint and absent MultiAZ must not panic or mislead: a field the
 	// API did not report leaves the key absent rather than reading as false.
 	c.Endpoint = nil

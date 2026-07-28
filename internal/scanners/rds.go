@@ -113,13 +113,15 @@ func instanceResource(inst rdstypes.DBInstance, region, accountID string) model.
 }
 
 // setAllocatedStorage converts the RDS AllocatedStorage gigabyte count to the
-// bytes the census records. Zero (Aurora, which manages storage itself) leaves
-// the key absent rather than claiming a 0-byte database.
+// bytes the census records. An unreported count (nil — serverless shapes,
+// where storage is not a fixed allocation) leaves the key absent rather than
+// claiming a 0-byte database; a count RDS did report is stored as given, zero
+// included.
 func setAllocatedStorage(r *model.Resource, gb *int32) {
-	if aws.ToInt32(gb) <= 0 {
+	if gb == nil {
 		return
 	}
-	r.SetMeasure(model.MeasureSizeBytes, int64(aws.ToInt32(gb))<<30)
+	r.SetMeasure(model.MeasureSizeBytes, int64(*gb)<<30)
 }
 
 // classifyEngine maps an RDS control-plane engine name to the census service.

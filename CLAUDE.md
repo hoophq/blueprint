@@ -60,12 +60,14 @@ build + tests on every push.
   ledger; nothing a service did not report may render as a value. In the
   core that means pointer-typed fields (nil = "not reported"); in the bags
   it means an **absent key** — use `SetAttr`/`SetMeasure`, which skip empty
-  values, and read through `Attr`/`Measure`. A *stored* zero (0 backup days)
-  is a real finding and must survive — including through rendering, so a
-  formatter may not floor a small value up to the next unit. Whether a zero
-  means "none" or "unknown" is the service's call: DynamoDB's
-  `TableSizeBytes` lags ~6h, so a fresh non-empty table reports 0 and the
-  scanner drops the key rather than assert an empty table.
+  values, and read through `Attr`/`Measure`. A *stored* zero (0 backup days,
+  0-byte table) is a real finding and must survive — end to end, including
+  rendering, so a formatter may not floor a small value up to the next unit.
+  Scanners decide absence from the **SDK pointer**, never from the converted
+  value (`SetMeasureInt32`/`SetMeasureInt64` do this); a `> 0` filter is the
+  recurring bug, because it silently reclassifies "reported as zero" as
+  "not reported". Whether a zero means "none" or "stale" is the reader's
+  problem, not a licence to drop it.
 - **Schema version**: bump `model.SchemaVersion` whenever a JSON field's
   representation changes — diff/--compare refuse cross-schema baselines
   instead of fabricating drift. `Snapshot.Services` is part of

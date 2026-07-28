@@ -96,7 +96,10 @@ type Resource struct {
 	Owner       string `json:"owner,omitempty"`
 	// EOL marks resources whose upstream end-of-life date has passed, per the
 	// table baked into the binary (see eol.go for scope and exclusions);
-	// EOLDate carries that date as YYYY-MM-DD.
+	// EOLDate carries that date as YYYY-MM-DD. The verdict lives in the core
+	// because every renderer reads it for every service, while the inputs it
+	// is derived from — the service's platform and version — stay in the bag
+	// under the names AWS gives them.
 	EOL     bool   `json:"eol,omitempty"`
 	EOLDate string `json:"eol_date,omitempty"`
 	// Exposure booleans straight from the describe responses, pointer-typed
@@ -159,12 +162,24 @@ func (r *Resource) SetMeasure(key string, v int64) {
 }
 
 // SetMeasureInt32 records a measure from the *int32 the AWS SDKs hand back,
-// leaving the key absent when the service did not report it.
+// leaving the key absent when the service did not report it. The pointer's
+// presence is the test, never the value: filtering out zero would collapse
+// "reported as zero" into "not reported", which is the distinction the bag
+// exists to keep.
 func (r *Resource) SetMeasureInt32(key string, v *int32) {
 	if v == nil {
 		return
 	}
 	r.SetMeasure(key, int64(*v))
+}
+
+// SetMeasureInt64 is SetMeasureInt32 for the *int64 fields (byte counts,
+// mostly), with the same pointer-presence rule.
+func (r *Resource) SetMeasureInt64(key string, v *int64) {
+	if v == nil {
+		return
+	}
+	r.SetMeasure(key, *v)
 }
 
 // Exposed reports whether any collected exposure flag is in its risky state:
