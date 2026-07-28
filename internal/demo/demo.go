@@ -254,37 +254,27 @@ func applyExposure(rs []model.Resource) []model.Resource {
 	noBackups := map[string]bool{"legacy-crm": true, "qa-sandbox": true, "load-test-db": true}
 	for i := range rs {
 		r := &rs[i]
-		// MultiAZ mirrors which control planes actually report it: the RDS
-		// family and provisioned Redshift/ElastiCache clusters do; DynamoDB
-		// and the serverless/standalone shapes never do — nil, not false.
-		if r.Service == model.ServiceDynamoDB ||
-			(r.Service == model.ServiceElastiCache && r.Kind != "cluster") ||
-			(r.Service == model.ServiceRedshift && r.Kind == "serverless") {
-			r.MultiAZ = nil
-		}
 		switch r.Service {
 		case model.ServiceRDS, model.ServiceDocumentDB, model.ServiceNeptune:
 			r.PubliclyAccessible = ptr(public[r.Name])
 			fallthrough
 		case model.ServiceAurora:
 			r.Encrypted = ptr(!unencrypted[r.Name])
-			days := int32(7)
+			days := int64(7)
 			if noBackups[r.Name] {
 				days = 0
 			}
-			r.BackupRetentionDays = &days
+			r.SetMeasure(model.MeasureBackupRetentionDays, days)
 		case model.ServiceRedshift:
 			r.PubliclyAccessible = ptr(false)
-			if r.Kind != "serverless" {
+			if r.Type != model.TypeRedshiftServerlessWorkgroup {
 				r.Encrypted = ptr(true)
-				days := int32(1)
-				r.BackupRetentionDays = &days
+				r.SetMeasure(model.MeasureBackupRetentionDays, 1)
 			}
 		case model.ServiceElastiCache:
-			if r.Engine == "redis" {
+			if r.Attr(model.AttrEngine) == "redis" {
 				r.Encrypted = ptr(true)
-				days := int32(1)
-				r.BackupRetentionDays = &days
+				r.SetMeasure(model.MeasureBackupRetentionDays, 1)
 			}
 		}
 	}
@@ -293,43 +283,104 @@ func applyExposure(rs []model.Resource) []model.Resource {
 
 func ptr[T any](v T) *T { return &v }
 
-// res builds one fixture resource with a service-appropriate ARN.
-func res(account, region, svc, kind, name, engine, version, class string,
+// res builds one fixture resource with a service-appropriate ARN. shape is a
+// fixture-local discriminator (instance | cluster | table | serverless) used
+// to pick the CloudFormation type name and ARN namespace — real scanners get
+// both from the API response instead.
+func res(account, region, svc, shape, name, engine, version, class string,
 	storageGB int32, multiAZ bool, status, endpoint string,
 	created time.Time, t map[string]string) model.Resource {
-	return model.Resource{
-		ARN:           arnFor(svc, kind, region, account, name),
-		Service:       svc,
-		Kind:          kind,
-		Name:          name,
-		Engine:        engine,
-		EngineVersion: version,
-		InstanceClass: class,
-		StorageGB:     storageGB,
-		MultiAZ:       &multiAZ,
-		Status:        status,
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     account,
-		CreatedAt:     &created,
-		Tags:          t,
+	r := model.Resource{
+		ARN:       arnFor(svc, shape, region, account, name),
+		Service:   svc,
+		Type:      typeFor(svc, shape),
+		Name:      name,
+		Status:    status,
+		Region:    region,
+		AccountID: account,
+		CreatedAt: &created,
+		Tags:      t,
+	}
+	r.SetAttr(model.AttrEngine, engine)
+	r.SetAttr(model.AttrEngineVersion, version)
+	r.SetAttr(model.AttrInstanceClass, class)
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	// Multi-AZ mirrors which control planes actually report it: the RDS family
+	// and provisioned Redshift/ElastiCache clusters do; DynamoDB and the
+	// serverless/standalone shapes never do, so the key stays absent — the bag
+	// equivalent of the nil that used to mean "not reported".
+	if reportsMultiAZ(svc, shape) {
+		r.SetBoolAttr(model.AttrMultiAZ, &multiAZ)
+	}
+	if storageGB > 0 {
+		r.SetMeasure(model.MeasureSizeBytes, int64(storageGB)<<30)
+	}
+	return r
+}
+
+func reportsMultiAZ(svc, shape string) bool {
+	switch svc {
+	case model.ServiceDynamoDB:
+		return false
+	case model.ServiceElastiCache:
+		return shape == "cluster"
+	case model.ServiceRedshift:
+		return shape != "serverless"
+	default:
+		return true
 	}
 }
 
-func arnFor(svc, kind, region, account, name string) string {
+func typeFor(svc, shape string) string {
+	switch svc {
+	case model.ServiceDynamoDB:
+		return model.TypeDynamoDBTable
+	case model.ServiceElastiCache:
+		switch shape {
+		case "cluster":
+			return model.TypeElastiCacheReplicationGroup
+		case "serverless":
+			return model.TypeElastiCacheServerlessCache
+		default:
+			return model.TypeElastiCacheCacheCluster
+		}
+	case model.ServiceRedshift:
+		if shape == "serverless" {
+			return model.TypeRedshiftServerlessWorkgroup
+		}
+		return model.TypeRedshiftCluster
+	case model.ServiceDocumentDB:
+		if shape == "instance" {
+			return model.TypeDocDBInstance
+		}
+		return model.TypeDocDBCluster
+	case model.ServiceNeptune:
+		if shape == "instance" {
+			return model.TypeNeptuneInstance
+		}
+		return model.TypeNeptuneCluster
+	default: // rds and aurora both live in the RDS CloudFormation namespace
+		if shape == "instance" {
+			return model.TypeRDSInstance
+		}
+		return model.TypeRDSCluster
+	}
+}
+
+func arnFor(svc, shape, region, account, name string) string {
 	switch svc {
 	case model.ServiceDynamoDB:
 		return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", region, account, name)
 	case model.ServiceElastiCache:
 		return fmt.Sprintf("arn:aws:elasticache:%s:%s:cluster:%s", region, account, name)
 	case model.ServiceRedshift:
-		if kind == "serverless" {
+		if shape == "serverless" {
 			return fmt.Sprintf("arn:aws:redshift-serverless:%s:%s:workgroup/%s", region, account, name)
 		}
 		// Reuse the scanner's builder so fixture ARNs match real scan output.
 		return scanners.RedshiftClusterARN("aws", region, account, name)
 	default: // rds, aurora, documentdb, neptune share the RDS ARN namespace
-		if kind == "instance" {
+		if shape == "instance" {
 			return fmt.Sprintf("arn:aws:rds:%s:%s:db:%s", region, account, name)
 		}
 		return fmt.Sprintf("arn:aws:rds:%s:%s:cluster:%s", region, account, name)

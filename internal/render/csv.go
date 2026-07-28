@@ -2,6 +2,7 @@ package render
 
 import (
 	"encoding/csv"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -12,11 +13,17 @@ import (
 )
 
 // csvHeader is the fixed column order for the CSV renderer.
+//
+// The columns are closed on purpose: they are exactly the narrow core of
+// model.Resource, so the header stays stable as new services land and
+// downstream scripts keep working. Everything service-specific — engine,
+// instance class, size, multi-AZ, and whatever future scanners report — is
+// carried in the final "attributes" cell as k=v pairs, using the same
+// reversible encoding as "tags".
 var csvHeader = []string{
-	"arn", "service", "kind", "name", "engine", "engine_version",
-	"instance_class", "storage_gb", "multi_az", "status", "endpoint",
-	"region", "account_id", "created_at", "environment", "owner", "tags",
-	"eol", "eol_date", "publicly_accessible", "encrypted", "backup_retention_days",
+	"arn", "service", "type", "name", "status", "region", "account_id",
+	"created_at", "environment", "owner", "tags", "eol", "eol_date",
+	"publicly_accessible", "encrypted", "attributes",
 }
 
 // CSV writes one row per resource for spreadsheet/script consumption.
@@ -66,15 +73,9 @@ func csvRow(r model.Resource) []string {
 	return []string{
 		guardFormula(r.ARN),
 		guardFormula(r.Service),
-		guardFormula(r.Kind),
+		guardFormula(r.Type),
 		guardFormula(r.Name),
-		guardFormula(r.Engine),
-		guardFormula(r.EngineVersion),
-		guardFormula(r.InstanceClass),
-		strconv.FormatInt(int64(r.StorageGB), 10),
-		boolPtrCell(r.MultiAZ),
 		guardFormula(r.Status),
-		guardFormula(r.Endpoint),
 		guardFormula(r.Region),
 		guardFormula(r.AccountID),
 		createdAt,
@@ -85,8 +86,26 @@ func csvRow(r model.Resource) []string {
 		r.EOLDate, // fixed YYYY-MM-DD format, never a formula trigger
 		boolPtrCell(r.PubliclyAccessible),
 		boolPtrCell(r.Encrypted),
-		int32PtrCell(r.BackupRetentionDays),
+		guardFormula(joinAttributes(r)),
 	}
+}
+
+// joinAttributes flattens the attribute bag into one cell, using the same
+// reversible k=v;k=v encoding as joinTags. Attributes and measures share the
+// cell because their key sets are disjoint by construction (each key is
+// declared once in model, in one map or the other), so a reader can split the
+// cell without needing to know which side a key came from. An absent key
+// means the service did not report it — never a zero value.
+func joinAttributes(r model.Resource) string {
+	if len(r.Attributes) == 0 && len(r.Measures) == 0 {
+		return ""
+	}
+	flat := make(map[string]string, len(r.Attributes)+len(r.Measures))
+	maps.Copy(flat, r.Attributes)
+	for k, v := range r.Measures {
+		flat[k] = strconv.FormatInt(v, 10)
+	}
+	return joinTags(flat)
 }
 
 // boolPtrCell renders a tri-state boolean: empty when the service did not
@@ -96,13 +115,6 @@ func boolPtrCell(v *bool) string {
 		return ""
 	}
 	return strconv.FormatBool(*v)
-}
-
-func int32PtrCell(v *int32) string {
-	if v == nil {
-		return ""
-	}
-	return strconv.FormatInt(int64(*v), 10)
 }
 
 // guardFormula defends against spreadsheet formula injection (CSV injection):

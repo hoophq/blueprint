@@ -122,20 +122,27 @@ func tableTags(ctx context.Context, client *dynamodb.Client, arn string) (map[st
 }
 
 func tableResource(t ddbtypes.TableDescription, tags map[string]string, region, accountID string) model.Resource {
-	return model.Resource{
-		ARN:           aws.ToString(t.TableArn),
-		Service:       model.ServiceDynamoDB,
-		Kind:          "table",
-		Name:          aws.ToString(t.TableName),
-		Engine:        "dynamodb",
-		InstanceClass: billingMode(t.BillingModeSummary),
-		StorageGB:     bytesToGB(aws.ToInt64(t.TableSizeBytes)),
-		Status:        string(t.TableStatus),
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     t.CreationDateTime,
-		Tags:          tags,
+	r := model.Resource{
+		ARN:       aws.ToString(t.TableArn),
+		Service:   model.ServiceDynamoDB,
+		Type:      model.TypeDynamoDBTable,
+		Name:      aws.ToString(t.TableName),
+		Status:    string(t.TableStatus),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: t.CreationDateTime,
+		Tags:      tags,
 	}
+	r.SetAttr(model.AttrEngine, "dynamodb")
+	// A table has no instance class; on-demand vs provisioned is the closest
+	// thing DynamoDB has to a shape, and it keeps its own AWS name.
+	r.SetAttr(model.AttrBillingMode, billingMode(t.BillingModeSummary))
+	// TableSizeBytes is already exact — recorded as-is rather than rounded to
+	// whole gigabytes, which used to inflate every small table to 1 GB.
+	if size := aws.ToInt64(t.TableSizeBytes); size > 0 {
+		r.SetMeasure(model.MeasureSizeBytes, size)
+	}
+	return r
 }
 
 // billingMode normalizes the billing mode summary. DynamoDB omits the summary
@@ -146,7 +153,3 @@ func billingMode(s *ddbtypes.BillingModeSummary) string {
 	}
 	return string(s.BillingMode)
 }
-
-// bytesToGB rounds a byte count up to whole gigabytes, so any non-empty table
-// registers at least 1 GB.
-func bytesToGB(bytes int64) int32 { return ceilGB(bytes, 1<<30) }

@@ -8,11 +8,13 @@ import (
 )
 
 func res(arn, name, engine, version, status string) model.Resource {
-	return model.Resource{
-		ARN: arn, Name: name, Service: model.ServiceRDS, Kind: "instance",
-		Engine: engine, EngineVersion: version, Status: status,
-		Region: "us-east-1", AccountID: "111111111111",
+	r := model.Resource{
+		ARN: arn, Name: name, Service: model.ServiceRDS, Type: model.TypeRDSInstance,
+		Status: status, Region: "us-east-1", AccountID: "111111111111",
 	}
+	r.SetAttr(model.AttrEngine, engine)
+	r.SetAttr(model.AttrEngineVersion, version)
+	return r
 }
 
 func TestCompare(t *testing.T) {
@@ -80,6 +82,55 @@ func TestWriteRendersBuckets(t *testing.T) {
 		if !strings.Contains(out, needle) {
 			t.Errorf("diff output missing %q\n---\n%s", needle, out)
 		}
+	}
+}
+
+// The diff walks the attribute bag generically, so a key no core field knows
+// about still drifts. That is what keeps this package working for scanners
+// that do not exist yet — nobody has to come back here and add a case.
+func TestCompareDriftsOnUnknownBagKeys(t *testing.T) {
+	before := res("arn:a", "widget", "postgres", "15.4", "available")
+	before.SetAttr("some_future_key", "old-value")
+	after := res("arn:a", "widget", "postgres", "15.4", "available")
+	after.SetAttr("some_future_key", "new-value")
+
+	d := Compare(
+		&model.Snapshot{Resources: []model.Resource{before}},
+		&model.Snapshot{Resources: []model.Resource{after}},
+	)
+	if len(d.Changed) != 1 || len(d.Changed[0].Fields) != 1 {
+		t.Fatalf("Changed = %+v, want one resource with one field", d.Changed)
+	}
+	if f := d.Changed[0].Fields[0]; f.Field != "some_future_key" || f.Old != "old-value" || f.New != "new-value" {
+		t.Errorf("field change = %+v, want some_future_key old-value → new-value", f)
+	}
+}
+
+// A measure the service stopped reporting must not drift against a real zero:
+// "not reported" renders as an empty side, never as 0.
+func TestCompareSeparatesUnreportedMeasuresFromZero(t *testing.T) {
+	silent := res("arn:a", "widget", "postgres", "15.4", "available")
+	zero := res("arn:a", "widget", "postgres", "15.4", "available")
+	zero.SetMeasure(model.MeasureBackupRetentionDays, 0)
+
+	d := Compare(
+		&model.Snapshot{Resources: []model.Resource{silent}},
+		&model.Snapshot{Resources: []model.Resource{zero}},
+	)
+	if len(d.Changed) != 1 || len(d.Changed[0].Fields) != 1 {
+		t.Fatalf("Changed = %+v, want one resource with one field", d.Changed)
+	}
+	f := d.Changed[0].Fields[0]
+	if f.Field != model.MeasureBackupRetentionDays || f.Old != "" || f.New != "0" {
+		t.Errorf("field change = %+v, want backup_retention_days \"\" → 0", f)
+	}
+
+	// And two resources that both stay silent do not drift at all.
+	if d := Compare(
+		&model.Snapshot{Resources: []model.Resource{silent}},
+		&model.Snapshot{Resources: []model.Resource{silent}},
+	); !d.Empty() {
+		t.Errorf("two unreported measures drifted against each other: %+v", d)
 	}
 }
 

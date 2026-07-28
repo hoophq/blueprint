@@ -390,19 +390,19 @@
   </section>
 
   <section id="empty-state" class="rr-section empty" hidden>
-    <h2>No databases found</h2>
-    <p>The scan completed but discovered no managed databases. Possible causes:</p>
+    <h2>No resources found</h2>
+    <p>The scan completed but discovered nothing. Possible causes:</p>
     <ul>
       <li>The credentials point at the wrong AWS account or profile.</li>
-      <li>The scanned regions host no managed databases &mdash; try scanning more regions.</li>
+      <li>The scanned regions host none of the services blueprint covers &mdash; try scanning more regions.</li>
       <li>The role is missing read permissions (for example <span class="mono">rds:DescribeDBInstances</span>, <span class="mono">dynamodb:ListTables</span>, <span class="mono">elasticache:DescribeCacheClusters</span>).</li>
-      <li>Databases are self-hosted on EC2 &mdash; blueprint only sees AWS-managed services.</li>
+      <li>The workloads are self-hosted on EC2 &mdash; blueprint only sees AWS-managed services.</li>
     </ul>
   </section>
 
   <section class="rr-section" id="stats-section">
     <div class="rr-kpis" id="kpis"></div>
-    <div class="rr-attr-bar" id="attr-bar" aria-label="Databases by attribution tier"></div>
+    <div class="rr-attr-bar" id="attr-bar" aria-label="Resources by attribution tier"></div>
     <div class="rr-attr-legend" id="attr-legend"></div>
   </section>
 
@@ -420,11 +420,12 @@
       <span class="rr-section-sub" id="row-count"></span>
     </div>
     <div class="controls">
-      <input id="filter" type="search" placeholder="Filter by name, engine, ARN, or tag" aria-label="Filter databases">
+      <input id="filter" type="search" placeholder="Filter by name, type, engine, ARN, or tag" aria-label="Filter resources">
       <label>Group by
         <select id="groupby">
           <option value="none" selected>none</option>
           <option value="service">service</option>
+          <option value="type">type</option>
           <option value="engine">engine</option>
           <option value="environment">environment</option>
           <option value="region">region</option>
@@ -481,23 +482,55 @@
     return "untagged";
   }
 
+  // Service-specific detail lives in the attribute bag rather than in fixed
+  // columns, so the report keeps working as new services land. An absent key
+  // means the service did not report it — never a zero or an empty string.
+  function attr(r, key) {
+    return (r.attributes && r.attributes[key]) || "";
+  }
+  // measure returns the numeric value or undefined when not reported, so a
+  // real zero (no backups, empty table) never reads the same as silence.
+  function measure(r, key) {
+    return r.measures ? r.measures[key] : undefined;
+  }
+
+  // CLASS_KEYS is the fallback order for the "Class" column: whichever sizing
+  // dimension a service actually bills on. Presentation only — the data keeps
+  // each concept under its own key.
+  var CLASS_KEYS = ["instance_class", "billing_mode"];
+
   // Exposure flags are tri-state in the data: absent means the service does
   // not report the field, so only explicit risky values count.
   function isExposed(r) {
-    return r.publicly_accessible === true || r.encrypted === false || r.backup_retention_days === 0;
+    return r.publicly_accessible === true || r.encrypted === false || r._backup === 0;
   }
 
-  // Precompute the tier and one lowercase haystack per row for the filter.
+  // Precompute the tier, the bag lookups every renderer needs, and one
+  // lowercase haystack per row for the filter. Doing the bag reads once here
+  // keeps the rest of the report reading plain fields.
   resources.forEach(function (r) {
     r._tier = tierOf(r);
     TIER_BY_KEY[r._tier].count++;
-    var hay = [r.name, r.engine, r.engine_version, r.arn, r.service, r.kind,
-      r.region, r.account_id, r.environment, r.owner, r.status, r.instance_class];
+
+    r._engine = attr(r, "engine");
+    r._engineVersion = attr(r, "engine_version");
+    r._class = "";
+    for (var i = 0; i < CLASS_KEYS.length && !r._class; i++) {
+      r._class = attr(r, CLASS_KEYS[i]);
+    }
+    r._sizeBytes = measure(r, "size_bytes");
+    r._backup = measure(r, "backup_retention_days");
+    // "AWS::RDS::DBCluster" → "DBCluster": the CloudFormation type without the
+    // provider/service prefix already shown in the Service column.
+    r._typeShort = String(r.type || "").split("::").pop();
+
+    var hay = [r.name, r._engine, r._engineVersion, r.arn, r.service, r.type,
+      r.region, r.account_id, r.environment, r.owner, r.status, r._class];
     if (r.eol) hay.push("eol");
     if (isExposed(r)) hay.push("exposed");
     if (r.publicly_accessible === true) hay.push("public");
     if (r.encrypted === false) hay.push("unencrypted");
-    if (r.backup_retention_days === 0) hay.push("no-backups");
+    if (r._backup === 0) hay.push("no-backups");
     if (r.tags) {
       Object.keys(r.tags).forEach(function (k) {
         hay.push(k, r.tags[k], k + "=" + r.tags[k]);
@@ -505,6 +538,18 @@
     }
     r._hay = hay.filter(Boolean).join("\n").toLowerCase();
   });
+
+  // formatSize renders a byte measure at human scale. Sizes span table rows of
+  // a few KB up to multi-TB warehouses, so a fixed unit would read as either
+  // 0 or an unreadable number of digits.
+  function formatSize(bytes) {
+    if (typeof bytes !== "number" || bytes <= 0) return "";
+    var tb = bytes / 1099511627776;
+    if (tb >= 1) return (tb >= 10 ? Math.round(tb) : tb.toFixed(1)) + " TB";
+    var gb = bytes / 1073741824;
+    if (gb >= 1) return (gb >= 10 ? Math.round(gb) : gb.toFixed(1)) + " GB";
+    return Math.max(1, Math.round(bytes / 1048576)) + " MB";
+  }
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -531,7 +576,7 @@
   var accounts = data.accounts || [];
   var regions = data.regions || [];
   document.getElementById("chip-scope").textContent =
-    plural(accounts.length, "account") + " · " + plural(regions.length, "region") + " · " + plural(resources.length, "database");
+    plural(accounts.length, "account") + " · " + plural(regions.length, "region") + " · " + plural(resources.length, "resource");
 
   // ---- Failures banner (honesty ledger) ------------------------------------
   if (failures.length > 0) {
@@ -563,12 +608,12 @@
   var activeTier = null;
 
   // ---- Stat strip -----------------------------------------------------------
-  var seen = { engines: {}, accounts: {} };
+  var seen = { types: {}, accounts: {} };
   var noOwner = 0;
   var eolCount = 0;
   var exposedCount = 0;
   resources.forEach(function (r) {
-    if (r.engine) seen.engines[r.engine] = true;
+    if (r.type) seen.types[r.type] = true;
     if (r.account_id) seen.accounts[r.account_id] = true;
     if (!r.owner) noOwner++;
     if (r.eol) eolCount++;
@@ -588,12 +633,12 @@
     box.appendChild(el("div", subCls, sub));
     kpisEl.appendChild(box);
   }
-  addStat("Databases", total.toLocaleString(),
-    plural(Object.keys(seen.engines).length, "engine") + " · " + plural(Object.keys(seen.accounts).length, "account"));
+  addStat("Resources", total.toLocaleString(),
+    plural(Object.keys(seen.types).length, "type") + " · " + plural(Object.keys(seen.accounts).length, "account"));
   addStat("Attribution score", String(Math.round((100 * TIER_BY_KEY.full.count) / total)),
     "owner + environment tagged", { denom: "/100" });
   addStat("Untagged", TIER_BY_KEY.untagged.count.toLocaleString(), "no owner or environment");
-  addStat("Missing owner", noOwner.toLocaleString(), Math.round((100 * noOwner) / total) + "% of all databases");
+  addStat("Missing owner", noOwner.toLocaleString(), Math.round((100 * noOwner) / total) + "% of all resources");
   addStat("End-of-life", eolCount.toLocaleString(),
     eolCount === 0 ? "no EOL engine versions" : "upstream support ended",
     eolCount === 0 ? { ok: true } : { bad: true });
@@ -611,7 +656,7 @@
     var seg = el("div", "rr-attr-seg");
     seg.style.background = t.color;
     seg.style.flex = t.count + " 1 0%";
-    seg.title = t.label + " · " + plural(t.count, "database");
+    seg.title = t.label + " · " + plural(t.count, "resource");
     seg.addEventListener("click", function () { setTier(t.key); });
     t._seg = seg;
     barEl.appendChild(seg);
@@ -655,19 +700,22 @@
   var servicesSeen = {};
   var serviceCount = 0;
   resources.forEach(function (r) {
-    var key = r.engine || "(unknown)";
-    var e = engineMap[key];
-    if (!e) {
-      e = engineMap[key] = { name: key, service: r.service || "", count: 0, versions: {}, regions: {} };
-      engineRows.push(e);
-    }
-    e.count++;
-    if (r.engine_version) e.versions[r.engine_version] = true;
-    if (r.region) e.regions[r.region] = true;
     if (r.service && !servicesSeen[r.service]) {
       servicesSeen[r.service] = true;
       serviceCount++;
     }
+    // Services with no engine concept (object stores, compute, networking)
+    // are simply absent here rather than piling into an "(unknown)" bucket
+    // that would imply blueprint failed to read something.
+    if (!r._engine) return;
+    var e = engineMap[r._engine];
+    if (!e) {
+      e = engineMap[r._engine] = { name: r._engine, service: r.service || "", count: 0, versions: {}, regions: {} };
+      engineRows.push(e);
+    }
+    e.count++;
+    if (r._engineVersion) e.versions[r._engineVersion] = true;
+    if (r.region) e.regions[r.region] = true;
   });
   engineRows.sort(function (a, b) {
     return b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -699,21 +747,24 @@
   engRowsEl.replaceChildren(engFrag);
   document.getElementById("engines-sub").textContent =
     plural(engineRows.length, "engine") + " · " + plural(serviceCount, "service");
+  // Nothing in scope reports an engine — hide the section instead of showing
+  // an empty chart.
+  if (engineRows.length === 0) document.getElementById("engines-section").hidden = true;
 
   // ---- Inventory table ----------------------------------------------------
   var COLUMNS = [
     { key: "name", label: "Name" },
     { key: "service", label: "Service" },
-    { key: "engine", label: "Engine" },
-    { key: "instance_class", label: "Class" },
-    { key: "storage_gb", label: "Storage", num: true },
+    { key: "_engine", label: "Engine" },
+    { key: "_class", label: "Class" },
+    { key: "_sizeBytes", label: "Size", num: true },
     { key: "region", label: "Region" },
     { key: "account_id", label: "Account" },
     { key: "environment", label: "Environment" },
     { key: "owner", label: "Owner" },
     { key: "status", label: "Status" }
   ];
-  var GROUP_FIELD = { service: "service", engine: "engine", environment: "environment", region: "region", account: "account_id" };
+  var GROUP_FIELD = { service: "service", type: "type", engine: "_engine", environment: "environment", region: "region", account: "account_id" };
 
   var filterEl = document.getElementById("filter");
   var groupEl = document.getElementById("groupby");
@@ -757,19 +808,19 @@
   }
 
   function sortValue(r, key) {
-    if (key === "storage_gb") return r.storage_gb || 0;
+    if (key === "_sizeBytes") return r._sizeBytes || 0;
     return String(r[key] || "").toLowerCase();
   }
 
   // compareRows orders by the column value; equal engine names are tie-broken
-  // by engine_version compared numerically, so "15.4" sorts after "9.6".
+  // by engine version compared numerically, so "15.4" sorts after "9.6".
   function compareRows(a, b, key) {
     var av = sortValue(a, key);
     var bv = sortValue(b, key);
     if (typeof av === "number") return av - bv;
     if (av !== bv) return av < bv ? -1 : 1;
-    if (key === "engine") {
-      return String(a.engine_version || "").localeCompare(String(b.engine_version || ""), undefined, { numeric: true });
+    if (key === "_engine") {
+      return String(a._engineVersion || "").localeCompare(String(b._engineVersion || ""), undefined, { numeric: true });
     }
     return 0;
   }
@@ -836,17 +887,19 @@
 
     var svc = el("td", "", "");
     svc.appendChild(el("span", "", r.service || ""));
-    if (r.kind) {
+    if (r._typeShort) {
       svc.appendChild(document.createTextNode(" "));
-      svc.appendChild(el("span", "sub", r.kind));
+      var typeEl = el("span", "sub", r._typeShort);
+      typeEl.title = r.type;
+      svc.appendChild(typeEl);
     }
     tr.appendChild(svc);
 
     var eng = el("td", "", "");
-    eng.appendChild(el("span", "", r.engine || ""));
-    if (r.engine_version) {
+    eng.appendChild(el("span", "", r._engine));
+    if (r._engineVersion) {
       eng.appendChild(document.createTextNode(" "));
-      eng.appendChild(el("span", "sub", r.engine_version));
+      eng.appendChild(el("span", "sub", r._engineVersion));
     }
     if (r.eol) {
       eng.appendChild(document.createTextNode(" "));
@@ -856,9 +909,9 @@
     }
     tr.appendChild(eng);
 
-    tr.appendChild(cellOrDash(r.instance_class, "mono"));
+    tr.appendChild(cellOrDash(r._class, "mono"));
 
-    tr.appendChild(cellOrDash(r.storage_gb > 0 ? r.storage_gb.toLocaleString() + " GB" : "", "num"));
+    tr.appendChild(cellOrDash(formatSize(r._sizeBytes), "num"));
 
     tr.appendChild(cellOrDash(r.region, "mono"));
     tr.appendChild(cellOrDash(r.account_id, "mono"));
@@ -873,7 +926,7 @@
       statusTd.appendChild(document.createTextNode(" "));
       statusTd.appendChild(el("span", "tag tag-amber", "unencrypted"));
     }
-    if (r.backup_retention_days === 0) {
+    if (r._backup === 0) {
       statusTd.appendChild(document.createTextNode(" "));
       statusTd.appendChild(el("span", "tag tag-amber", "no backups"));
     }
@@ -908,7 +961,7 @@
 
     if (rows.length === 0) {
       var tr = el("tr", "no-match");
-      var td = el("td", "dim", "No databases match the current filters.");
+      var td = el("td", "dim", "No resources match the current filters.");
       td.colSpan = COLUMNS.length;
       tr.appendChild(td);
       frag.appendChild(tr);
@@ -944,7 +997,7 @@
     }
 
     tbody.replaceChildren(frag);
-    countEl.textContent = rows.length.toLocaleString() + " of " + total.toLocaleString() + " databases";
+    countEl.textContent = rows.length.toLocaleString() + " of " + total.toLocaleString() + " resources";
   }
 
   var debounceTimer = null;

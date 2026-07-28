@@ -30,7 +30,9 @@ func TestDeriveEOL(t *testing.T) {
 		{"mysql", "", false, ""},
 	}
 	for _, c := range cases {
-		r := Resource{Engine: c.engine, EngineVersion: c.version}
+		var r Resource
+		r.SetAttr(AttrEngine, c.engine)
+		r.SetAttr(AttrEngineVersion, c.version)
 		r.DeriveEOL(now)
 		if r.EOL != c.wantEOL || r.EOLDate != c.wantDate {
 			t.Errorf("DeriveEOL(%s %s) = (%v, %q), want (%v, %q)",
@@ -41,7 +43,9 @@ func TestDeriveEOL(t *testing.T) {
 
 func TestDeriveEOLFutureDateNotFlagged(t *testing.T) {
 	// The same version must not be flagged before its date passes.
-	r := Resource{Engine: "mysql", EngineVersion: "8.0.35"}
+	var r Resource
+	r.SetAttr(AttrEngine, "mysql")
+	r.SetAttr(AttrEngineVersion, "8.0.35")
 	r.DeriveEOL(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	if r.EOL {
 		t.Errorf("mysql 8.0 flagged EOL before 2026-04-30")

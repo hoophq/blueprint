@@ -96,14 +96,14 @@ keeps its last 30 censuses; history lives on your disk and nowhere else.
 - ElastiCache (Redis, Valkey, Memcached)
 - Redshift, including Redshift Serverless
 
-Every resource is normalized into one model: engine, version, instance class, storage, endpoint host, status, region, account, creation time, tags. Environment and owner are taken from tags only — imported, never inferred.
+Every resource is normalized into one model with a narrow core — CloudFormation type (`AWS::RDS::DBInstance`), name, status, region, account, creation time, tags, and the exposure flags — plus an open bag of service-specific `attributes` (engine, version, instance class, endpoint host, …) and numeric `measures` (`size_bytes`, `backup_retention_days`, …) keyed by AWS's own field names. A key that is absent means the service did not report it; it never means zero. Environment and owner are taken from tags only — imported, never inferred.
 
 ## Outputs
 
-- **Terminal**: a sprawl summary — total databases, distinct engines/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
+- **Terminal**: a sprawl summary — total resources, distinct types/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
 - **HTML**: a single self-contained file (`blueprint-YYYY-MM-DD.html`) you can open in a browser or attach to a doc. No external assets, no CDN calls.
 - **JSON**: the complete snapshot (`blueprint-YYYY-MM-DD.json`) — every resource, plus the failure ledger.
-- **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets.
+- **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets. The columns are the narrow core and stay fixed as new services land; attributes and measures ride in a final `k=v;k=v` cell.
 
 ## Required IAM permissions
 

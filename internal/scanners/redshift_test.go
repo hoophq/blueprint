@@ -10,23 +10,6 @@ import (
 	"github.com/hoophq/blueprint/internal/model"
 )
 
-func TestMbToGB(t *testing.T) {
-	cases := map[int64]int32{
-		0:    0,
-		-1:   0,
-		1:    1,
-		1023: 1,
-		1024: 1,
-		1025: 2,
-		2048: 2,
-	}
-	for mb, want := range cases {
-		if got := mbToGB(mb); got != want {
-			t.Errorf("mbToGB(%d) = %d, want %d", mb, got, want)
-		}
-	}
-}
-
 func TestRedshiftClusterARN(t *testing.T) {
 	got := RedshiftClusterARN("aws", "us-east-1", "123456789012", "analytics")
 	want := "arn:aws:redshift:us-east-1:123456789012:cluster:analytics"
@@ -72,32 +55,41 @@ func TestRedshiftClusterResource(t *testing.T) {
 	if r.ARN != "arn:aws:redshift:us-east-1:123456789012:cluster:analytics" {
 		t.Errorf("unexpected ARN: %q", r.ARN)
 	}
-	if r.Service != model.ServiceRedshift || r.Kind != "cluster" || r.Engine != "redshift" {
-		t.Errorf("unexpected service/kind/engine: %+v", r)
+	if r.Service != model.ServiceRedshift || r.Type != model.TypeRedshiftCluster {
+		t.Errorf("unexpected service/type: %+v", r)
 	}
-	if r.InstanceClass != "ra3.xlplus" || r.EngineVersion != "1.0" {
-		t.Errorf("unexpected class/version: %+v", r)
+	if got := r.Attr(model.AttrEngine); got != "redshift" {
+		t.Errorf("engine = %q, want redshift", got)
 	}
-	if r.MultiAZ == nil || !*r.MultiAZ {
-		t.Errorf("MultiAZ = %v, want pointer to true for \"Enabled\"", r.MultiAZ)
+	if got := r.Attr(model.AttrInstanceClass); got != "ra3.xlplus" {
+		t.Errorf("instance_class = %q, want ra3.xlplus", got)
 	}
-	if r.StorageGB != 2 {
-		t.Errorf("StorageGB = %d, want 2 (rounded up)", r.StorageGB)
+	if got := r.Attr(model.AttrEngineVersion); got != "1.0" {
+		t.Errorf("engine_version = %q, want 1.0", got)
 	}
-	if r.Endpoint != "analytics.redshift.amazonaws.com" {
-		t.Errorf("unexpected endpoint: %q", r.Endpoint)
+	if got := r.Attr(model.AttrMultiAZ); got != "true" {
+		t.Errorf("multi_az = %q, want \"true\" for \"Enabled\"", got)
+	}
+	if got, ok := r.Measure(model.MeasureSizeBytes); !ok || got != 1025*1024*1024 {
+		t.Errorf("size_bytes = (%d, %v), want (%d, true)", got, ok, 1025*1024*1024)
+	}
+	if got := r.Attr(model.AttrEndpoint); got != "analytics.redshift.amazonaws.com" {
+		t.Errorf("unexpected endpoint: %q", got)
 	}
 	if r.Tags["env"] != "prod" {
 		t.Errorf("unexpected tags: %v", r.Tags)
 	}
 
 	// Nil endpoint and absent MultiAZ must not panic or mislead: a field the
-	// API did not report stays nil rather than becoming false.
+	// API did not report leaves the key absent rather than reading as false.
 	c.Endpoint = nil
 	c.MultiAZ = nil
 	r = redshiftClusterResource(c, "us-east-1", "123456789012")
-	if r.Endpoint != "" || r.MultiAZ != nil {
-		t.Errorf("expected empty endpoint and nil MultiAZ, got %+v", r)
+	if _, ok := r.Attributes[model.AttrEndpoint]; ok {
+		t.Errorf("expected no endpoint attribute, got %q", r.Attr(model.AttrEndpoint))
+	}
+	if _, ok := r.Attributes[model.AttrMultiAZ]; ok {
+		t.Errorf("expected no multi_az attribute, got %q", r.Attr(model.AttrMultiAZ))
 	}
 
 	// The ARN partition is derived from ClusterNamespaceArn when present.
@@ -117,24 +109,32 @@ func TestWorkgroupResource(t *testing.T) {
 		Endpoint:      &rsstypes.Endpoint{Address: aws.String("etl.123456789012.us-east-1.redshift-serverless.amazonaws.com")},
 	}
 	r := workgroupResource(w, "us-east-1", "123456789012")
-	if r.Service != model.ServiceRedshift || r.Kind != "serverless" || r.Engine != "redshift-serverless" {
-		t.Errorf("unexpected service/kind/engine: %+v", r)
+	if r.Service != model.ServiceRedshift || r.Type != model.TypeRedshiftServerlessWorkgroup {
+		t.Errorf("unexpected service/type: %+v", r)
+	}
+	if got := r.Attr(model.AttrEngine); got != "redshift-serverless" {
+		t.Errorf("engine = %q, want redshift-serverless", got)
 	}
 	if r.Name != "etl" || r.Status != "AVAILABLE" {
 		t.Errorf("unexpected name/status: %+v", r)
 	}
-	if r.InstanceClass != "8 RPU" {
-		t.Errorf("InstanceClass = %q, want \"8 RPU\"", r.InstanceClass)
+	// Base capacity is a number of RPUs, kept as a measure rather than
+	// pre-formatted into the instance-class slot it does not belong in.
+	if got, ok := r.Measure(model.MeasureBaseCapacityRPU); !ok || got != 8 {
+		t.Errorf("base_capacity_rpu = (%d, %v), want (8, true)", got, ok)
 	}
-	if r.Endpoint != "etl.123456789012.us-east-1.redshift-serverless.amazonaws.com" {
-		t.Errorf("unexpected endpoint: %q", r.Endpoint)
+	if got := r.Attr(model.AttrEndpoint); got != "etl.123456789012.us-east-1.redshift-serverless.amazonaws.com" {
+		t.Errorf("unexpected endpoint: %q", got)
 	}
 
-	// No base capacity or endpoint: fields stay empty.
+	// No base capacity or endpoint: the keys stay absent.
 	w.BaseCapacity = nil
 	w.Endpoint = nil
 	r = workgroupResource(w, "us-east-1", "123456789012")
-	if r.InstanceClass != "" || r.Endpoint != "" {
-		t.Errorf("expected empty class/endpoint, got %+v", r)
+	if v, ok := r.Measure(model.MeasureBaseCapacityRPU); ok {
+		t.Errorf("base_capacity_rpu = (%d, true), want not reported", v)
+	}
+	if _, ok := r.Attributes[model.AttrEndpoint]; ok {
+		t.Errorf("expected no endpoint attribute, got %q", r.Attr(model.AttrEndpoint))
 	}
 }

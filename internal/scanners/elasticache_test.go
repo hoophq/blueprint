@@ -37,24 +37,35 @@ func TestReplicationGroupResource(t *testing.T) {
 		},
 	}
 	r := replicationGroupResource(g, "us-east-1", "1")
-	if r.Service != model.ServiceElastiCache || r.Kind != "cluster" {
-		t.Errorf("unexpected service/kind: %+v", r)
+	if r.Service != model.ServiceElastiCache || r.Type != model.TypeElastiCacheReplicationGroup {
+		t.Errorf("unexpected service/type: %+v", r)
 	}
-	if r.Engine != "valkey" || r.InstanceClass != "cache.r7g.large" {
-		t.Errorf("unexpected engine/class: %+v", r)
+	if got := r.Attr(model.AttrEngine); got != "valkey" {
+		t.Errorf("engine = %q, want valkey", got)
 	}
-	if r.MultiAZ == nil || !*r.MultiAZ {
-		t.Errorf("MultiAZ = %v, want pointer to true for MultiAZStatusEnabled", r.MultiAZ)
+	if got := r.Attr(model.AttrInstanceClass); got != "cache.r7g.large" {
+		t.Errorf("instance_class = %q, want cache.r7g.large", got)
 	}
-	if r.Endpoint != "primary.rg-1.cache.amazonaws.com" {
-		t.Errorf("expected primary endpoint fallback, got %q", r.Endpoint)
+	if got := r.Attr(model.AttrMultiAZ); got != "true" {
+		t.Errorf("multi_az = %q, want \"true\" for MultiAZStatusEnabled", got)
+	}
+	if got := r.Attr(model.AttrEndpoint); got != "primary.rg-1.cache.amazonaws.com" {
+		t.Errorf("expected primary endpoint fallback, got %q", got)
+	}
+
+	// An empty MultiAZ enum means the API did not report it, which must leave
+	// the key absent rather than reading as "false".
+	g.MultiAZ = ""
+	r = replicationGroupResource(g, "us-east-1", "1")
+	if _, ok := r.Attributes[model.AttrMultiAZ]; ok {
+		t.Errorf("expected no multi_az attribute, got %q", r.Attr(model.AttrMultiAZ))
 	}
 
 	// ConfigurationEndpoint wins when present (cluster-mode enabled).
 	g.ConfigurationEndpoint = &ectypes.Endpoint{Address: aws.String("config.rg-1.cache.amazonaws.com")}
 	r = replicationGroupResource(g, "us-east-1", "1")
-	if r.Endpoint != "config.rg-1.cache.amazonaws.com" {
-		t.Errorf("expected configuration endpoint, got %q", r.Endpoint)
+	if got := r.Attr(model.AttrEndpoint); got != "config.rg-1.cache.amazonaws.com" {
+		t.Errorf("expected configuration endpoint, got %q", got)
 	}
 }
 
@@ -71,14 +82,17 @@ func TestCacheClusterResource(t *testing.T) {
 		},
 	}
 	r := cacheClusterResource(c, "us-east-1", "1")
-	if r.Kind != "instance" || r.Service != model.ServiceElastiCache {
-		t.Errorf("unexpected kind/service: %+v", r)
+	if r.Type != model.TypeElastiCacheCacheCluster || r.Service != model.ServiceElastiCache {
+		t.Errorf("unexpected type/service: %+v", r)
 	}
-	if r.Engine != "memcached" || r.EngineVersion != "1.6.22" {
-		t.Errorf("unexpected engine: %+v", r)
+	if got := r.Attr(model.AttrEngine); got != "memcached" {
+		t.Errorf("engine = %q, want memcached", got)
 	}
-	if r.Endpoint != "mc-1.cfg.cache.amazonaws.com" {
-		t.Errorf("unexpected endpoint: %q", r.Endpoint)
+	if got := r.Attr(model.AttrEngineVersion); got != "1.6.22" {
+		t.Errorf("engine_version = %q, want 1.6.22", got)
+	}
+	if got := r.Attr(model.AttrEndpoint); got != "mc-1.cfg.cache.amazonaws.com" {
+		t.Errorf("unexpected endpoint: %q", got)
 	}
 
 	// Standalone node: falls back to the first cache node endpoint.
@@ -87,8 +101,8 @@ func TestCacheClusterResource(t *testing.T) {
 		{Endpoint: &ectypes.Endpoint{Address: aws.String("node-0001.cache.amazonaws.com")}},
 	}
 	r = cacheClusterResource(c, "us-east-1", "1")
-	if r.Endpoint != "node-0001.cache.amazonaws.com" {
-		t.Errorf("expected node endpoint fallback, got %q", r.Endpoint)
+	if got := r.Attr(model.AttrEndpoint); got != "node-0001.cache.amazonaws.com" {
+		t.Errorf("expected node endpoint fallback, got %q", got)
 	}
 }
 
@@ -102,13 +116,19 @@ func TestServerlessCacheResource(t *testing.T) {
 		Endpoint:            &ectypes.Endpoint{Address: aws.String("sc-1.serverless.cache.amazonaws.com")},
 	}
 	r := serverlessCacheResource(s, "us-east-1", "1")
-	if r.Kind != "serverless" || r.Service != model.ServiceElastiCache {
-		t.Errorf("unexpected kind/service: %+v", r)
+	if r.Type != model.TypeElastiCacheServerlessCache || r.Service != model.ServiceElastiCache {
+		t.Errorf("unexpected type/service: %+v", r)
 	}
-	if r.Name != "sc-1" || r.Engine != "redis" || r.EngineVersion != "7.1" {
-		t.Errorf("unexpected identity fields: %+v", r)
+	if r.Name != "sc-1" {
+		t.Errorf("unexpected name: %q", r.Name)
 	}
-	if r.Endpoint != "sc-1.serverless.cache.amazonaws.com" {
-		t.Errorf("unexpected endpoint: %q", r.Endpoint)
+	if got := r.Attr(model.AttrEngine); got != "redis" {
+		t.Errorf("engine = %q, want redis", got)
+	}
+	if got := r.Attr(model.AttrEngineVersion); got != "7.1" {
+		t.Errorf("engine_version = %q, want 7.1", got)
+	}
+	if got := r.Attr(model.AttrEndpoint); got != "sc-1.serverless.cache.amazonaws.com" {
+		t.Errorf("unexpected endpoint: %q", got)
 	}
 }

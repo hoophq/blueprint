@@ -77,29 +77,32 @@ func redshiftClusterResource(c redshifttypes.Cluster, region, accountID string) 
 	// The partition is not hardcoded: GovCloud/China clusters live in
 	// aws-us-gov/aws-cn. ClusterNamespaceArn (returned by DescribeClusters)
 	// carries the right partition; fall back to "aws" when it is absent.
-	return model.Resource{
-		ARN:           RedshiftClusterARN(arnPartition(aws.ToString(c.ClusterNamespaceArn)), region, accountID, aws.ToString(c.ClusterIdentifier)),
-		Service:       model.ServiceRedshift,
-		Kind:          "cluster",
-		Name:          aws.ToString(c.ClusterIdentifier),
-		Engine:        "redshift",
-		EngineVersion: aws.ToString(c.ClusterVersion),
-		InstanceClass: aws.ToString(c.NodeType),
-		StorageGB:     mbToGB(aws.ToInt64(c.TotalStorageCapacityInMegaBytes)),
-		MultiAZ:       multiAZ,
-		Status:        aws.ToString(c.ClusterStatus),
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     c.ClusterCreateTime,
-		Tags:          toTagMap(c.Tags, func(t redshifttypes.Tag) (*string, *string) { return t.Key, t.Value }),
+	r := model.Resource{
+		ARN:       RedshiftClusterARN(arnPartition(aws.ToString(c.ClusterNamespaceArn)), region, accountID, aws.ToString(c.ClusterIdentifier)),
+		Service:   model.ServiceRedshift,
+		Type:      model.TypeRedshiftCluster,
+		Name:      aws.ToString(c.ClusterIdentifier),
+		Status:    aws.ToString(c.ClusterStatus),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: c.ClusterCreateTime,
+		Tags:      toTagMap(c.Tags, func(t redshifttypes.Tag) (*string, *string) { return t.Key, t.Value }),
 
 		PubliclyAccessible: c.PubliclyAccessible,
 		Encrypted:          c.Encrypted,
-		// Retention 0 means automated snapshots are disabled — the same
-		// "no backups" signal BackupRetentionPeriod carries on RDS.
-		BackupRetentionDays: c.AutomatedSnapshotRetentionPeriod,
 	}
+	r.SetAttr(model.AttrEngine, "redshift")
+	r.SetAttr(model.AttrEngineVersion, aws.ToString(c.ClusterVersion))
+	r.SetAttr(model.AttrInstanceClass, aws.ToString(c.NodeType))
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	r.SetBoolAttr(model.AttrMultiAZ, multiAZ)
+	if mb := aws.ToInt64(c.TotalStorageCapacityInMegaBytes); mb > 0 {
+		r.SetMeasure(model.MeasureSizeBytes, mb<<20)
+	}
+	// Retention 0 means automated snapshots are disabled — the same
+	// "no backups" signal BackupRetentionPeriod carries on RDS.
+	r.SetMeasureInt32(model.MeasureBackupRetentionDays, c.AutomatedSnapshotRetentionPeriod)
+	return r
 }
 
 func workgroupResource(w rsstypes.Workgroup, region, accountID string) model.Resource {
@@ -107,26 +110,25 @@ func workgroupResource(w rsstypes.Workgroup, region, accountID string) model.Res
 	if w.Endpoint != nil {
 		endpoint = aws.ToString(w.Endpoint.Address)
 	}
-	instanceClass := ""
-	if w.BaseCapacity != nil {
-		instanceClass = fmt.Sprintf("%d RPU", aws.ToInt32(w.BaseCapacity))
-	}
-	return model.Resource{
-		ARN:           aws.ToString(w.WorkgroupArn),
-		Service:       model.ServiceRedshift,
-		Kind:          "serverless",
-		Name:          aws.ToString(w.WorkgroupName),
-		Engine:        "redshift-serverless",
-		InstanceClass: instanceClass,
-		Status:        string(w.Status),
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     w.CreationDate,
+	r := model.Resource{
+		ARN:       aws.ToString(w.WorkgroupArn),
+		Service:   model.ServiceRedshift,
+		Type:      model.TypeRedshiftServerlessWorkgroup,
+		Name:      aws.ToString(w.WorkgroupName),
+		Status:    string(w.Status),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: w.CreationDate,
 		// Serverless namespaces are always encrypted and have no retention
 		// knob, so only public accessibility is reported.
 		PubliclyAccessible: w.PubliclyAccessible,
 	}
+	r.SetAttr(model.AttrEngine, "redshift-serverless")
+	// Base capacity is a number of Redshift Processing Units, not an instance
+	// class, so it is recorded as a measure under its own AWS name.
+	r.SetMeasureInt32(model.MeasureBaseCapacityRPU, w.BaseCapacity)
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	return r
 }
 
 // RedshiftClusterARN builds a provisioned cluster ARN: DescribeClusters does
@@ -144,9 +146,6 @@ func arnPartition(arn string) string {
 	}
 	return "aws"
 }
-
-// mbToGB rounds a megabyte count up to whole gigabytes.
-func mbToGB(mb int64) int32 { return ceilGB(mb, 1024) }
 
 // redshiftServerlessTags fetches tags for one workgroup ARN. A failure yields
 // nil tags plus the error; the caller keeps the workgroup and aggregates the
