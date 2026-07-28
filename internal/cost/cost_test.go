@@ -52,6 +52,15 @@ func group(name, account, amt string) cetypes.Group {
 	}
 }
 
+// noUnit strips the currency from a group, which is how Cost Explorer reports
+// an amount whose unit this tool has no name for.
+func noUnit(g cetypes.Group) cetypes.Group {
+	m := g.Metrics["AmortizedCost"]
+	m.Unit = nil
+	g.Metrics["AmortizedCost"] = m
+	return g
+}
+
 func page(groups ...cetypes.Group) *costexplorer.GetCostAndUsageOutput {
 	return &costexplorer.GetCostAndUsageOutput{
 		ResultsByTime: []cetypes.ResultByTime{{Groups: groups}},
@@ -509,14 +518,12 @@ func TestCollectLedgerShape(t *testing.T) {
 // A metric with no unit is a currency this tool does not know. Calling it USD
 // would silently add foreign amounts to dollars.
 func TestCollectDoesNotAssumeUSD(t *testing.T) {
-	g := group("Usage", "111111111111", "10.00")
-	m := g.Metrics["AmortizedCost"]
-	m.Unit = nil
-	g.Metrics["AmortizedCost"] = m
-
 	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
-		page(g, group("Usage", "222222222222", "5.00")),
-		page(),
+		page(noUnit(group("Usage", "111111111111", "10.00")), group("Usage", "222222222222", "5.00")),
+		page(
+			noUnit(group("Amazon DynamoDB", "111111111111", "10.00")),
+			group("Amazon DynamoDB", "222222222222", "5.00"),
+		),
 	}}
 	report := mustCollect(t, f, testOptions())
 	if len(report.Currencies) != 2 {
@@ -528,6 +535,82 @@ func TestCollectDoesNotAssumeUSD(t *testing.T) {
 	}
 	if report.Currencies[1].Currency != "USD" || report.Currencies[1].Total != "5.00" {
 		t.Errorf("USD entry = %+v", report.Currencies[1])
+	}
+}
+
+// The service breakdown and the attributed total come from two separately
+// billed queries, so the model's promise that one sums to the other spans two
+// round trips against data that can move between them. Both calls succeeding
+// is not enough to publish.
+func TestCollectDiscardsWhenTheBreakdownsDoNotReconcile(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "100.00")),
+		// The service query saw less than the record query did.
+		page(group("Amazon DynamoDB", "111111111111", "40.00")),
+	}}
+
+	report, failures := Collect(context.Background(), f, testOptions())
+	assertLedger(t, failures, "ce_breakdown_mismatch")
+	if len(report.Currencies) != 0 {
+		t.Errorf("published a breakdown that does not sum to its own total: %+v", report.Currencies)
+	}
+	// The message carries both figures, because "they disagree" without
+	// saying by how much leaves the reader unable to judge whether it was a
+	// rounding artifact or half the bill.
+	if got := failures[0].Error; !strings.Contains(got, "40.00") || !strings.Contains(got, "100.00") {
+		t.Errorf("ledger entry omits the two figures that disagree: %q", got)
+	}
+	// Both requests were still issued and are still disclosed.
+	if report.Meter.Requests != 2 {
+		t.Errorf("meter = %+v, want 2 requests", report.Meter)
+	}
+}
+
+// A currency in one query and not the other is a mismatch, not a currency
+// that quietly checks out against nothing.
+func TestCollectReconcilesAcrossCurrencies(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "10.00")),
+		page(noUnit(group("Amazon DynamoDB", "111111111111", "10.00"))),
+	}}
+	_, failures := Collect(context.Background(), f, testOptions())
+	assertLedger(t, failures, "ce_breakdown_mismatch")
+	if got := failures[0].Error; !strings.Contains(got, "unreported currency") {
+		t.Errorf("ledger entry does not name the currency that failed to reconcile: %q", got)
+	}
+}
+
+// Reconciling compares money, not formatting: the same amount written at
+// different precision is not a discrepancy.
+func TestCollectReconcilesAcrossDecimalWidths(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "10")),
+		page(group("Amazon DynamoDB", "111111111111", "10.0000000")),
+	}}
+	report, failures := Collect(context.Background(), f, testOptions())
+	if len(failures) != 0 {
+		t.Fatalf("10 and 10.0000000 were treated as different amounts: %+v", failures)
+	}
+	if cur := usd(t, report); cur.Attributed != "10.00" {
+		t.Errorf("Attributed = %q, want 10.00", cur.Attributed)
+	}
+}
+
+// Unattributed spend is not part of the promise: it has no service breakdown
+// to reconcile against, so tax and credits must not look like a discrepancy.
+func TestCollectDoesNotReconcileUnattributedSpend(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(
+			group("Usage", "111111111111", "10.00"),
+			group("Tax", "111111111111", "3.00"),
+			group("Credit", "111111111111", "-1.00"),
+		),
+		page(group("Amazon DynamoDB", "111111111111", "10.00")),
+	}}
+	cur := usd(t, mustCollect(t, f, testOptions()))
+	if cur.Total != "12.00" || cur.Attributed != "10.00" || cur.Unattributed != "2.00" {
+		t.Errorf("partition = total %q, attributed %q, unattributed %q; want 12.00 / 10.00 / 2.00",
+			cur.Total, cur.Attributed, cur.Unattributed)
 	}
 }
 

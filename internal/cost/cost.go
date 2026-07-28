@@ -192,6 +192,10 @@ var (
 	// the metric that was asked for. Substituting another metric, or treating
 	// the gap as zero, would both report a number nobody measured.
 	errMetricUnavailable = errors.New("cost explorer returned no value for the requested metric")
+	// errBreakdownMismatch is returned when the service query and the record
+	// type query disagree, so the breakdown would not sum to the total it is
+	// a breakdown of.
+	errBreakdownMismatch = errors.New("cost explorer's service and record type breakdowns do not reconcile")
 )
 
 // meter counts billed requests and enforces the budget. Requests are issued
@@ -293,7 +297,16 @@ func Collect(ctx context.Context, api API, opts Options) (*model.CostReport, []m
 	// same problem one level down, since it would no longer sum to Attributed.
 	// The meter and the ledger still ship, so the run discloses what it spent
 	// and why it has nothing to show for it.
+	// The two queries can each succeed and still disagree, so agreement is the
+	// third condition for publishing, alongside the two of them returning.
+	var recoErr error
 	if recErr == nil && svcErr == nil {
+		if recoErr = reconcile(records.rows, services.rows); recoErr != nil {
+			failures = append(failures, classify(opts, "reconciling the service and record type breakdowns", recoErr))
+		}
+	}
+
+	if recErr == nil && svcErr == nil && recoErr == nil {
 		report.Currencies = assemble(records.rows, services.rows)
 		// Only meaningful alongside a published rollup: with nothing to
 		// describe, "estimated: false" would be a claim about data that does
@@ -476,12 +489,74 @@ func buildFilter(accounts, recordTypes []string) *cetypes.Expression {
 	}
 }
 
+// reconcile checks the two queries against each other before anything is
+// published.
+//
+// Total, Attributed and Unattributed are exact by construction: they all come
+// from the record-type query, where every record type is either in the
+// attributed allowlist or it is not. Services is different. It comes from a
+// second, separately billed query, and the model promises it sums to
+// Attributed — a promise that spans two round trips against a warehouse that
+// can move between them, and that no arithmetic here can guarantee.
+//
+// So it is verified rather than assumed. A breakdown that does not add up to
+// its own total is precisely the figure a reader would reconcile against an
+// invoice and misread as a real finding.
+func reconcile(records, services []row) error {
+	attributed := map[string][]amount{}
+	for _, r := range records {
+		if attributedRecordTypes[r.name] {
+			attributed[r.currency] = append(attributed[r.currency], r.amt)
+		}
+	}
+	byService := map[string][]amount{}
+	for _, r := range services {
+		byService[r.currency] = append(byService[r.currency], r.amt)
+	}
+
+	// The union, so a currency that appears in only one of the two queries is
+	// a mismatch rather than a currency that quietly checks out against
+	// nothing.
+	seen := map[string]bool{}
+	currencies := make([]string, 0, len(attributed)+len(byService))
+	for _, m := range []map[string][]amount{attributed, byService} {
+		for c := range m {
+			if !seen[c] {
+				seen[c] = true
+				currencies = append(currencies, c)
+			}
+		}
+	}
+	sort.Strings(currencies)
+
+	for _, c := range currencies {
+		if total(attributed[c]).Cmp(total(byService[c])) == 0 {
+			continue
+		}
+		return fmt.Errorf("%w: in %s the service breakdown totals %s but attributed spend is %s",
+			errBreakdownMismatch, currencyLabel(c), sum(byService[c]), sum(attributed[c]))
+	}
+	return nil
+}
+
+// currencyLabel names a currency for a human-readable message, including the
+// case where Cost Explorer reported none.
+func currencyLabel(c string) string {
+	if c == "" {
+		return "the unreported currency"
+	}
+	return c
+}
+
 // assemble turns the two result sets into the per-currency report.
 //
 // The partition is exact by construction rather than by a checked sum: every
 // record type is either in the attributed allowlist or it is not, the two
 // sides are disjoint and cover everything, and the total is the sum of both.
 // There is no arithmetic here that could leave a remainder unaccounted for.
+// The one relationship that is *not* structural — Services summing to
+// Attributed, which spans two queries — is checked by reconcile before this
+// runs.
 func assemble(records, services []row) []model.CostByCurrency {
 	currencies := map[string]bool{}
 	for _, r := range records {
@@ -580,6 +655,13 @@ func classify(opts Options, what string, err error) model.Failure {
 			"%s: Cost Explorer returned no figure for this metric, so nothing was reported rather than a short "+
 				"total or a silently substituted metric — try another --cost-metric from %s (%v)",
 			what, strings.Join(Metrics(), ", "), err))
+	}
+	if errors.Is(err, errBreakdownMismatch) {
+		return ledger(opts, "ce_breakdown_mismatch", fmt.Sprintf(
+			"%s: the two Cost Explorer queries returned figures that do not add up to each other, which happens "+
+				"when the billing data moves between the two requests, so nothing was reported rather than a "+
+				"breakdown that does not sum to its own total — re-running usually resolves it (%v)",
+			what, err))
 	}
 
 	code, msg := apiError(err)
