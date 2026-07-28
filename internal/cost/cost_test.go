@@ -555,6 +555,22 @@ func TestCollectFailsWhenTheMetricIsUnavailable(t *testing.T) {
 	if got := failures[0].Error; !strings.Contains(got, "--cost-metric") {
 		t.Errorf("ledger entry does not point at the flag that fixes it: %q", got)
 	}
+	// …but only for accounts this census covers. An organization with more
+	// accounts than the request filter can carry gets an unfiltered response,
+	// and aborting because some unrelated account lacks the metric would fail
+	// a run over data that was never going to be reported.
+	f = &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(
+			cetypes.Group{Keys: []string{"Usage", "999999999999"}, Metrics: map[string]cetypes.MetricValue{}},
+			group("Usage", "111111111111", "1.00"),
+		),
+		page(group("Amazon DynamoDB", "111111111111", "1.00")),
+	}}
+	cur := usd(t, mustCollect(t, f, testOptions()))
+	if cur.Total != "1.00" {
+		t.Errorf("Total = %q, want 1.00 from the in-scope account alone", cur.Total)
+	}
+
 	// A group present but carrying a nil amount is the same absence.
 	f = &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
 		page(cetypes.Group{
