@@ -494,10 +494,26 @@
     return r.measures ? r.measures[key] : undefined;
   }
 
-  // CLASS_KEYS is the fallback order for the "Class" column: whichever sizing
-  // dimension a service actually bills on. Presentation only — the data keeps
-  // each concept under its own key.
+  // The "Class" column shows whichever sizing dimension a service actually
+  // bills on. Presentation only — the data keeps each concept under its own
+  // key, so the unit is attached here rather than stored pre-formatted.
+  // CLASS_MEASURES covers services sized by a number instead of a named class
+  // (Redshift Serverless bills in RPUs), which would otherwise leave the
+  // column empty for a capacity the service did report.
   var CLASS_KEYS = ["instance_class", "billing_mode"];
+  var CLASS_MEASURES = [{ key: "base_capacity_rpu", unit: "RPU" }];
+
+  function classOf(r) {
+    for (var i = 0; i < CLASS_KEYS.length; i++) {
+      var a = attr(r, CLASS_KEYS[i]);
+      if (a) return a;
+    }
+    for (var j = 0; j < CLASS_MEASURES.length; j++) {
+      var m = measure(r, CLASS_MEASURES[j].key);
+      if (typeof m === "number") return m + " " + CLASS_MEASURES[j].unit;
+    }
+    return "";
+  }
 
   // Exposure flags are tri-state in the data: absent means the service does
   // not report the field, so only explicit risky values count.
@@ -514,10 +530,7 @@
 
     r._engine = attr(r, "engine");
     r._engineVersion = attr(r, "engine_version");
-    r._class = "";
-    for (var i = 0; i < CLASS_KEYS.length && !r._class; i++) {
-      r._class = attr(r, CLASS_KEYS[i]);
-    }
+    r._class = classOf(r);
     r._sizeBytes = measure(r, "size_bytes");
     r._backup = measure(r, "backup_retention_days");
     // "AWS::RDS::DBCluster" → "DBCluster": the CloudFormation type without the
@@ -539,16 +552,22 @@
     r._hay = hay.filter(Boolean).join("\n").toLowerCase();
   });
 
-  // formatSize renders a byte measure at human scale. Sizes span table rows of
-  // a few KB up to multi-TB warehouses, so a fixed unit would read as either
-  // 0 or an unreadable number of digits.
+  // formatSize renders a byte measure at human scale. Sizes span lookup tables
+  // of a few hundred bytes up to multi-TB warehouses, so every unit down to
+  // bytes gets a branch: flooring a 4 KB table at "1 MB" would print a number
+  // 256x larger than the one AWS reported. A stored 0 is a real reading and
+  // prints as "0 B" — only an absent measure returns "" for the em dash.
   function formatSize(bytes) {
-    if (typeof bytes !== "number" || bytes <= 0) return "";
+    if (typeof bytes !== "number" || bytes < 0) return "";
     var tb = bytes / 1099511627776;
     if (tb >= 1) return (tb >= 10 ? Math.round(tb) : tb.toFixed(1)) + " TB";
     var gb = bytes / 1073741824;
     if (gb >= 1) return (gb >= 10 ? Math.round(gb) : gb.toFixed(1)) + " GB";
-    return Math.max(1, Math.round(bytes / 1048576)) + " MB";
+    var mb = bytes / 1048576;
+    if (mb >= 1) return (mb >= 10 ? Math.round(mb) : mb.toFixed(1)) + " MB";
+    var kb = bytes / 1024;
+    if (kb >= 1) return (kb >= 10 ? Math.round(kb) : kb.toFixed(1)) + " KB";
+    return bytes + " B";
   }
 
   function el(tag, cls, text) {

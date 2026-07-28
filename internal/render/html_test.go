@@ -305,15 +305,7 @@ func TestHTMLExposureMarkers(t *testing.T) {
 // the schema v2 shape end to end. Substring assertions elsewhere in this file
 // cannot tell an attribute key from a core field, so this one parses.
 func TestHTMLDataBlockShape(t *testing.T) {
-	html := renderDemo(t)
-	_, rest, ok := strings.Cut(html, `<script type="application/json" id="blueprint-data">`)
-	if !ok {
-		t.Fatal("no embedded data block")
-	}
-	data, _, ok := strings.Cut(rest, "</script>")
-	if !ok {
-		t.Fatal("embedded data block is not closed")
-	}
+	data := embeddedJSON(t, renderDemo(t))
 	var snap model.Snapshot
 	if err := json.Unmarshal([]byte(data), &snap); err != nil {
 		t.Fatalf("embedded data block is not valid JSON: %v", err)
