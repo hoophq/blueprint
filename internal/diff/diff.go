@@ -110,7 +110,7 @@ func fieldChanges(o, n model.Resource) []FieldChange {
 	// once as environment/owner — which is the honest reading: the tag changed
 	// and the field the census derives from it changed with it.
 	for _, k := range unionKeys(o.Tags, n.Tags) {
-		add("tag:"+k, o.Tags[k], n.Tags[k])
+		add("tag:"+k, tagStr(o.Tags, k), tagStr(n.Tags, k))
 	}
 	for _, k := range unionKeys(o.Attributes, n.Attributes) {
 		add(k, o.Attributes[k], n.Attributes[k])
@@ -142,6 +142,26 @@ func unionKeys[V any](a, b map[string]V) []string {
 	return keys
 }
 
+// tagStr renders a tag value for comparison: quoted when the resource carries
+// the tag, empty (shown as "—") when it does not.
+//
+// The quotes are what keep an empty tag distinguishable from a missing one.
+// Scanners store tag values exactly as AWS returns them, and AWS accepts a tag
+// with no value, so "untagged" and "tagged with nothing" are different events —
+// but a plain map index renders both as "", and neither transition would drift.
+// Quoting is used rather than a sentinel because tags are the one census field
+// whose value is arbitrary user text: any marker chosen to mean "absent" could
+// itself be somebody's tag value, while quoting maps distinct values to
+// distinct strings for all of them. Core fields come from AWS identifiers and
+// enums, so they stay unquoted.
+func tagStr(tags map[string]string, key string) string {
+	v, ok := tags[key]
+	if !ok {
+		return ""
+	}
+	return strconv.Quote(v)
+}
+
 // measureStr renders a measure for comparison, using empty (shown as "—") for
 // a key the resource does not report so "not reported" never drifts against a
 // real zero.
@@ -156,11 +176,18 @@ func measureStr(r model.Resource, key string) string {
 // timePtrStr renders a creation timestamp for comparison, empty when the
 // service did not report one. UTC keeps a baseline written in another zone
 // from reading as drift.
+//
+// Nanosecond precision is kept because the realistic way a creation time moves
+// is a resource being destroyed and rebuilt under the same ARN — a table or
+// bucket recreated with the same name — and second-truncated formatting would
+// hide that when the rebuild lands inside the same second. Trailing zeros are
+// dropped by this layout, which is fine for equality: identical instants always
+// format identically.
 func timePtrStr(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // boolPtrStr renders a tri-state boolean for field comparison: empty when the

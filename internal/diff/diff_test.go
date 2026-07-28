@@ -114,6 +114,10 @@ func TestCompareDriftsOnUnknownBagKeys(t *testing.T) {
 func TestCompareDriftsOnEveryCoreField(t *testing.T) {
 	created := time.Date(2020, 5, 7, 12, 0, 0, 0, time.UTC)
 	recreated := time.Date(2026, 1, 9, 12, 0, 0, 0, time.UTC)
+	// A resource destroyed and rebuilt under the same ARN can land in the same
+	// second as the original. Second-truncated formatting would call that no
+	// change at all.
+	rebuiltSameSecond := created.Add(500 * time.Millisecond)
 
 	cases := []struct {
 		field   string
@@ -130,13 +134,17 @@ func TestCompareDriftsOnEveryCoreField(t *testing.T) {
 		{"region", func(r *model.Resource) { r.Region = "eu-west-1" }, "us-east-1", "eu-west-1"},
 		{"account_id", func(r *model.Resource) { r.AccountID = "222222222222" }, "111111111111", "222222222222"},
 		{"created_at", func(r *model.Resource) { r.CreatedAt = &recreated },
-			created.Format(time.RFC3339), recreated.Format(time.RFC3339)},
+			created.Format(time.RFC3339Nano), recreated.Format(time.RFC3339Nano)},
+		{"created_at", func(r *model.Resource) { r.CreatedAt = &rebuiltSameSecond },
+			created.Format(time.RFC3339Nano), rebuiltSameSecond.Format(time.RFC3339Nano)},
 		{"environment", func(r *model.Resource) { r.Environment = "staging" }, "production", "staging"},
 		{"owner", func(r *model.Resource) { r.Owner = "platform" }, "payments", "platform"},
 		{"publicly_accessible", func(r *model.Resource) { r.PubliclyAccessible = new(true) }, "false", "true"},
 		{"encrypted", func(r *model.Resource) { r.Encrypted = nil }, "true", ""},
-		{"tag:app", func(r *model.Resource) { r.Tags = map[string]string{"app": "billing"} }, "orders", "billing"},
-		{"tag:added", func(r *model.Resource) { r.Tags["added"] = "yes" }, "", "yes"},
+		// Tag values are quoted so an empty one stays visible; an absent tag is
+		// the empty string, rendered as "—".
+		{"tag:app", func(r *model.Resource) { r.Tags = map[string]string{"app": "billing"} }, `"orders"`, `"billing"`},
+		{"tag:added", func(r *model.Resource) { r.Tags["added"] = "yes" }, "", `"yes"`},
 	}
 
 	base := func() model.Resource {
@@ -171,6 +179,47 @@ func TestCompareDriftsOnEveryCoreField(t *testing.T) {
 	}
 }
 
+// AWS accepts a tag with an empty value, and scanners store what AWS returns,
+// so "this resource is untagged" and "this resource carries the tag with
+// nothing in it" are different states. Every transition between them is drift.
+// Indexing the map directly collapsed both to "" and reported none of it.
+func TestCompareDriftsOnEmptyValuedTags(t *testing.T) {
+	cases := []struct {
+		name             string
+		before, after    map[string]string
+		wantOld, wantNew string
+	}{
+		{"tagged with nothing", map[string]string{}, map[string]string{"app": ""}, "", `""`},
+		{"empty tag removed", map[string]string{"app": ""}, map[string]string{}, `""`, ""},
+		{"empty tag filled in", map[string]string{"app": ""}, map[string]string{"app": "billing"}, `""`, `"billing"`},
+		{"value emptied", map[string]string{"app": "billing"}, map[string]string{"app": ""}, `"billing"`, `""`},
+	}
+
+	for _, c := range cases {
+		before := res("arn:a", "widget", "postgres", "15.4", "available")
+		before.Tags = c.before
+		after := res("arn:a", "widget", "postgres", "15.4", "available")
+		after.Tags = c.after
+
+		d := Compare(
+			&model.Snapshot{Resources: []model.Resource{before}},
+			&model.Snapshot{Resources: []model.Resource{after}},
+		)
+		if len(d.Changed) != 1 {
+			t.Errorf("%s: Changed = %+v, want one resource", c.name, d.Changed)
+			continue
+		}
+		fields := d.Changed[0].Fields
+		if len(fields) != 1 {
+			t.Errorf("%s: got %d field changes, want 1: %+v", c.name, len(fields), fields)
+			continue
+		}
+		if f := fields[0]; f.Field != "tag:app" || f.Old != c.wantOld || f.New != c.wantNew {
+			t.Errorf("%s: field change = %+v, want tag:app %q → %q", c.name, f, c.wantOld, c.wantNew)
+		}
+	}
+}
+
 // Retagging the environment moves both the tag and the field derived from it,
 // and the diff reports both: one is what AWS holds, the other is what the
 // census concluded from it.
@@ -195,7 +244,7 @@ func TestCompareReportsTagAndDerivedFieldTogether(t *testing.T) {
 	}
 	for field, want := range map[string]string{
 		"environment":     "production → staging",
-		"tag:environment": "production → staging",
+		"tag:environment": `"production" → "staging"`,
 	} {
 		if got[field] != want {
 			t.Errorf("%s = %q, want %q (all: %v)", field, got[field], want, got)
