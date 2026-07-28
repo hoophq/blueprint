@@ -383,15 +383,15 @@ func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, 
 			// a true is unambiguous and is the case worth surfacing.
 			out.estimated = out.estimated || result.Estimated
 			for _, g := range result.Groups {
-				r, ok, err := toRow(g, metric)
+				// A group outside the census is dropped inside toRow rather
+				// than reported: with payer credentials the response covers
+				// accounts this scan never looked at, and counting their
+				// spend would claim coverage the census does not have.
+				r, ok, err := toRow(g, metric, want)
 				if err != nil {
 					return rowset{}, err
 				}
-				// A group outside the census is dropped rather than reported:
-				// with payer credentials the response covers accounts this
-				// scan never looked at, and counting their spend would claim
-				// coverage the census does not have.
-				if !ok || !want[r.account] {
+				if !ok {
 					continue
 				}
 				out.rows = append(out.rows, r)
@@ -415,8 +415,16 @@ func fetch(ctx context.Context, api API, m *meter, opts Options, metric string, 
 // understate the total; filling them with zero would invent a measurement; and
 // falling back to a different metric would answer a question nobody asked. The
 // run reports the gap and publishes nothing instead.
-func toRow(g cetypes.Group, metric string) (row, bool, error) {
+func toRow(g cetypes.Group, metric string, want map[string]bool) (row, bool, error) {
 	if len(g.Keys) < 2 {
+		return row{}, false, nil
+	}
+	// Membership is decided before the metric is read. With more accounts
+	// than the request filter can carry, the response covers accounts this
+	// census never looked at; failing the whole run because one of *those*
+	// lacks the metric would abort over data that was never going to be
+	// reported.
+	if !want[g.Keys[1]] {
 		return row{}, false, nil
 	}
 	mv, ok := g.Metrics[metric]
