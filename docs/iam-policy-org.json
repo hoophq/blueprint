@@ -19,6 +19,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "BlueprintCostExplorer",
+      "Effect": "Allow",
+      "Action": "ce:GetCostAndUsage",
+      "Resource": "*"
+    },
+    {
       "Sid": "BlueprintOrgListAccounts",
       "Effect": "Allow",
       "Action": "organizations:ListAccounts",

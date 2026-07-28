@@ -67,6 +67,7 @@ blueprint scan --compare last.json      # diff against a specific census JSON in
 blueprint scan --fail-on-change         # non-zero exit when the diff finds differences
 blueprint scan --no-history             # don't archive this scan or auto-diff
 blueprint scan --demo                   # render from fixture data, no AWS calls
+blueprint scan --costs                  # also report last month's spend (AWS bills $0.01/request)
 ```
 
 ## History
@@ -98,11 +99,47 @@ keeps its last 30 censuses; history lives on your disk and nowhere else.
 
 Every resource is normalized into one model with a narrow core — CloudFormation type (`AWS::RDS::DBInstance`), name, status, region, account, creation time, tags, and the exposure flags — plus an open bag of service-specific `attributes` (engine, version, instance class, endpoint host, …) and numeric `measures` (`size_bytes`, `backup_retention_days`, …) keyed by AWS's own field names. A key that is absent means the service did not report it; it never means zero. Environment and owner are taken from tags only — imported, never inferred.
 
+## Cost
+
+`--costs` attaches last full calendar month's spend to the census, grouped by
+service and by account, from AWS Cost Explorer.
+
+```sh
+blueprint scan --costs
+blueprint scan --costs --cost-metric unblended     # amortized (default), unblended, blended, net_amortized, net_unblended
+blueprint scan --costs --cost-max-requests 5       # hard cap on billed requests (default 20)
+```
+
+**AWS charges $0.01 per Cost Explorer request** — it is the one paid API
+blueprint touches, which is why cost is off by default, why the run prints the
+price before spending it, and why the census records what was actually spent:
+
+```
+  … cost: querying Cost Explorer for 2026-06 across 2 account(s) — AWS bills $0.01 per request, up to $0.20
+  ✓ cost: 2 Cost Explorer request(s), ~$0.02 charged by AWS
+```
+
+A normal run costs two requests ($0.02); more only if AWS paginates. Requests
+are issued one at a time against a client with retries disabled, so a logical
+call is always exactly one charge, and the run stops at
+`--cost-max-requests` rather than paginating into a surprise bill. If the cap
+truncates the results, the census says so instead of reporting a short total.
+
+Spend is partitioned into what Cost Explorer attributes to a service
+(`attributed`) and what it does not — taxes, support, credits, refunds
+(`unattributed`) — and the two always sum to the total. Credits stay negative.
+Currencies are never mixed or assumed: an amount whose currency AWS did not
+report lands in its own bucket rather than being called USD.
+
+Cost is deliberately invisible to history bucketing and to the resource diff,
+so turning `--costs` on or off never re-buckets your history or reports an
+unchanged estate as drifted.
+
 ## Outputs
 
 - **Terminal**: a sprawl summary — total resources, distinct types/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
 - **HTML**: a single self-contained file (`blueprint-YYYY-MM-DD.html`) you can open in a browser or attach to a doc. No external assets, no CDN calls.
-- **JSON**: the complete snapshot (`blueprint-YYYY-MM-DD.json`) — every resource, plus the failure ledger.
+- **JSON**: the complete snapshot (`blueprint-YYYY-MM-DD.json`) — every resource, plus the failure ledger, plus the cost report when `--costs` is on.
 - **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets. The columns are the narrow core and stay fixed as new services land; attributes and measures ride in a final `k=v;k=v` cell.
 
 ## Required IAM permissions
@@ -129,10 +166,18 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "BlueprintCostExplorer",
+      "Effect": "Allow",
+      "Action": "ce:GetCostAndUsage",
+      "Resource": "*"
     }
   ]
 }
 ```
+
+`BlueprintCostExplorer` is only needed for `--costs`; drop that statement if you never use the flag. Without it, the scan still completes and the missing permission is recorded in the failure ledger.
 
 The AWS managed policies `ReadOnlyAccess` or `SecurityAudit` also cover everything blueprint calls, if you already have one of those attached.
 
@@ -145,12 +190,15 @@ Requirements:
 - Run it with credentials from the organization's **management account** or a **delegated administrator** account, with `organizations:ListAccounts` allowed.
 - A role with the read-only policy above must exist in **every member account**, and its trust policy must allow the calling account to assume it. The default role name is `OrganizationAccountAccessRole` (created automatically for accounts made through Organizations); override with `--role-name`.
 - The caller additionally needs `organizations:ListAccounts` and `sts:AssumeRole` on the member-account roles — see [docs/iam-policy-org.json](docs/iam-policy-org.json), replacing `${RoleName}` with your actual role name.
+- With `--costs`, Cost Explorer is queried once from the calling account for the whole organization, not once per member account — so `ce:GetCostAndUsage` belongs on the caller, and the bill stays the same two requests no matter how many accounts you scan.
 
 Accounts where the role is missing or untrusting do not abort the scan: they show up as failures in the ledger, and everything else is still scanned.
 
 ## Zero telemetry
 
 blueprint phones home to no one. No usage analytics, no crash reporting, no update checks, not even anonymous pings. The only network calls it makes are to AWS APIs, using the credentials you provide. Output files are written to your local disk and go nowhere unless you send them somewhere.
+
+Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer preferences. The one call AWS charges for is `ce:GetCostAndUsage`, which only runs when you pass `--costs`, and every run reports what it cost you.
 
 ## License
 
