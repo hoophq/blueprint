@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/hoophq/blueprint/internal/model"
 )
@@ -71,14 +72,20 @@ func Compare(old, current *model.Snapshot) Result {
 	return res
 }
 
-// fieldChanges lists drift on the core fields plus every attribute and
-// measure either side reports. Walking the bag generically is what keeps the
-// diff working for services that do not exist yet: a new scanner's keys drift
-// without anyone extending this function.
+// fieldChanges lists drift on every core field, every tag, and every
+// attribute and measure either side reports. Walking the bag generically is
+// what keeps the diff working for services that do not exist yet: a new
+// scanner's keys drift without anyone extending this function.
 //
-// Tags are covered through the derived environment/owner pair rather than raw
-// tag maps, and eol/eol_date are excluded: they derive from engine_version and
-// would only duplicate that change.
+// The core is compared exhaustively rather than selectively. ARN is the match
+// key, so it cannot drift — but everything else can, and a field left out
+// here is a change the census watched happen and stayed silent about. Name in
+// particular: it comes from a mutable Name tag for the resource types the
+// census is growing into (EBS volumes, NAT gateways), so it moves while the
+// ARN holds still.
+//
+// Only eol/eol_date are excluded: they derive from the platform and version
+// attributes and would report the same upgrade twice.
 func fieldChanges(o, n model.Resource) []FieldChange {
 	var out []FieldChange
 	add := func(field, oldV, newV string) {
@@ -86,12 +93,25 @@ func fieldChanges(o, n model.Resource) []FieldChange {
 			out = append(out, FieldChange{Field: field, Old: oldV, New: newV})
 		}
 	}
+	add("name", o.Name, n.Name)
+	add("service", o.Service, n.Service)
 	add("type", o.Type, n.Type)
 	add("status", o.Status, n.Status)
+	add("region", o.Region, n.Region)
+	add("account_id", o.AccountID, n.AccountID)
+	add("created_at", timePtrStr(o.CreatedAt), timePtrStr(n.CreatedAt))
 	add("environment", o.Environment, n.Environment)
 	add("owner", o.Owner, n.Owner)
 	add("publicly_accessible", boolPtrStr(o.PubliclyAccessible), boolPtrStr(n.PubliclyAccessible))
 	add("encrypted", boolPtrStr(o.Encrypted), boolPtrStr(n.Encrypted))
+	// Tags drift per key rather than as one blob, so the line names what
+	// actually changed. The prefix keeps a tag called "engine" from colliding
+	// with the attribute of that name. Retagging shows up twice — once here and
+	// once as environment/owner — which is the honest reading: the tag changed
+	// and the field the census derives from it changed with it.
+	for _, k := range unionKeys(o.Tags, n.Tags) {
+		add("tag:"+k, o.Tags[k], n.Tags[k])
+	}
 	for _, k := range unionKeys(o.Attributes, n.Attributes) {
 		add(k, o.Attributes[k], n.Attributes[k])
 	}
@@ -131,6 +151,16 @@ func measureStr(r model.Resource, key string) string {
 		return ""
 	}
 	return strconv.FormatInt(v, 10)
+}
+
+// timePtrStr renders a creation timestamp for comparison, empty when the
+// service did not report one. UTC keeps a baseline written in another zone
+// from reading as drift.
+func timePtrStr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // boolPtrStr renders a tri-state boolean for field comparison: empty when the

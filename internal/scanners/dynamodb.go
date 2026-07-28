@@ -138,10 +138,12 @@ func tableResource(t ddbtypes.TableDescription, tags map[string]string, region, 
 	// thing DynamoDB has to a shape, and it keeps its own AWS name.
 	r.SetAttr(model.AttrBillingMode, billingMode(t.BillingModeSummary))
 	// TableSizeBytes is already exact — recorded as-is rather than rounded to
-	// whole gigabytes, which used to inflate every small table to 1 GB.
-	if size := aws.ToInt64(t.TableSizeBytes); size > 0 {
-		r.SetMeasure(model.MeasureSizeBytes, size)
-	}
+	// whole gigabytes, which used to inflate every small table to 1 GB. A
+	// reported zero is stored: DynamoDB refreshes this figure roughly every six
+	// hours, so zero can mean "empty" or "too new to have been measured", but
+	// either way the service did report it and dropping the key would claim it
+	// had not.
+	r.SetMeasureInt64(model.MeasureSizeBytes, t.TableSizeBytes)
 	return r
 }
 

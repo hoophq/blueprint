@@ -94,6 +94,16 @@ func TestInstanceResourceStorageInBytes(t *testing.T) {
 	if v, ok := r.Measure(model.MeasureSizeBytes); ok {
 		t.Errorf("size_bytes = (%d, true) with no AllocatedStorage, want not reported", v)
 	}
+
+	// A zero RDS did report is a reading, not silence, and survives as one.
+	r = instanceResource(rdstypes.DBInstance{
+		DBInstanceIdentifier: aws.String("zero"),
+		Engine:               aws.String("mysql"),
+		AllocatedStorage:     aws.Int32(0),
+	}, "us-east-1", "1")
+	if v, ok := r.Measure(model.MeasureSizeBytes); !ok || v != 0 {
+		t.Errorf("size_bytes = (%d, %v) for a reported zero, want (0, true)", v, ok)
+	}
 }
 
 func TestRdsTagKV(t *testing.T) {

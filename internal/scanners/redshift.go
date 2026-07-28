@@ -96,8 +96,10 @@ func redshiftClusterResource(c redshifttypes.Cluster, region, accountID string) 
 	r.SetAttr(model.AttrInstanceClass, aws.ToString(c.NodeType))
 	r.SetAttr(model.AttrEndpoint, endpoint)
 	r.SetBoolAttr(model.AttrMultiAZ, multiAZ)
-	if mb := aws.ToInt64(c.TotalStorageCapacityInMegaBytes); mb > 0 {
-		r.SetMeasure(model.MeasureSizeBytes, mb<<20)
+	// Reported in whole megabytes. Nil means the cluster description carried no
+	// capacity at all; a reported zero is a real reading and is stored as one.
+	if mb := c.TotalStorageCapacityInMegaBytes; mb != nil {
+		r.SetMeasure(model.MeasureSizeBytes, *mb<<20)
 	}
 	// Retention 0 means automated snapshots are disabled — the same
 	// "no backups" signal BackupRetentionPeriod carries on RDS.
