@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/spf13/cobra"
 
 	"github.com/hoophq/blueprint/internal/awsx"
+	"github.com/hoophq/blueprint/internal/cost"
 	"github.com/hoophq/blueprint/internal/demo"
 	"github.com/hoophq/blueprint/internal/diff"
 	"github.com/hoophq/blueprint/internal/history"
@@ -39,6 +41,7 @@ func scanCmd() *cobra.Command {
 		comparePath  string
 		failOnChange bool
 		noHistory    bool
+		costs        costFlags
 	)
 
 	cmd := &cobra.Command{
@@ -50,12 +53,24 @@ func scanCmd() *cobra.Command {
 				ctx = context.Background()
 			}
 
+			// Validated before anything runs: a typo in --cost-metric should
+			// not surface after a multi-minute scan, and certainly not after
+			// the billed Cost Explorer calls it would have configured.
+			if err := costs.validate(); err != nil {
+				return err
+			}
+
 			var snap *model.Snapshot
 			if demoMode {
 				snap = demo.Snapshot(Version)
+				if costs.enabled {
+					// The fixture's meter honestly reports zero requests and
+					// zero charge, because --demo makes no AWS calls at all.
+					snap.Cost = demo.CostReport()
+				}
 			} else {
 				var err error
-				snap, err = runScan(ctx, cmd, profile, regions, org, roleName, concurrency)
+				snap, err = runScan(ctx, cmd, profile, regions, org, roleName, concurrency, costs)
 				if err != nil {
 					return err
 				}
@@ -92,10 +107,33 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against instead of the automatic history baseline")
 	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when the diff (auto or --compare) finds differences")
 	cmd.Flags().BoolVar(&noHistory, "no-history", false, "do not archive this scan in local history or auto-diff against the previous one")
+	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer (AWS BILLS $0.01 per request; off by default)")
+	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
+	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
 	return cmd
 }
 
-func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int) (*model.Snapshot, error) {
+// costFlags carries the --costs family through to the scan.
+type costFlags struct {
+	enabled     bool
+	metric      string
+	maxRequests int
+}
+
+// validate rejects bad cost flags before the scan starts. --cost-max-requests
+// is checked even when --costs is off, so a scripted zero is caught at the
+// flag rather than silently doing nothing on the day --costs is added.
+func (c costFlags) validate() error {
+	if !cost.ValidMetric(c.metric) {
+		return fmt.Errorf("--cost-metric %q is not valid; choose one of: %s", c.metric, strings.Join(cost.Metrics(), ", "))
+	}
+	if c.maxRequests < 1 {
+		return fmt.Errorf("--cost-max-requests must be at least 1, got %d", c.maxRequests)
+	}
+	return nil
+}
+
+func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int, costs costFlags) (*model.Snapshot, error) {
 	cfg, err := awsx.Load(ctx, profile)
 	if err != nil {
 		return nil, err
@@ -153,8 +191,43 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	// same ledger as per-unit scan failures; re-sort so the artifact stays
 	// deterministic after the append.
 	snap.Failures = append(snap.Failures, preFailures...)
+	if costs.enabled {
+		// Cost runs after the scan because it reports on the accounts the
+		// census actually covered, and it uses the caller's own credentials
+		// even in org mode: billing for the whole organization lives in the
+		// payer account, so there is nothing to assume a role for.
+		snap.Failures = append(snap.Failures, collectCosts(ctx, cmd, cfg, account, snap, costs)...)
+	}
 	snap.SortFailures()
 	return snap, nil
+}
+
+// collectCosts runs the Cost Explorer phase and attaches the report to snap.
+//
+// It prints what it is about to spend before spending it and what it actually
+// spent afterwards. The flag is opt-in, but "opt-in" is not a licence to spend
+// the user's money quietly.
+func collectCosts(ctx context.Context, cmd *cobra.Command, cfg aws.Config, account string, snap *model.Snapshot, flags costFlags) []model.Failure {
+	window := cost.LastFullMonth(time.Now())
+	fmt.Fprintf(cmd.OutOrStdout(), "  … cost: querying Cost Explorer for %s across %d account(s) — AWS bills $0.01 per request, up to %s\n",
+		window.Label, len(snap.Accounts), cost.ChargeUSD(flags.maxRequests))
+
+	report, failures := cost.Collect(ctx, cost.Client(cfg), cost.Options{
+		Accounts:      snap.Accounts,
+		CallerAccount: account,
+		Metric:        flags.metric,
+		Window:        window,
+		MaxRequests:   flags.maxRequests,
+	})
+	snap.Cost = report
+	if report != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost: %d Cost Explorer request(s), ~$%s charged by AWS\n",
+			report.Meter.Requests, report.Meter.EstimatedChargeUSD)
+	}
+	for _, f := range failures {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  ! %s/%s: %s\n", f.AccountID, f.Service, f.Error)
+	}
+	return failures
 }
 
 // compareAgainst diffs the fresh snapshot against a previous census JSON and

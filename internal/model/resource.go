@@ -232,6 +232,12 @@ type Snapshot struct {
 	Services  []string   `json:"services,omitempty"`
 	Resources []Resource `json:"resources"`
 	Failures  []Failure  `json:"failures,omitempty"`
+	// Cost is the billing rollup for these accounts, present only when the
+	// scan was run with --costs. Nil means cost was not collected — never that
+	// spend was zero. Adding it does not bump SchemaVersion: it changes no
+	// existing field's representation, and the diff does not read it, so it
+	// cannot fabricate drift across the boundary that the version guards.
+	Cost *CostReport `json:"cost,omitempty"`
 }
 
 // Summary holds the sprawl numbers shown in the terminal and report header.

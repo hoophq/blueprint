@@ -128,6 +128,53 @@ func TestHTMLEscapesScriptBreakout(t *testing.T) {
 	}
 }
 
+// The cost report is embedded in the same JSON script block as the
+// resources, and every string in it — service names, record types, currency
+// codes, amounts — is chosen by AWS, not by this tool. It is the same
+// injection surface and has to be escaped the same way.
+func TestHTMLEscapesCostBreakout(t *testing.T) {
+	evil := "</script><script>alert(3)</script>"
+	snap := &model.Snapshot{
+		Version:  "test",
+		Accounts: []string{"111111111111"},
+		Regions:  []string{"us-east-1"},
+		Cost: &model.CostReport{
+			Window:   model.CostWindow{Start: "2026-06-01", End: "2026-07-01", Label: evil},
+			Metric:   evil,
+			Accounts: []string{evil},
+			Currencies: []model.CostByCurrency{{
+				Currency:            evil,
+				Total:               "1.00",
+				Attributed:          "1.00",
+				Unattributed:        "0.00",
+				Services:            []model.NamedAmount{{Name: "Amazon RDS" + evil, Amount: "1.00"}},
+				UnattributedRecords: []model.NamedAmount{{Name: "Tax" + evil, Amount: "0.00"}},
+			}},
+			Meter: model.CostMeter{Requests: 2, EstimatedChargeUSD: "0.02"},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := HTML(snap, path); err != nil {
+		t.Fatalf("HTML() error: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	html := string(b)
+
+	if strings.Contains(html, evil) {
+		t.Error("a cost string broke out of the JSON script block")
+	}
+	escaped, err := json.Marshal(evil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, strings.Trim(string(escaped), `"`)) {
+		t.Error("the hostile cost string does not appear unicode-escaped in the JSON block")
+	}
+}
+
 func TestHTMLTemplateHasDataMarker(t *testing.T) {
 	if !strings.Contains(reportTemplate, dataMarker) {
 		t.Fatalf("embedded report template does not contain data marker %q", dataMarker)
