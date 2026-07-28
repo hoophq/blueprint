@@ -333,10 +333,123 @@ func TestCollectStopsAtRequestBudget(t *testing.T) {
 		t.Errorf("meter = %+v, want 2 requests / 0.02", report.Meter)
 	}
 	assertLedger(t, failures, "ce_pagination_incomplete")
-	// A truncated report is partial, not wrong: what was read is still
-	// reported rather than thrown away.
-	if cur := usd(t, report); cur.Total != "2.00" {
-		t.Errorf("Total = %q, want 2.00 from the pages that were read", cur.Total)
+	// The pages that were read are discarded, not published. A truncated sum
+	// carries no mark saying so, and reconciling one against an invoice yields
+	// a gap the reader cannot tell from a real finding.
+	if len(report.Currencies) != 0 {
+		t.Errorf("a truncated run published amounts: %+v", report.Currencies)
+	}
+	if report.Estimated != nil {
+		t.Error("Estimated is set with no rollup to describe")
+	}
+}
+
+// Finishing on the last permitted request is a complete run. Capped means the
+// budget stopped something, not that the allowance was fully used.
+func TestCollectDoesNotFlagCapWhenItFinishesOnBudget(t *testing.T) {
+	opts := testOptions()
+	opts.MaxRequests = 2
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "10.00")),
+		page(group("Amazon DynamoDB", "111111111111", "10.00")),
+	}}
+
+	report, failures := Collect(context.Background(), f, opts)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %+v", failures)
+	}
+	if report.Meter.Requests != 2 {
+		t.Errorf("meter = %+v, want 2 requests", report.Meter)
+	}
+	if report.Meter.Capped {
+		t.Error("Capped is true after a run that completed within its budget")
+	}
+	if cur := usd(t, report); cur.Total != "10.00" {
+		t.Errorf("Total = %q, want 10.00", cur.Total)
+	}
+}
+
+// The record-type call succeeding does not make a failed service call
+// publishable: Attributed would stand next to an empty breakdown that no
+// longer sums to it.
+func TestCollectDiscardsWhenTheServiceQueryFails(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "100.00")),
+		{
+			ResultsByTime: []cetypes.ResultByTime{{Groups: []cetypes.Group{
+				group("Amazon DynamoDB", "111111111111", "40.00"),
+			}}},
+			NextPageToken: aws.String("more"),
+		},
+	}}
+	opts := testOptions()
+	opts.MaxRequests = 2
+
+	report, failures := Collect(context.Background(), f, opts)
+	assertLedger(t, failures, "ce_pagination_incomplete")
+	if report == nil {
+		t.Fatal("report is nil; a run that spent money must disclose it")
+	}
+	if len(report.Currencies) != 0 {
+		t.Errorf("published a rollup built on a truncated service query: %+v", report.Currencies)
+	}
+	if report.Meter.Requests != 2 {
+		t.Errorf("meter = %+v, want 2 requests", report.Meter)
+	}
+}
+
+// A failed record-type call means the rollup is going to be discarded, so
+// paying for the service call on top of it buys the user nothing.
+func TestCollectDoesNotBillForAnUnusableSecondQuery(t *testing.T) {
+	f := &fakeCE{err: apiErr("ThrottlingException", "Rate exceeded")}
+	report, _ := Collect(context.Background(), f, testOptions())
+	if len(f.calls) != 1 {
+		t.Errorf("issued %d requests after the first one failed, want 1", len(f.calls))
+	}
+	if report.Meter.Requests != 1 {
+		t.Errorf("meter = %+v, want 1 request", report.Meter)
+	}
+}
+
+// A closed month stays estimated for a while after it ends. Estimated figures
+// move and reconcile to no invoice, so the report says so and the ledger makes
+// it visible in the terminal.
+func TestCollectFlagsEstimatedData(t *testing.T) {
+	estimatedPage := func(groups ...cetypes.Group) *costexplorer.GetCostAndUsageOutput {
+		return &costexplorer.GetCostAndUsageOutput{
+			ResultsByTime: []cetypes.ResultByTime{{Groups: groups, Estimated: true}},
+		}
+	}
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		estimatedPage(group("Usage", "111111111111", "10.00")),
+		page(group("Amazon DynamoDB", "111111111111", "10.00")),
+	}}
+
+	report, failures := Collect(context.Background(), f, testOptions())
+	assertLedger(t, failures, "ce_estimated_data")
+	if report.Estimated == nil || !*report.Estimated {
+		t.Errorf("Estimated = %v, want true", report.Estimated)
+	}
+	// Flagged, not withheld: the figures are the best AWS has and are still
+	// worth reporting once the reader knows they will move.
+	if cur := usd(t, report); cur.Total != "10.00" {
+		t.Errorf("Total = %q, want 10.00", cur.Total)
+	}
+}
+
+// Finalized data is a positive statement too, so it is written down rather
+// than left to be inferred from a missing key.
+func TestCollectRecordsFinalizedData(t *testing.T) {
+	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(group("Usage", "111111111111", "10.00")),
+		page(group("Amazon DynamoDB", "111111111111", "10.00")),
+	}}
+	report := mustCollect(t, f, testOptions())
+	if report.Estimated == nil {
+		t.Fatal("Estimated is nil after a published rollup")
+	}
+	if *report.Estimated {
+		t.Error("Estimated is true for data AWS did not flag")
 	}
 }
 
@@ -418,8 +531,11 @@ func TestCollectDoesNotAssumeUSD(t *testing.T) {
 	}
 }
 
-// A group with no amount for the metric is absent, not zero.
-func TestCollectSkipsGroupsWithNoAmount(t *testing.T) {
+// Cost Explorer returns every metric it was asked for, including an explicit
+// zero, so a group missing the metric means the metric is unavailable for this
+// window — not that the group cost nothing. Skipping such groups would quietly
+// understate the total, so the run reports nothing and says why.
+func TestCollectFailsWhenTheMetricIsUnavailable(t *testing.T) {
 	f := &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
 		page(
 			cetypes.Group{Keys: []string{"Usage", "111111111111"}, Metrics: map[string]cetypes.MetricValue{}},
@@ -427,13 +543,27 @@ func TestCollectSkipsGroupsWithNoAmount(t *testing.T) {
 		),
 		page(),
 	}}
-	cur := usd(t, mustCollect(t, f, testOptions()))
-	if _, ok := toMap(cur.Accounts)["111111111111"]; !ok {
-		t.Fatal("expected the account that did report an amount")
+
+	report, failures := Collect(context.Background(), f, testOptions())
+	assertLedger(t, failures, "ce_metric_unavailable")
+	if len(report.Currencies) != 0 {
+		t.Errorf("published a total that is short by the groups it dropped: %+v", report.Currencies)
 	}
-	if cur.Total != "1.00" {
-		t.Errorf("Total = %q, want 1.00", cur.Total)
+	// The ledger entry names the alternatives rather than picking one: a
+	// silently substituted metric answers a different question than the one
+	// asked, under the label of the one asked.
+	if got := failures[0].Error; !strings.Contains(got, "--cost-metric") {
+		t.Errorf("ledger entry does not point at the flag that fixes it: %q", got)
 	}
+	// A group present but carrying a nil amount is the same absence.
+	f = &fakeCE{pages: []*costexplorer.GetCostAndUsageOutput{
+		page(cetypes.Group{
+			Keys:    []string{"Usage", "111111111111"},
+			Metrics: map[string]cetypes.MetricValue{"AmortizedCost": {Unit: aws.String("USD")}},
+		}),
+	}}
+	_, failures = Collect(context.Background(), f, testOptions())
+	assertLedger(t, failures, "ce_metric_unavailable")
 }
 
 // A reported zero is a real finding and survives; the metric being absent is

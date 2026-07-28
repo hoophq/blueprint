@@ -60,7 +60,22 @@ type CostReport struct {
 	Accounts []string `json:"accounts"`
 	// Currencies holds one entry per currency Cost Explorer reported in.
 	// Amounts in different currencies are never added together.
+	//
+	// It is empty when a query failed or was truncated: a partial rollup is
+	// indistinguishable from a complete one once it is written down, so it is
+	// discarded rather than published, and the failure ledger says why. Meter
+	// still reports what the attempt cost.
 	Currencies []CostByCurrency `json:"currencies"`
+	// Estimated is AWS's own flag on the data behind Currencies. A closed
+	// month stays estimated for a while after it ends, and estimated figures
+	// move — they do not reconcile to an invoice and should not be treated as
+	// a settled bill.
+	//
+	// nil means no rollup was published, so there is nothing for the flag to
+	// describe. Cost Explorer models it as a plain bool, so false means AWS
+	// did not mark the data estimated rather than a positive guarantee that
+	// the bill has settled.
+	Estimated *bool `json:"estimated,omitempty"`
 	// Meter records what asking cost this question cost the user.
 	Meter CostMeter `json:"meter"`
 }
@@ -122,8 +137,10 @@ type CostMeter struct {
 	// estimate only in that AWS's published price is the input; the request
 	// count itself is exact.
 	EstimatedChargeUSD string `json:"estimated_charge_usd"`
-	// Capped is true when the run stopped early because it reached its request
-	// budget. The report is then incomplete and says so in the failure ledger.
+	// Capped is true when the budget actually prevented a request the run
+	// still needed. Spending the last permitted request and finishing is a
+	// complete run, so this is not simply Requests == the budget — flagging
+	// that case would send a reader hunting for money that is not missing.
 	Capped bool `json:"capped,omitempty"`
 }
 

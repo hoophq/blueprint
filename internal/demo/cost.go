@@ -23,6 +23,7 @@ import (
 // share of the total. A fixture that only exercised the tidy path would let
 // the tidy path be the only one that works.
 func CostReport() *model.CostReport {
+	settled := false
 	r := &model.CostReport{
 		Window:   cost.LastFullMonth(time.Now()),
 		Metric:   "AmortizedCost",
@@ -58,7 +59,11 @@ func CostReport() *model.CostReport {
 				{Name: acctStaging, Amount: "2890.96"},
 			},
 		}},
-		Meter: model.CostMeter{Requests: 0, EstimatedChargeUSD: cost.ChargeUSD(0)},
+		// A published rollup always says whether it is estimated; nil is
+		// reserved for having published none. The fixture stands in for a
+		// settled month, so the flag is present and false rather than absent.
+		Estimated: &settled,
+		Meter:     model.CostMeter{Requests: 0, EstimatedChargeUSD: cost.ChargeUSD(0)},
 	}
 	r.Sort()
 	return r
