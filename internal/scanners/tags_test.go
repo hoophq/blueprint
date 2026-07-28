@@ -27,27 +27,6 @@ func TestToTagMap(t *testing.T) {
 	}
 }
 
-func TestCeilGB(t *testing.T) {
-	const gb = int64(1 << 30)
-	cases := []struct {
-		n, perGB int64
-		want     int32
-	}{
-		{0, gb, 0},
-		{-1, gb, 0},
-		{1, gb, 1},
-		{gb, gb, 1},
-		{gb + 1, gb, 2},
-		{1023, 1024, 1},
-		{1025, 1024, 2},
-	}
-	for _, c := range cases {
-		if got := ceilGB(c.n, c.perGB); got != c.want {
-			t.Errorf("ceilGB(%d, %d) = %d, want %d", c.n, c.perGB, got, c.want)
-		}
-	}
-}
-
 func TestTagFailures(t *testing.T) {
 	var f tagFailures
 	if f.err() != nil {

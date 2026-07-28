@@ -1,5 +1,5 @@
 // Package diff compares two census snapshots so recurring scans can answer
-// "what changed since last time": new databases, removed databases, and
+// "what changed since last time": new resources, removed resources, and
 // field-level drift on the ones present in both.
 package diff
 
@@ -19,7 +19,7 @@ type Result struct {
 	Changed []ResourceDiff
 }
 
-// ResourceDiff is one database present in both snapshots with drifted fields.
+// ResourceDiff is one resource present in both snapshots with drifted fields.
 type ResourceDiff struct {
 	Resource model.Resource // the current (new) state
 	Fields   []FieldChange
@@ -71,10 +71,14 @@ func Compare(old, current *model.Snapshot) Result {
 	return res
 }
 
-// fieldChanges lists drift on the fields a DBA acts on. Tags are covered
-// through the derived environment/owner pair rather than raw tag maps, and
-// eol/eol_date are excluded: they derive from engine_version and would only
-// duplicate that change.
+// fieldChanges lists drift on the core fields plus every attribute and
+// measure either side reports. Walking the bag generically is what keeps the
+// diff working for services that do not exist yet: a new scanner's keys drift
+// without anyone extending this function.
+//
+// Tags are covered through the derived environment/owner pair rather than raw
+// tag maps, and eol/eol_date are excluded: they derive from engine_version and
+// would only duplicate that change.
 func fieldChanges(o, n model.Resource) []FieldChange {
 	var out []FieldChange
 	add := func(field, oldV, newV string) {
@@ -82,15 +86,51 @@ func fieldChanges(o, n model.Resource) []FieldChange {
 			out = append(out, FieldChange{Field: field, Old: oldV, New: newV})
 		}
 	}
-	add("engine", o.Engine, n.Engine)
-	add("engine_version", o.EngineVersion, n.EngineVersion)
-	add("instance_class", o.InstanceClass, n.InstanceClass)
-	add("storage_gb", strconv.FormatInt(int64(o.StorageGB), 10), strconv.FormatInt(int64(n.StorageGB), 10))
-	add("multi_az", boolPtrStr(o.MultiAZ), boolPtrStr(n.MultiAZ))
+	add("type", o.Type, n.Type)
 	add("status", o.Status, n.Status)
 	add("environment", o.Environment, n.Environment)
 	add("owner", o.Owner, n.Owner)
+	add("publicly_accessible", boolPtrStr(o.PubliclyAccessible), boolPtrStr(n.PubliclyAccessible))
+	add("encrypted", boolPtrStr(o.Encrypted), boolPtrStr(n.Encrypted))
+	for _, k := range unionKeys(o.Attributes, n.Attributes) {
+		add(k, o.Attributes[k], n.Attributes[k])
+	}
+	for _, k := range unionKeys(o.Measures, n.Measures) {
+		add(k, measureStr(o, k), measureStr(n, k))
+	}
 	return out
+}
+
+// unionKeys returns every key present in either map, sorted so the drift
+// lines come out in the same order on every run.
+func unionKeys[V any](a, b map[string]V) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(a)+len(b))
+	for k := range a {
+		set[k] = struct{}{}
+	}
+	for k := range b {
+		set[k] = struct{}{}
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// measureStr renders a measure for comparison, using empty (shown as "—") for
+// a key the resource does not report so "not reported" never drifts against a
+// real zero.
+func measureStr(r model.Resource, key string) string {
+	v, ok := r.Measure(key)
+	if !ok {
+		return ""
+	}
+	return strconv.FormatInt(v, 10)
 }
 
 // boolPtrStr renders a tri-state boolean for field comparison: empty when the
@@ -137,7 +177,7 @@ func writeList(w io.Writer, sign string, list []model.Resource) {
 			fmt.Fprintf(w, "  %s … and %d more\n", sign, len(list)-maxListed)
 			return
 		}
-		fmt.Fprintf(w, "  %s %s (%s %s, %s)\n", sign, r.Name, r.Service, r.Engine, r.Region)
+		fmt.Fprintf(w, "  %s %s (%s %s, %s)\n", sign, r.Name, r.Service, r.Attr(model.AttrEngine), r.Region)
 	}
 }
 

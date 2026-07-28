@@ -105,23 +105,24 @@ func replicationGroupResource(g ectypes.ReplicationGroup, region, accountID stri
 	if g.MultiAZ != "" {
 		multiAZ = aws.Bool(g.MultiAZ == ectypes.MultiAZStatusEnabled)
 	}
-	return model.Resource{
-		ARN:           aws.ToString(g.ARN),
-		Service:       model.ServiceElastiCache,
-		Kind:          "cluster",
-		Name:          aws.ToString(g.ReplicationGroupId),
-		Engine:        aws.ToString(g.Engine),
-		InstanceClass: aws.ToString(g.CacheNodeType),
-		MultiAZ:       multiAZ,
-		Status:        aws.ToString(g.Status),
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     g.ReplicationGroupCreateTime,
+	r := model.Resource{
+		ARN:       aws.ToString(g.ARN),
+		Service:   model.ServiceElastiCache,
+		Type:      model.TypeElastiCacheReplicationGroup,
+		Name:      aws.ToString(g.ReplicationGroupId),
+		Status:    aws.ToString(g.Status),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: g.ReplicationGroupCreateTime,
 		// ElastiCache is VPC-only (no public-accessibility flag to report).
-		Encrypted:           g.AtRestEncryptionEnabled,
-		BackupRetentionDays: g.SnapshotRetentionLimit,
+		Encrypted: g.AtRestEncryptionEnabled,
 	}
+	r.SetAttr(model.AttrEngine, aws.ToString(g.Engine))
+	r.SetAttr(model.AttrInstanceClass, aws.ToString(g.CacheNodeType))
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	r.SetBoolAttr(model.AttrMultiAZ, multiAZ)
+	r.SetMeasureInt32(model.MeasureBackupRetentionDays, g.SnapshotRetentionLimit)
+	return r
 }
 
 func cacheClusterResource(c ectypes.CacheCluster, region, accountID string) model.Resource {
@@ -131,23 +132,24 @@ func cacheClusterResource(c ectypes.CacheCluster, region, accountID string) mode
 	} else if len(c.CacheNodes) > 0 && c.CacheNodes[0].Endpoint != nil {
 		endpoint = aws.ToString(c.CacheNodes[0].Endpoint.Address)
 	}
-	return model.Resource{
-		ARN:           aws.ToString(c.ARN),
-		Service:       model.ServiceElastiCache,
-		Kind:          "instance",
-		Name:          aws.ToString(c.CacheClusterId),
-		Engine:        aws.ToString(c.Engine),
-		EngineVersion: aws.ToString(c.EngineVersion),
-		InstanceClass: aws.ToString(c.CacheNodeType),
-		Status:        aws.ToString(c.CacheClusterStatus),
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     c.CacheClusterCreateTime,
+	r := model.Resource{
+		ARN:       aws.ToString(c.ARN),
+		Service:   model.ServiceElastiCache,
+		Type:      model.TypeElastiCacheCacheCluster,
+		Name:      aws.ToString(c.CacheClusterId),
+		Status:    aws.ToString(c.CacheClusterStatus),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: c.CacheClusterCreateTime,
 
-		Encrypted:           c.AtRestEncryptionEnabled,
-		BackupRetentionDays: c.SnapshotRetentionLimit,
+		Encrypted: c.AtRestEncryptionEnabled,
 	}
+	r.SetAttr(model.AttrEngine, aws.ToString(c.Engine))
+	r.SetAttr(model.AttrEngineVersion, aws.ToString(c.EngineVersion))
+	r.SetAttr(model.AttrInstanceClass, aws.ToString(c.CacheNodeType))
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	r.SetMeasureInt32(model.MeasureBackupRetentionDays, c.SnapshotRetentionLimit)
+	return r
 }
 
 func serverlessCacheResource(s ectypes.ServerlessCache, region, accountID string) model.Resource {
@@ -155,19 +157,20 @@ func serverlessCacheResource(s ectypes.ServerlessCache, region, accountID string
 	if s.Endpoint != nil {
 		endpoint = aws.ToString(s.Endpoint.Address)
 	}
-	return model.Resource{
-		ARN:           aws.ToString(s.ARN),
-		Service:       model.ServiceElastiCache,
-		Kind:          "serverless",
-		Name:          aws.ToString(s.ServerlessCacheName),
-		Engine:        aws.ToString(s.Engine),
-		EngineVersion: aws.ToString(s.FullEngineVersion),
-		Status:        aws.ToString(s.Status),
-		Endpoint:      endpoint,
-		Region:        region,
-		AccountID:     accountID,
-		CreatedAt:     s.CreateTime,
+	r := model.Resource{
+		ARN:       aws.ToString(s.ARN),
+		Service:   model.ServiceElastiCache,
+		Type:      model.TypeElastiCacheServerlessCache,
+		Name:      aws.ToString(s.ServerlessCacheName),
+		Status:    aws.ToString(s.Status),
+		Region:    region,
+		AccountID: accountID,
+		CreatedAt: s.CreateTime,
 	}
+	r.SetAttr(model.AttrEngine, aws.ToString(s.Engine))
+	r.SetAttr(model.AttrEngineVersion, aws.ToString(s.FullEngineVersion))
+	r.SetAttr(model.AttrEndpoint, endpoint)
+	return r
 }
 
 // elastiCacheTags fetches tags for one ARN. A failure (common on caches in

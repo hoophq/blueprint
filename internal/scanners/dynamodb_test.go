@@ -10,25 +10,6 @@ import (
 	"github.com/hoophq/blueprint/internal/model"
 )
 
-func TestBytesToGB(t *testing.T) {
-	const gb = int64(1 << 30)
-	cases := map[int64]int32{
-		0:          0,
-		-1:         0,
-		1:          1, // any non-empty table registers at least 1 GB
-		gb - 1:     1,
-		gb:         1,
-		gb + 1:     2,
-		5 * gb:     5,
-		5*gb + 512: 6,
-	}
-	for bytes, want := range cases {
-		if got := bytesToGB(bytes); got != want {
-			t.Errorf("bytesToGB(%d) = %d, want %d", bytes, got, want)
-		}
-	}
-}
-
 func TestBillingMode(t *testing.T) {
 	if got := billingMode(nil); got != "PROVISIONED" {
 		t.Errorf("billingMode(nil) = %q, want PROVISIONED", got)
@@ -58,17 +39,27 @@ func TestTableResource(t *testing.T) {
 	if r.ARN != "arn:aws:dynamodb:us-east-1:123456789012:table/orders" {
 		t.Errorf("unexpected ARN: %q", r.ARN)
 	}
-	if r.Service != model.ServiceDynamoDB || r.Kind != "table" || r.Engine != "dynamodb" {
-		t.Errorf("unexpected service/kind/engine: %+v", r)
+	if r.Service != model.ServiceDynamoDB || r.Type != model.TypeDynamoDBTable {
+		t.Errorf("unexpected service/type: %+v", r)
+	}
+	if got := r.Attr(model.AttrEngine); got != "dynamodb" {
+		t.Errorf("engine = %q, want dynamodb", got)
 	}
 	if r.Name != "orders" || r.Status != "ACTIVE" {
 		t.Errorf("unexpected name/status: %+v", r)
 	}
-	if r.StorageGB != 4 {
-		t.Errorf("StorageGB = %d, want 4 (rounded up)", r.StorageGB)
+	// Exact bytes, not a rounded GB figure: DynamoDB reports the real number
+	// and rounding it up made every non-empty table look like at least 1 GB.
+	if got, ok := r.Measure(model.MeasureSizeBytes); !ok || got != 3<<30+1 {
+		t.Errorf("size_bytes = (%d, %v), want (%d, true)", got, ok, 3<<30+1)
 	}
-	if r.InstanceClass != "PAY_PER_REQUEST" {
-		t.Errorf("InstanceClass = %q, want PAY_PER_REQUEST", r.InstanceClass)
+	// Billing mode is not an instance class — it gets its own key so the two
+	// concepts never masquerade as each other.
+	if got := r.Attr(model.AttrBillingMode); got != "PAY_PER_REQUEST" {
+		t.Errorf("billing_mode = %q, want PAY_PER_REQUEST", got)
+	}
+	if got := r.Attr(model.AttrInstanceClass); got != "" {
+		t.Errorf("instance_class = %q, want absent (DynamoDB has no instances)", got)
 	}
 	if r.CreatedAt == nil || !r.CreatedAt.Equal(created) {
 		t.Errorf("unexpected CreatedAt: %v", r.CreatedAt)

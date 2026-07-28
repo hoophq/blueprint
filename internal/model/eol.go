@@ -39,15 +39,16 @@ var eolDates = map[string]map[string]string{
 // DeriveEOL fills EOL and EOLDate by matching the resource's engine major
 // version against the baked-in upstream EOL table. Only dates that have
 // already passed at `now` flag the resource, so future dates can sit in the
-// table safely.
+// table safely. Resources with no engine attribute (most of AWS) never flag.
 func (r *Resource) DeriveEOL(now time.Time) {
 	r.EOL = false
 	r.EOLDate = ""
-	table, ok := eolDates[r.Engine]
-	if !ok || r.EngineVersion == "" {
+	engine, version := r.Attr(AttrEngine), r.Attr(AttrEngineVersion)
+	table, ok := eolDates[engine]
+	if !ok || version == "" {
 		return
 	}
-	date, ok := table[engineMajor(r.Engine, r.EngineVersion)]
+	date, ok := table[engineMajor(engine, version)]
 	if !ok {
 		return
 	}

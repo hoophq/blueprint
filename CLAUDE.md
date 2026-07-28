@@ -32,8 +32,13 @@ build + tests on every push.
   (account × region × service). Scanners self-register via `init()` in
   `internal/scanners` (rds.go covers RDS/Aurora/DocumentDB/Neptune via the
   shared RDS control plane; dynamodb, elasticache, redshift are separate).
-- `internal/model`: normalized `Resource`/`Snapshot`. `Finalize()` derives
-  tag-based fields (env/owner), EOL flags, and sorts for deterministic JSON.
+- `internal/model`: normalized `Resource`/`Snapshot`. A `Resource` is a narrow
+  core (CloudFormation `Type` like `AWS::RDS::DBInstance`, name, status,
+  scope, tags, exposure flags) plus two open bags: `Attributes`
+  (`map[string]string`) and `Measures` (`map[string]int64`), keyed by AWS's
+  own field names and declared as `Attr*`/`Measure*` consts. Add a service
+  by adding keys, not struct fields. `Finalize()` derives tag-based fields
+  (env/owner), EOL flags, and sorts for deterministic JSON.
 - `internal/render`: terminal, JSON, CSV, and the single-file HTML report
   (`report.html.tmpl` — vanilla JS, data embedded as a JSON script block).
 - `internal/orgmode`: AWS Organizations fan-out via assume-role.
@@ -52,16 +57,20 @@ build + tests on every push.
   this plus script-breakout escaping. Keep everything inline.
 - **Honesty guardrails**: environment/owner come from tags only (imported,
   never inferred); scan units the tool could not see go to the failure
-  ledger; any Resource field some service does not report is pointer-typed
-  (nil = "not reported" — e.g. exposure fields, MultiAZ), never a
-  zero-valued bool/int.
+  ledger; nothing a service did not report may render as a value. In the
+  core that means pointer-typed fields (nil = "not reported"); in the bags
+  it means an **absent key** — use `SetAttr`/`SetMeasure`, which skip empty
+  values, and read through `Attr`/`Measure`. A *stored* zero (0 backup days,
+  0-byte table) is a real finding and must survive.
 - **Schema version**: bump `model.SchemaVersion` whenever a JSON field's
   representation changes — diff/--compare refuse cross-schema baselines
   instead of fabricating drift. `Snapshot.Services` is part of
   `history.ScopeKey`, so adding a scanner starts fresh history buckets by
   design.
-- **CSV**: cells are formula-injection guarded (`guardFormula`); keep new
-  string columns guarded.
+- **CSV**: the column set is closed — it is exactly the narrow core, so it
+  stays stable as services land; attributes and measures flatten into the
+  final `attributes` cell. Cells are formula-injection guarded
+  (`guardFormula`); keep new string columns guarded.
 - **Determinism**: JSON artifacts must stay byte-for-byte stable for a given
   snapshot (`Finalize` sorts everything).
 

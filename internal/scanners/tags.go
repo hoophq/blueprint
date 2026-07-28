@@ -22,16 +22,6 @@ func toTagMap[T any](tags []T, kv func(T) (*string, *string)) map[string]string 
 	return m
 }
 
-// ceilGB rounds n up to whole gigabytes, where perGB is the number of n's
-// units in one gigabyte (1<<30 for bytes, 1024 for megabytes). Non-positive
-// counts yield 0; anything else registers at least 1 GB.
-func ceilGB(n, perGB int64) int32 {
-	if n <= 0 {
-		return 0
-	}
-	return int32((n + perGB - 1) / perGB)
-}
-
 // tagFailures aggregates per-resource ListTagsForResource failures so a scan
 // surfaces them as one failure-ledger entry instead of silently leaving tags
 // nil (which would inflate the missing-owner/env metrics unnoticed).

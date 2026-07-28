@@ -17,11 +17,13 @@ func snap(genAt time.Time, accounts, regions []string, names ...string) *model.S
 		Regions:     regions,
 	}
 	for _, n := range names {
-		s.Resources = append(s.Resources, model.Resource{
+		r := model.Resource{
 			ARN: "arn:aws:rds:us-east-1:1:db:" + n, Name: n,
-			Service: model.ServiceRDS, Kind: "instance", Engine: "postgres",
+			Service: model.ServiceRDS, Type: model.TypeRDSInstance,
 			Region: "us-east-1", AccountID: "1",
-		})
+		}
+		r.SetAttr(model.AttrEngine, "postgres")
+		s.Resources = append(s.Resources, r)
 	}
 	return s
 }

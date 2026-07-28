@@ -74,20 +74,23 @@ func TestHTMLReportSelfContained(t *testing.T) {
 }
 
 func TestHTMLEscapesScriptBreakout(t *testing.T) {
+	evil := model.Resource{
+		ARN:       "arn:aws:rds:us-east-1:111111111111:db:evil",
+		Service:   model.ServiceRDS,
+		Type:      model.TypeRDSInstance,
+		Name:      "evil</script><script>alert(1)</script>",
+		Region:    "us-east-1",
+		AccountID: "111111111111",
+		Tags:      map[string]string{"owner": "</script>"},
+	}
+	// The attribute bag carries arbitrary AWS-reported strings, so it is just
+	// as much an injection surface as the core fields.
+	evil.SetAttr(model.AttrEngine, "postgres</script><script>alert(2)</script>")
 	snap := &model.Snapshot{
-		Version:  "test",
-		Accounts: []string{"111111111111"},
-		Regions:  []string{"us-east-1"},
-		Resources: []model.Resource{{
-			ARN:       "arn:aws:rds:us-east-1:111111111111:db:evil",
-			Service:   model.ServiceRDS,
-			Kind:      "instance",
-			Name:      "evil</script><script>alert(1)</script>",
-			Engine:    "postgres",
-			Region:    "us-east-1",
-			AccountID: "111111111111",
-			Tags:      map[string]string{"owner": "</script>"},
-		}},
+		Version:   "test",
+		Accounts:  []string{"111111111111"},
+		Regions:   []string{"us-east-1"},
+		Resources: []model.Resource{evil},
 	}
 	path := filepath.Join(t.TempDir(), "report.html")
 	if err := HTML(snap, path); err != nil {
@@ -102,18 +105,26 @@ func TestHTMLEscapesScriptBreakout(t *testing.T) {
 	if strings.Contains(html, "evil</script>") {
 		t.Error("resource name broke out of the JSON script block")
 	}
+	if strings.Contains(html, "postgres</script>") {
+		t.Error("attribute value broke out of the JSON script block")
+	}
 	// json.Marshal unicode-escapes angle brackets inside strings; the exact
-	// escaped form of the hostile name must appear in the embedded block.
-	nameJSON, err := json.Marshal(snap.Resources[0].Name)
-	if err != nil {
-		t.Fatalf("marshal name: %v", err)
-	}
-	escaped := strings.Trim(string(nameJSON), `"`)
-	if strings.Contains(escaped, "</") {
-		t.Fatal("sanity: expected json.Marshal to escape the angle brackets")
-	}
-	if !strings.Contains(html, escaped) {
-		t.Error("expected the hostile resource name to appear unicode-escaped in the JSON block")
+	// escaped form of every hostile value must appear in the embedded block.
+	for _, raw := range []string{
+		snap.Resources[0].Name,
+		snap.Resources[0].Attr(model.AttrEngine),
+	} {
+		b, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("marshal %q: %v", raw, err)
+		}
+		escaped := strings.Trim(string(b), `"`)
+		if strings.Contains(escaped, "</") {
+			t.Fatal("sanity: expected json.Marshal to escape the angle brackets")
+		}
+		if !strings.Contains(html, escaped) {
+			t.Errorf("expected %q to appear unicode-escaped in the JSON block", raw)
+		}
 	}
 }
 
@@ -150,9 +161,8 @@ func TestHTMLNeutralizesCommentAndScriptOpeners(t *testing.T) {
 		Resources: []model.Resource{{
 			ARN:       "arn:aws:rds:us-east-1:111111111111:db:hostile",
 			Service:   model.ServiceRDS,
-			Kind:      "instance",
+			Type:      model.TypeRDSInstance,
 			Name:      hostile,
-			Engine:    "postgres",
 			Region:    "us-east-1",
 			AccountID: "111111111111",
 		}},
@@ -201,7 +211,7 @@ func TestHTMLEmptySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read report: %v", err)
 	}
-	if !strings.Contains(string(b), "No databases found") {
+	if !strings.Contains(string(b), "No resources found") {
 		t.Error("report is missing the empty-state hint")
 	}
 }
@@ -288,6 +298,73 @@ func TestHTMLExposureMarkers(t *testing.T) {
 		if !strings.Contains(html, needle) {
 			t.Errorf("report is missing exposure marker %q", needle)
 		}
+	}
+}
+
+// TestHTMLDataBlockShape reads the embedded JSON back as a snapshot and checks
+// the schema v2 shape end to end. Substring assertions elsewhere in this file
+// cannot tell an attribute key from a core field, so this one parses.
+func TestHTMLDataBlockShape(t *testing.T) {
+	html := renderDemo(t)
+	_, rest, ok := strings.Cut(html, `<script type="application/json" id="blueprint-data">`)
+	if !ok {
+		t.Fatal("no embedded data block")
+	}
+	data, _, ok := strings.Cut(rest, "</script>")
+	if !ok {
+		t.Fatal("embedded data block is not closed")
+	}
+	var snap model.Snapshot
+	if err := json.Unmarshal([]byte(data), &snap); err != nil {
+		t.Fatalf("embedded data block is not valid JSON: %v", err)
+	}
+
+	if snap.Schema != model.SchemaVersion {
+		t.Errorf("schema = %d, want %d", snap.Schema, model.SchemaVersion)
+	}
+	byName := map[string]model.Resource{}
+	for _, r := range snap.Resources {
+		byName[r.Name] = r
+		if r.Type == "" {
+			t.Errorf("resource %q has no CloudFormation type", r.Name)
+		}
+	}
+
+	// legacy-crm is the deliberately risky fixture: engine details live in the
+	// attribute bag, and its zero backup retention is a stored measure — the
+	// difference between "no backups" and "not reported".
+	crm, ok := byName["legacy-crm"]
+	if !ok {
+		t.Fatal("fixture legacy-crm missing from the data block")
+	}
+	if got := crm.Attr(model.AttrEngine); got != "mysql" {
+		t.Errorf("legacy-crm engine = %q, want mysql", got)
+	}
+	if got := crm.Attr(model.AttrEngineVersion); got != "5.7.44" {
+		t.Errorf("legacy-crm engine_version = %q, want 5.7.44", got)
+	}
+	if got, ok := crm.Measure(model.MeasureBackupRetentionDays); !ok || got != 0 {
+		t.Errorf("legacy-crm backup_retention_days = (%d, %v), want (0, true)", got, ok)
+	}
+	if !crm.Exposed() {
+		t.Error("legacy-crm should read as exposed")
+	}
+
+	// A service that has no instances must not carry an instance class, and a
+	// service that reports no storage must not carry a size.
+	sessions, ok := byName["sessions"]
+	if !ok {
+		t.Fatal("fixture sessions missing from the data block")
+	}
+	if _, ok := sessions.Attributes[model.AttrInstanceClass]; ok {
+		t.Error("a DynamoDB table must not report an instance class")
+	}
+	users, ok := byName["users-aurora"]
+	if !ok {
+		t.Fatal("fixture users-aurora missing from the data block")
+	}
+	if v, ok := users.Measure(model.MeasureSizeBytes); ok {
+		t.Errorf("Aurora reports no allocated storage; got size_bytes = %d", v)
 	}
 }
 
