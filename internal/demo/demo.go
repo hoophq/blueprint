@@ -118,10 +118,14 @@ func resources() []model.Resource {
 			"redshift", "1.0.63269", "ra3.4xlarge", 3200, false, "available",
 			"analytics-wh.cbq7xz1t9e2m.us-east-1.redshift.amazonaws.com", d(2019, 10, 15),
 			tags("environment", "production", "owner", "data")),
-		res(acctProd, "us-east-1", model.ServiceRedshift, "serverless", "analytics-serverless",
+		// Serverless is sized by a number of RPUs instead of a named instance
+		// class, so it exercises the one shape whose capacity lives in the
+		// measure bag rather than the attribute bag.
+		withMeasure(res(acctProd, "us-east-1", model.ServiceRedshift, "serverless", "analytics-serverless",
 			"redshift-serverless", "", "", 0, false, "available",
 			"analytics-serverless.111111111111.us-east-1.redshift-serverless.amazonaws.com", d(2024, 2, 6),
 			tags("owner", "data")), // no environment
+			model.MeasureBaseCapacityRPU, 8),
 		res(acctProd, "us-east-1", model.ServiceDocumentDB, "cluster", "catalog-docs",
 			"docdb", "5.0.0", "db.r6g.large", 350, false, "available",
 			"catalog-docs.cluster-c9k2hxu3qapb.us-east-1.docdb.amazonaws.com", d(2021, 11, 23),
@@ -282,6 +286,14 @@ func applyExposure(rs []model.Resource) []model.Resource {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// withMeasure attaches a measure res() has no parameter for. res() covers the
+// dimensions most of the fixture shares; anything one service alone is sized
+// by belongs at its own callsite rather than in the shared signature.
+func withMeasure(r model.Resource, key string, v int64) model.Resource {
+	r.SetMeasure(key, v)
+	return r
+}
 
 // res builds one fixture resource with a service-appropriate ARN. shape is a
 // fixture-local discriminator (instance | cluster | table | serverless) used
