@@ -68,6 +68,7 @@ blueprint scan --fail-on-change         # non-zero exit when the diff finds diff
 blueprint scan --no-history             # don't archive this scan or auto-diff
 blueprint scan --demo                   # render from fixture data, no AWS calls
 blueprint scan --costs                  # also report last month's spend (AWS bills $0.01/request)
+blueprint scan --metrics                # also read CloudWatch metrics (AWS bills $0.01/1,000 metrics)
 ```
 
 ## History
@@ -141,6 +142,39 @@ Cost is deliberately invisible to history bucketing and to the resource diff,
 so turning `--costs` on or off never re-buckets your history or reports an
 unchanged estate as drifted.
 
+## Metrics
+
+`--metrics` adds CloudWatch readings the describe APIs do not carry — today,
+free storage space on RDS instances.
+
+```sh
+blueprint scan --metrics
+```
+
+**AWS charges $0.01 per 1,000 metrics requested** through `GetMetricData`, so
+this is off by default and the run reports the bill:
+
+```
+  … metrics: reading CloudWatch for scanned resources — AWS bills $0.01 per 1,000 metrics requested
+  ✓ metrics: 38 series requested in 1 call(s), ~$0.00038 charged by AWS
+```
+
+Queries are batched 500 to a call and preceded by a free `ListMetrics` pass, so
+series that do not exist are never paid for. An estate of 10,000 resources
+costs a tenth of a cent.
+
+Every reading carries the instant AWS observed it (`<measure>_as_of`), because
+daily CloudWatch statistics lag the scan by a day or more and a stale number
+presented as current is worse than no number. A resource that published nothing
+in the lookback window gets no measure at all — that is an absent key, never a
+zero, since a stopped instance and a full disk must not read the same.
+
+Turning the flag on does not re-bucket your existing history — CloudWatch is
+not a scanner, so it does not widen the census scope. A reading that moves
+between scans does show up as drift, since a shrinking volume is exactly the
+kind of change a recurring scan exists to catch; the observation timestamp
+does not, because a clock advancing is not a finding.
+
 ## Outputs
 
 - **Terminal**: a sprawl summary — total resources, distinct types/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
@@ -178,12 +212,21 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
       "Effect": "Allow",
       "Action": "ce:GetCostAndUsage",
       "Resource": "*"
+    },
+    {
+      "Sid": "BlueprintCloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:ListMetrics",
+        "cloudwatch:GetMetricData"
+      ],
+      "Resource": "*"
     }
   ]
 }
 ```
 
-`BlueprintCostExplorer` is only needed for `--costs`; drop that statement if you never use the flag. Without it, the scan still completes and the missing permission is recorded in the failure ledger.
+`BlueprintCostExplorer` is only needed for `--costs` and `BlueprintCloudWatchMetrics` only for `--metrics`; drop either statement if you never use the flag. Without it, the scan still completes and the missing permission is recorded in the failure ledger.
 
 The AWS managed policies `ReadOnlyAccess` or `SecurityAudit` also cover everything blueprint calls, if you already have one of those attached.
 
@@ -204,7 +247,7 @@ Accounts where the role is missing or untrusting do not abort the scan: they sho
 
 blueprint phones home to no one. No usage analytics, no crash reporting, no update checks, not even anonymous pings. The only network calls it makes are to AWS APIs, using the credentials you provide. Output files are written to your local disk and go nowhere unless you send them somewhere.
 
-Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer preferences. The one call AWS charges for is `ce:GetCostAndUsage`, which only runs when you pass `--costs`, and every run reports what it cost you.
+Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer preferences. Two of them are billed by AWS: `ce:GetCostAndUsage` behind `--costs` and `cloudwatch:GetMetricData` behind `--metrics`. Both flags are off by default, both print the rate before spending anything, and both report what was actually spent when the run ends.
 
 ## License
 

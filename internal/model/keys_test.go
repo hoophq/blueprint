@@ -48,6 +48,43 @@ func TestAttributeAndMeasureKeysAreDisjoint(t *testing.T) {
 	}
 }
 
+// SetObservedMeasure derives a third key space out of the first two: every
+// measure key implies an attribute key of measure+AsOfSuffix. Those derived
+// names are never declared as consts, so the disjointness check above cannot
+// see them — a declared attribute that happened to equal one would be
+// overwritten by the next timestamped measure, silently, with an RFC 3339
+// string where its own value used to be.
+//
+// Two ways that can happen, both checked here: an attribute that collides
+// with a derived name outright, and any bag key that itself ends in the
+// suffix (which would make measure/timestamp ambiguous in either direction).
+func TestDerivedAsOfKeysCollideWithNothing(t *testing.T) {
+	consts := packageStringConsts(t)
+	attrs := withPrefix(consts, "Attr")
+	measures := withPrefix(consts, "Measure")
+	if len(attrs) == 0 || len(measures) == 0 {
+		t.Fatalf("found %d Attr* and %d Measure* consts; expected both to be non-empty", len(attrs), len(measures))
+	}
+
+	for measure, measureNames := range measures {
+		derived := measure + AsOfSuffix
+		if attrNames, ok := attrs[derived]; ok {
+			t.Errorf("attribute %q (%v) is the observation-time key SetObservedMeasure derives for measure %q (%v); "+
+				"timestamping that measure would overwrite the attribute",
+				derived, attrNames, measure, measureNames)
+		}
+	}
+
+	for _, prefix := range keyPrefixes {
+		for key, names := range withPrefix(consts, prefix) {
+			if strings.HasSuffix(key, AsOfSuffix) {
+				t.Errorf("%s* key %q (%v) ends in %q, which is reserved for the observation times "+
+					"SetObservedMeasure derives", prefix, key, names, AsOfSuffix)
+			}
+		}
+	}
+}
+
 // Keys are also expected to be distinct within a bag: two consts sharing a
 // value mean one of them is dead, and whichever scanner uses the loser writes
 // into a key another scanner already owns.

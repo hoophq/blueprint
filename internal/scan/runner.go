@@ -17,13 +17,20 @@ type Target struct {
 	Regions   []string
 }
 
-// Runner fans scanners out over targets × regions with bounded concurrency.
+// Runner fans scanners out over targets × regions with bounded concurrency,
+// then hands the assembled census to each enricher in turn.
 type Runner struct {
-	Scanners    []Scanner
+	Scanners []Scanner
+	// Enrichers run after every scanner, in order. The caller decides which
+	// to include, which is what makes each one independently skippable —
+	// several reach paid APIs and are off unless the user asks.
+	Enrichers   []Enricher
 	Concurrency int
 	// OnUnit, if set, is called after each (account, region, service) unit
 	// completes — used for progress output.
 	OnUnit func(accountID, region, service string, found int, err error)
+	// OnEnrich, if set, is called after each enricher finishes.
+	OnEnrich func(name string, failed int)
 }
 
 // Run executes the scan and returns a sorted snapshot with a failure ledger.
@@ -106,6 +113,40 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 	}
 	wg.Wait()
 
+	r.enrich(ctx, snap, targets)
 	snap.Finalize()
 	return snap
+}
+
+// enrich runs each enricher over the assembled census.
+//
+// The placement is load-bearing at both ends. It is after the scan because an
+// enricher's whole advantage is seeing every resource at once. It is before
+// Finalize because Finalize sorts Resources, and an enricher works by index
+// into that slice — running afterwards would either invalidate those indexes
+// or force a second sort to keep the artifact deterministic. Enrichers may
+// also write the tags and versions that DeriveEnvOwner and DeriveEOL read, so
+// they have to land before those run, not after.
+//
+// Enrichers run in sequence rather than concurrently: each already fans out
+// internally over accounts and regions, so overlapping them would multiply
+// concurrency past the ceiling the user set, for two or three stages.
+func (r *Runner) enrich(ctx context.Context, snap *model.Snapshot, targets []Target) {
+	for _, e := range r.Enrichers {
+		// A canceled run stops here rather than starting a stage that would
+		// immediately fail every call and, for the paid enrichers, spend on
+		// the way out.
+		if ctx.Err() != nil {
+			return
+		}
+		failures := e.Enrich(ctx, Enrichment{
+			Targets:     targets,
+			Resources:   snap.Resources,
+			Concurrency: r.Concurrency,
+		})
+		snap.Failures = append(snap.Failures, failures...)
+		if r.OnEnrich != nil {
+			r.OnEnrich(e.Name(), len(failures))
+		}
+	}
 }

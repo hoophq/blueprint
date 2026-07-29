@@ -46,6 +46,76 @@ func TestMeasuresDistinguishZeroFromUnreported(t *testing.T) {
 	}
 }
 
+func TestObservedMeasuresCarryTheirObservationTime(t *testing.T) {
+	at := time.Date(2026, 7, 27, 6, 30, 0, 0, time.UTC)
+	var r Resource
+	// Zero is a real reading here — a full volume — and must survive with its
+	// timestamp, exactly like a non-zero one.
+	r.SetObservedMeasure(MeasureFreeStorageBytes, 0, at)
+
+	if v, ok := r.Measure(MeasureFreeStorageBytes); !ok || v != 0 {
+		t.Errorf("Measure(free_storage_bytes) = (%d, %v), want (0, true)", v, ok)
+	}
+	got, ok := r.MeasureAsOf(MeasureFreeStorageBytes)
+	if !ok || !got.Equal(at) {
+		t.Errorf("MeasureAsOf = (%v, %v), want (%v, true)", got, ok, at)
+	}
+	if raw := r.Attr(MeasureFreeStorageBytes + AsOfSuffix); raw != "2026-07-27T06:30:00Z" {
+		t.Errorf("stored timestamp = %q, want RFC 3339 UTC", raw)
+	}
+}
+
+// A non-UTC observation time must be normalized, not stored verbatim: the rest
+// of the artifact is UTC, and a reader comparing an offset timestamp against
+// GeneratedAt by string would misjudge the staleness the field exists to show.
+func TestObservedMeasureNormalizesToUTC(t *testing.T) {
+	zone := time.FixedZone("UTC-7", -7*3600)
+	var r Resource
+	r.SetObservedMeasure(MeasureFreeStorageBytes, 42, time.Date(2026, 7, 27, 23, 0, 0, 0, zone))
+
+	at, ok := r.MeasureAsOf(MeasureFreeStorageBytes)
+	if !ok {
+		t.Fatal("observation time was not recorded")
+	}
+	if name, _ := at.Zone(); name != "UTC" {
+		t.Errorf("observation time zone = %q, want UTC", name)
+	}
+	if want := time.Date(2026, 7, 28, 6, 0, 0, 0, time.UTC); !at.Equal(want) {
+		t.Errorf("observation time = %v, want %v", at, want)
+	}
+}
+
+// An untimed datapoint is one whose staleness cannot be judged, so it is
+// dropped whole rather than stored as a value that looks current.
+func TestObservedMeasureRejectsAnUntimedDatapoint(t *testing.T) {
+	var r Resource
+	r.SetObservedMeasure(MeasureFreeStorageBytes, 512, time.Time{})
+
+	if v, ok := r.Measure(MeasureFreeStorageBytes); ok {
+		t.Errorf("Measure(free_storage_bytes) = (%d, true), want not reported", v)
+	}
+	if _, ok := r.MeasureAsOf(MeasureFreeStorageBytes); ok {
+		t.Error("an untimed measure recorded an observation time")
+	}
+}
+
+// Describe-sourced measures are current as of the scan and carry no timestamp,
+// so MeasureAsOf must say "no" rather than invent an epoch.
+func TestMeasureAsOfIsAbsentForDescribeSourcedMeasures(t *testing.T) {
+	var r Resource
+	r.SetMeasure(MeasureBackupRetentionDays, 7)
+
+	if at, ok := r.MeasureAsOf(MeasureBackupRetentionDays); ok {
+		t.Errorf("MeasureAsOf(backup_retention_days) = (%v, true), want absent", at)
+	}
+	// A malformed timestamp is absence too — never a zero-year time.Time that
+	// downstream code would render as 0001-01-01.
+	r.SetAttr(MeasureBackupRetentionDays+AsOfSuffix, "not a timestamp")
+	if at, ok := r.MeasureAsOf(MeasureBackupRetentionDays); ok {
+		t.Errorf("MeasureAsOf on unparseable input = (%v, true), want absent", at)
+	}
+}
+
 func TestExposed(t *testing.T) {
 	yes, no := true, false
 	cases := []struct {
