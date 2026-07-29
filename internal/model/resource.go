@@ -130,6 +130,18 @@ type Resource struct {
 	// resource type.
 	PubliclyAccessible *bool `json:"publicly_accessible,omitempty"`
 	Encrypted          *bool `json:"encrypted,omitempty"`
+	// Cost is what a cost source reported this resource costs, present only
+	// when one actually reported a figure for it. Nil means no source priced
+	// it — never that the resource is free. It is a pointer to a typed struct
+	// rather than a bag key because an amount is meaningless without the
+	// currency, method, and window that qualify it, and those must travel
+	// together or not at all. See ResourceCost.
+	//
+	// Adding it does not bump SchemaVersion, on the same reasoning as
+	// Snapshot.Cost: it changes no existing field's representation, and the
+	// diff does not read it, so it cannot fabricate drift across the boundary
+	// the version guards. An older baseline simply has no costs to compare.
+	Cost *ResourceCost `json:"cost,omitempty"`
 
 	Attributes map[string]string `json:"attributes,omitempty"`
 	Measures   map[string]int64  `json:"measures,omitempty"`

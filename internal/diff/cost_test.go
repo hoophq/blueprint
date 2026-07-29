@@ -63,3 +63,51 @@ func TestCompareIgnoresCost(t *testing.T) {
 		})
 	}
 }
+
+// The per-resource estimate is invisible to the resource diff for the same
+// reason the account rollup is, plus one of its own: a Cost Optimization Hub
+// figure is a modelled monthly rate that moves on its own as usage shifts, so
+// a resource nobody touched would report drift on every scan. Whether a price
+// changed is a cost question (ATR-175), not a "did this database change" one.
+func TestCompareIgnoresPerResourceCost(t *testing.T) {
+	snap := func(cost *model.ResourceCost) *model.Snapshot {
+		s := &model.Snapshot{
+			Schema:   model.SchemaVersion,
+			Accounts: []string{"111111111111"},
+			Regions:  []string{"us-east-1"},
+			Resources: []model.Resource{{
+				ARN:       "arn:aws:rds:us-east-1:111111111111:db:orders",
+				Name:      "orders",
+				Service:   model.ServiceRDS,
+				Type:      model.TypeRDSInstance,
+				Region:    "us-east-1",
+				AccountID: "111111111111",
+				Cost:      cost,
+			}},
+		}
+		s.Finalize()
+		return s
+	}
+	priced := &model.ResourceCost{Amount: "412.50", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
+	dearer := &model.ResourceCost{Amount: "980.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
+	// A resource priced at exactly zero is a real reading, not an absent one,
+	// and must be as invisible to the diff as any other figure.
+	free := &model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
+
+	for _, tc := range []struct {
+		name      string
+		old, curr *model.ResourceCost
+	}{
+		{"cost added", nil, priced},
+		{"cost removed", priced, nil},
+		{"cost changed", priced, dearer},
+		{"cost fell to zero", priced, free},
+		{"no cost either side", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Compare(snap(tc.old), snap(tc.curr)); !got.Empty() {
+				t.Errorf("per-resource cost leaked into the resource diff: %+v", got)
+			}
+		})
+	}
+}
