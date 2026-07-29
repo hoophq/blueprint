@@ -954,6 +954,37 @@ func sumNamed(t *testing.T, n []model.NamedAmount) *big.Rat {
 	return total
 }
 
+// Snapshot.GeneratedAt is stamped when the run starts, so it bounds a cost
+// failure only from below. These calls are billed and rate-limited, and
+// "sometime after the scan began" does not line up against a CloudTrail entry
+// or a throttling window — so each entry carries the instant it was recorded.
+func TestLedgerEntriesAreTimestamped(t *testing.T) {
+	before := time.Now().UTC()
+	f := &fakeCE{err: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "no"}}
+
+	_, failures := Collect(context.Background(), f, testOptions())
+	if len(failures) == 0 {
+		t.Fatal("a failed lookup produced no ledger entry")
+	}
+	after := time.Now().UTC()
+
+	for _, fail := range failures {
+		if fail.Time.IsZero() {
+			t.Errorf("ledger entry %q carries no time", fail.Error)
+			continue
+		}
+		if fail.Time.Before(before) || fail.Time.After(after) {
+			t.Errorf("ledger entry timed %v, outside the run's own window [%v, %v]",
+				fail.Time, before, after)
+		}
+		// UTC throughout the artifact, like GeneratedAt: a ledger a reader has
+		// to timezone-correct before comparing to CloudTrail is a trap.
+		if name, _ := fail.Time.Zone(); name != "UTC" {
+			t.Errorf("ledger entry timed in %s, want UTC", name)
+		}
+	}
+}
+
 // jsonish renders a report the way the artifact would, so a determinism test
 // compares what actually gets written rather than Go's struct printing.
 func jsonish(r *model.CostReport) string {

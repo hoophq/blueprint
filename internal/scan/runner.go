@@ -94,6 +94,7 @@ func (r *Runner) Run(ctx context.Context, targets []Target, version string) *mod
 					Region:    u.region,
 					Service:   u.scanner.Service(),
 					Error:     err.Error(),
+					Time:      time.Now().UTC(),
 				})
 			}
 			mu.Unlock()

@@ -630,6 +630,7 @@ func ledger(opts Options, kind, msg string) model.Failure {
 		AccountID: opts.CallerAccount,
 		Service:   Service,
 		Error:     kind + ": " + msg,
+		Time:      time.Now().UTC(),
 	}
 }
 
@@ -640,9 +641,9 @@ func ledger(opts Options, kind, msg string) model.Failure {
 // them.
 //
 // The kind is a prefix on the error text rather than a new Failure field:
-// the ledger sorts on (account, region, service, error), so a field outside
-// that key would order non-deterministically between two entries that differ
-// only by kind.
+// the ledger sorts on (account, region, service, error) before falling back to
+// the recorded time, so a field outside that key would not order two entries
+// that differ only by kind — it would leave them to the clock.
 func classify(opts Options, what string, err error) model.Failure {
 	if errors.Is(err, errBudget) {
 		return ledger(opts, "ce_pagination_incomplete", fmt.Sprintf(

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The attribute bag carries the honesty guardrail that used to live in
@@ -164,5 +165,56 @@ func TestFinalizeSortsScopeLists(t *testing.T) {
 		if !sort.StringsAreSorted(list) {
 			t.Errorf("%s not sorted after Finalize: %v", name, list)
 		}
+	}
+}
+
+// A failure's time is stamped by this tool rather than reported by AWS, so it
+// carries no honesty question — but it does carry a determinism one. The
+// runner appends in goroutine-completion order and sort.Slice is unstable, so
+// two entries alike in every other field would otherwise swap places between
+// two runs over an identical snapshot.
+func TestSortFailuresBreaksTiesOnTime(t *testing.T) {
+	early := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	late := early.Add(3 * time.Second)
+	twin := func(at time.Time) Failure {
+		return Failure{
+			AccountID: "111111111111", Region: "us-east-1", Service: ServiceRDS,
+			Error: "ThrottlingException: Rate exceeded", Time: at,
+		}
+	}
+
+	// Both append orders must converge on the same ledger.
+	for _, appended := range [][]Failure{{twin(late), twin(early)}, {twin(early), twin(late)}} {
+		s := &Snapshot{Failures: appended}
+		s.SortFailures()
+		if !s.Failures[0].Time.Equal(early) || !s.Failures[1].Time.Equal(late) {
+			t.Errorf("SortFailures produced %v then %v; entries differing only by time must "+
+				"order by it, whatever order the runner appended them in",
+				s.Failures[0].Time, s.Failures[1].Time)
+		}
+	}
+}
+
+// An unstamped entry is one written before the field existed. That is absence,
+// and absence must not surface as a value — least of all as year 1, which
+// reads like a real timestamp that went wrong.
+func TestFailureOmitsAnUnstampedTime(t *testing.T) {
+	unstamped, err := json.Marshal(Failure{Service: ServiceRDS, Error: "boom"})
+	if err != nil {
+		t.Fatalf("marshalling an unstamped failure: %v", err)
+	}
+	if strings.Contains(string(unstamped), "time") {
+		t.Errorf("unstamped failure marshalled as %s; the key must be absent, not zero-valued", unstamped)
+	}
+
+	stamped, err := json.Marshal(Failure{
+		Service: ServiceRDS, Error: "boom",
+		Time: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("marshalling a stamped failure: %v", err)
+	}
+	if want := `"time":"2026-06-01T10:00:00Z"`; !strings.Contains(string(stamped), want) {
+		t.Errorf("stamped failure marshalled as %s, want it to contain %s", stamped, want)
 	}
 }
