@@ -180,26 +180,14 @@ func attachedVolumeIDs(mappings []ec2types.InstanceBlockDeviceMapping) string {
 // DescribeInstances carries no ARN for the instance, but it may carry one for
 // something attached to it, and those live in the same partition. When there
 // is none — the common case for a plain instance — the region name is the only
-// evidence left. See arn.go for why "aws" is not an acceptable default here.
-//
-// Two separate questions are asked in order, and conflating them is how this
-// goes wrong. Presence is decided on the pointer, so a field AWS did report is
-// never mistaken for one it withheld. Usability is then decided by the parse,
-// because a reported string that is empty or malformed is not evidence of any
-// partition — reading a bare "aws" out of it would beat the region fallback and
-// mis-key every instance in GovCloud or China, silently.
+// evidence left. See partitionFromARNs in arn.go for the presence-then-parse
+// discipline this relies on, and why "aws" is not an acceptable default here.
 func instancePartition(i ec2types.Instance, region string) string {
-	if p := i.IamInstanceProfile; p != nil && p.Arn != nil {
-		if partition, ok := partitionFromARN(*p.Arn); ok {
-			return partition
-		}
+	var profileARN *string
+	if p := i.IamInstanceProfile; p != nil {
+		profileARN = p.Arn
 	}
-	if i.OutpostArn != nil {
-		if partition, ok := partitionFromARN(*i.OutpostArn); ok {
-			return partition
-		}
-	}
-	return partitionForRegion(region)
+	return partitionFromARNs(region, profileARN, i.OutpostArn)
 }
 
 // EC2InstanceARN builds an instance ARN: DescribeInstances does not return

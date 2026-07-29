@@ -25,6 +25,31 @@ func partitionFromARN(arn string) (string, bool) {
 	return "", false
 }
 
+// partitionFromARNs answers which partition a resource sits in when the
+// response describing it carries no ARN of its own, only ARNs of things beside
+// it — an instance profile, an Outpost, a KMS key. Those live in the same
+// partition, so the first one that parses is AWS's own answer; the region name
+// is the fallback when none does.
+//
+// The two questions stay separate, in order, because conflating them is how
+// this goes wrong. Presence is the pointer, so a field AWS reported is never
+// confused with one it withheld. Usability is the parse, because a reported
+// string that is empty or malformed is not evidence of any partition — reading
+// a bare "aws" out of it would outrank the region rule and mis-key every
+// resource in GovCloud or China, silently, in the one field the diff matches on
+// and cost enrichment joins on.
+func partitionFromARNs(region string, candidates ...*string) string {
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if partition, ok := partitionFromARN(*candidate); ok {
+			return partition
+		}
+	}
+	return partitionForRegion(region)
+}
+
 // arnPartition extracts the partition from an ARN ("arn:PARTITION:...");
 // empty or malformed input falls back to the default "aws" partition.
 //
