@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
@@ -123,6 +124,7 @@ func Targets(ctx context.Context, cfg aws.Config, callerAccount, roleName string
 					AccountID: e.id,
 					Service:   "orgmode",
 					Error:     fmt.Sprintf("validating %s: %v", arn, err),
+					Time:      time.Now().UTC(),
 				}
 				return
 			}

@@ -23,10 +23,11 @@ const (
 // gaps (~30% missing owner, ~20% missing environment) and two scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
+	now := time.Now().UTC()
 	snap := &model.Snapshot{
 		Schema:      model.SchemaVersion,
 		Version:     version,
-		GeneratedAt: time.Now().UTC(),
+		GeneratedAt: now,
 		Accounts:    []string{acctProd, acctStaging},
 		Regions:     []string{"us-east-1", "us-west-2", "sa-east-1", "eu-west-1"},
 		// The demo simulates a scan by this binary, so its coverage scope is
@@ -34,11 +35,16 @@ func Snapshot(version string) *model.Snapshot {
 		// internal/scanners above registers them).
 		Services:  registeredServices(),
 		Resources: applyExposure(resources()),
+		// Failure times are offset from the run's start, since that is what
+		// they look like in a real scan: the ledger is written as units come
+		// back, not when the run began.
 		Failures: []model.Failure{
 			{AccountID: acctProd, Region: "sa-east-1", Service: model.ServiceElastiCache,
-				Error: "AccessDenied: User is not authorized to perform elasticache:DescribeCacheClusters"},
+				Error: "AccessDenied: User is not authorized to perform elasticache:DescribeCacheClusters",
+				Time:  now.Add(2 * time.Second)},
 			{AccountID: acctStaging, Region: "eu-west-1", Service: model.ServiceDynamoDB,
-				Error: "ThrottlingException: Rate exceeded (retries exhausted)"},
+				Error: "ThrottlingException: Rate exceeded (retries exhausted)",
+				Time:  now.Add(5 * time.Second)},
 		},
 	}
 	snap.Finalize()

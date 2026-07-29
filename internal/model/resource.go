@@ -206,6 +206,21 @@ type Failure struct {
 	Region    string `json:"region,omitempty"`
 	Service   string `json:"service"`
 	Error     string `json:"error"`
+	// Time is when the tool recorded the failure, in UTC.
+	//
+	// Snapshot.GeneratedAt is stamped when the run starts, so on its own it
+	// bounds a failure only from below. For an organization-wide census that
+	// runs for minutes — and for the billed Cost Explorer calls, where the
+	// question "when did this throttle?" has a price attached — "sometime
+	// after the scan began" is too wide to line up against a CloudTrail event
+	// or a throttling window. This is the instant that correlates.
+	//
+	// Adding it does not bump SchemaVersion: it is a new field rather than a
+	// change to an existing one, and the diff does not read the ledger, so it
+	// cannot fabricate drift across the boundary the version guards. Zero
+	// means an entry that predates the field, and is omitted rather than
+	// written out as year 1.
+	Time time.Time `json:"time,omitzero"`
 }
 
 // SchemaVersion is the census artifact schema written by this binary.
@@ -343,7 +358,14 @@ func (s *Snapshot) SortFailures() {
 		if a.Service != b.Service {
 			return a.Service < b.Service
 		}
-		return a.Error < b.Error
+		if a.Error != b.Error {
+			return a.Error < b.Error
+		}
+		// Time is the final tie-break, not part of the ledger's identity: two
+		// entries alike in every other field must still land in a fixed order,
+		// because sort.Slice is unstable and the artifact has to be
+		// byte-for-byte reproducible for a given snapshot.
+		return a.Time.Before(b.Time)
 	})
 }
 
