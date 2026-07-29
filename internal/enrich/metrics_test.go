@@ -365,6 +365,64 @@ func TestBatchesRespectTheFiveHundredQueryLimit(t *testing.T) {
 	}
 }
 
+// Every batch and every scope asks about the same span, so which datapoint a
+// resource gets never depends on how far into a slow scan its region was
+// reached. Reading the clock per batch would let two instances in one account
+// disagree about "latest" whenever a run straddled a daily bucket boundary,
+// and would make the census report the scan's duration rather than the estate.
+func TestTheQueryWindowIsFixedForTheWholeRun(t *testing.T) {
+	const total = 1201 // three batches, so the clock has room to move between them
+	names := make([]string, total)
+	var resources []model.Resource
+	for i := range names {
+		names[i] = "db" + strconv.Itoa(i)
+		resources = append(resources, instance("111111111111", "us-east-1", names[i]))
+	}
+	// A second account so concurrent scopes are in play too, not just batching.
+	resources = append(resources, instance("222222222222", "eu-west-1", "db-other"))
+	names = append(names, "db-other")
+
+	api := &fakeCW{listFn: knows(names...), getFn: answers(map[string][]point{})}
+
+	// A clock that advances a full day per reading — far more than any real
+	// scan drifts, and enough that a per-batch EndTime could not be mistaken
+	// for jitter.
+	var mu sync.Mutex
+	ticks := 0
+	m := &Metrics{
+		NewClient: func(aws.Config) API { return api },
+		Now: func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			ticks++
+			return scanTime.Add(time.Duration(ticks) * 24 * time.Hour)
+		},
+	}
+	m.Enrich(context.Background(), scan.Enrichment{
+		Targets: []scan.Target{
+			{AccountID: "111111111111", Cfg: aws.Config{}},
+			{AccountID: "222222222222", Cfg: aws.Config{}},
+		},
+		Resources:   resources,
+		Concurrency: 4,
+	})
+
+	if len(api.gets) < 4 {
+		t.Fatalf("GetMetricData calls = %d, want at least 4 (three batches plus the second scope)", len(api.gets))
+	}
+	want := aws.ToTime(api.gets[0].EndTime)
+	for i, in := range api.gets {
+		if got := aws.ToTime(in.EndTime); !got.Equal(want) {
+			t.Errorf("call %d EndTime = %v, want %v — the window moved mid-run", i, got, want)
+		}
+		// StartTime is EndTime minus the batch's own reach, so it has to track
+		// the fixed end rather than a fresh clock reading.
+		if got, wantStart := aws.ToTime(in.StartTime), want.Add(-defaultLookback); !got.Equal(wantStart) {
+			t.Errorf("call %d StartTime = %v, want %v", i, got, wantStart)
+		}
+	}
+}
+
 // The query shape is the documented workaround for the Metrics Insights trap:
 // a plain MetricStat over a multi-day window, never a SELECT … FROM SCHEMA
 // expression, which would only see the last three hours and return empty.

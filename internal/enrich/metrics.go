@@ -200,6 +200,19 @@ func (m *Metrics) Enrich(ctx context.Context, req scan.Enrichment) []model.Failu
 		return nil
 	}
 
+	// One instant for the whole stage, read once and passed down. Every batch
+	// and every scope queries the same window, so which datapoint a resource
+	// gets does not depend on how far into a slow scan its region happened to
+	// be reached. Taking the clock per batch would make two instances in the
+	// same account disagree about "latest" whenever a run straddled a daily
+	// bucket boundary — a census that reports different as-of times for
+	// identical resources because one was queried later is reporting the scan's
+	// duration, not the estate.
+	//
+	// Failure timestamps deliberately keep reading the live clock below: those
+	// record when something went wrong, which is a different question.
+	asked := m.now()
+
 	cfgs := make(map[string]aws.Config, len(req.Targets))
 	for _, t := range req.Targets {
 		cfgs[t.AccountID] = t.Cfg
@@ -251,7 +264,7 @@ func (m *Metrics) Enrich(ctx context.Context, req scan.Enrichment) []model.Failu
 				return
 			}
 			defer func() { <-sem }()
-			m.enrichScope(ctx, newClient(cfg), req.Resources, sc, report)
+			m.enrichScope(ctx, newClient(cfg), req.Resources, sc, asked, report)
 		}(sc, cfg)
 	}
 	wg.Wait()
@@ -314,7 +327,7 @@ func usableDimensions(dims map[string]string) bool {
 	return true
 }
 
-func (m *Metrics) enrichScope(ctx context.Context, api API, resources []model.Resource, sc scope, report reporter) {
+func (m *Metrics) enrichScope(ctx context.Context, api API, resources []model.Resource, sc scope, asked time.Time, report reporter) {
 	queries := sc.queries
 	if known, ok := m.discover(ctx, api, sc, report); ok {
 		kept := make([]query, 0, len(queries))
@@ -331,7 +344,7 @@ func (m *Metrics) enrichScope(ctx context.Context, api API, resources []model.Re
 			return
 		}
 		end := min(start+maxQueriesPerCall, len(queries))
-		m.fetch(ctx, api, resources, sc, queries[start:end], report)
+		m.fetch(ctx, api, resources, sc, queries[start:end], asked, report)
 	}
 }
 
@@ -400,8 +413,13 @@ func (m *Metrics) discover(ctx context.Context, api API, sc scope, report report
 
 // fetch reads one batch and writes the newest datapoint of each series into
 // its resource.
-func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource, sc scope, batch []query, report reporter) {
-	end := m.now()
+//
+// The window ends at the instant the stage started rather than now, so every
+// batch in the run asks about the same span. Its width still varies with the
+// batch, because a batch holding a coarser period needs a longer reach back to
+// find three buckets of it.
+func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource, sc scope, batch []query, asked time.Time, report reporter) {
+	end := asked
 	start := end.Add(-m.window(batch))
 
 	queries := make([]cwtypes.MetricDataQuery, len(batch))
