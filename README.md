@@ -142,6 +142,41 @@ Cost is deliberately invisible to history bucketing and to the resource diff,
 so turning `--costs` on or off never re-buckets your history or reports an
 unchanged estate as drifted.
 
+### Per-resource estimates
+
+`--costs` also asks **Cost Optimization Hub** what each individual resource
+costs. That API is free, so it adds nothing to the bill above:
+
+```
+  … cost-hub: reading per-resource estimates from Cost Optimization Hub — not billed by AWS
+  ✓ cost-hub: 38 resource(s) priced from 41 recommendation(s) in 3 call(s), no charge
+```
+
+It is the only AWS API that reports a dollar figure for one resource without
+the caller inventing an allocation, which is why blueprint uses it and why it
+never divides an account rollup across the resources in it. A per-resource
+number nobody reported per resource is a number this tool made up.
+
+The two figures answer different questions and are never added together or
+reconciled: the rollup above is what AWS billed over a closed month, while a
+Cost Optimization Hub figure is a forward-looking **monthly rate modelled from
+recent usage**. Every per-resource amount therefore carries its method
+(`coh`), an `estimated` flag, and the usage window the model ran over, so a
+stale figure is visible as one.
+
+Coverage is partial by design. Cost Optimization Hub only models resource
+types it has recommendations for, so resources it does not cover simply have
+no cost — which is why the run reports how many resources were priced against
+how many recommendations were read. Where a figure covers only part of a
+resource (storage but not compute, say), that is recorded as a caveat on the
+figure rather than left for the reader to discover.
+
+Cost Optimization Hub has to be switched on, once, from its console — it is
+free and takes about a day to produce the first recommendations. Until then an
+unenrolled account returns an empty list that is indistinguishable from "no
+recommendations", so blueprint checks enrollment first and puts the answer in
+the failure ledger rather than reporting a silent absence of cost.
+
 ## Metrics
 
 `--metrics` adds CloudWatch readings the describe APIs do not carry — today,
@@ -214,6 +249,15 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
       "Resource": "*"
     },
     {
+      "Sid": "BlueprintCostOptimizationHub",
+      "Effect": "Allow",
+      "Action": [
+        "cost-optimization-hub:ListEnrollmentStatuses",
+        "cost-optimization-hub:ListRecommendations"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "BlueprintCloudWatchMetrics",
       "Effect": "Allow",
       "Action": [
@@ -226,7 +270,7 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
 }
 ```
 
-`BlueprintCostExplorer` is only needed for `--costs` and `BlueprintCloudWatchMetrics` only for `--metrics`; drop either statement if you never use the flag. Without it, the scan still completes and the missing permission is recorded in the failure ledger.
+`BlueprintCostExplorer` and `BlueprintCostOptimizationHub` are only needed for `--costs`, and `BlueprintCloudWatchMetrics` only for `--metrics`; drop any statement whose flag you never use. Without it, the scan still completes and the missing permission is recorded in the failure ledger.
 
 The AWS managed policies `ReadOnlyAccess` or `SecurityAudit` also cover everything blueprint calls, if you already have one of those attached.
 
@@ -239,7 +283,7 @@ Requirements:
 - Run it with credentials from the organization's **management account** or a **delegated administrator** account, with `organizations:ListAccounts` allowed.
 - A role with the read-only policy above must exist in **every member account**, and its trust policy must allow the calling account to assume it. The default role name is `OrganizationAccountAccessRole` (created automatically for accounts made through Organizations); override with `--role-name`.
 - The caller additionally needs `organizations:ListAccounts` and `sts:AssumeRole` on the member-account roles — see [docs/iam-policy-org.json](docs/iam-policy-org.json), replacing `${RoleName}` with your actual role name.
-- With `--costs`, Cost Explorer is queried once from the calling account for the whole organization, not once per member account — so `ce:GetCostAndUsage` belongs on the caller, and the bill stays the same two requests no matter how many accounts you scan.
+- With `--costs`, Cost Explorer is queried once from the calling account for the whole organization, not once per member account — so `ce:GetCostAndUsage` belongs on the caller, and the bill stays the same two requests no matter how many accounts you scan. Cost Optimization Hub works the same way: one org-wide list read with the caller's credentials, so `cost-optimization-hub:*` belongs on the caller too. Member accounts are only included if the organization enrolled them, and blueprint says so in the ledger when it finds they were not.
 
 Accounts where the role is missing or untrusting do not abort the scan: they show up as failures in the ledger, and everything else is still scanned.
 
@@ -247,7 +291,7 @@ Accounts where the role is missing or untrusting do not abort the scan: they sho
 
 blueprint phones home to no one. No usage analytics, no crash reporting, no update checks, not even anonymous pings. The only network calls it makes are to AWS APIs, using the credentials you provide. Output files are written to your local disk and go nowhere unless you send them somewhere.
 
-Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer preferences. Two of them are billed by AWS: `ce:GetCostAndUsage` behind `--costs` and `cloudwatch:GetMetricData` behind `--metrics`. Both flags are off by default, both print the rate before spending anything, and both report what was actually spent when the run ends.
+Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer or Cost Optimization Hub preferences — blueprint reads your Cost Optimization Hub enrollment status but never changes it. Two of them are billed by AWS: `ce:GetCostAndUsage` behind `--costs` and `cloudwatch:GetMetricData` behind `--metrics`. Both flags are off by default, both print the rate before spending anything, and both report what was actually spent when the run ends.
 
 ## License
 

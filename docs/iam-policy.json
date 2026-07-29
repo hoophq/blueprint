@@ -25,6 +25,15 @@
       "Resource": "*"
     },
     {
+      "Sid": "BlueprintCostOptimizationHub",
+      "Effect": "Allow",
+      "Action": [
+        "cost-optimization-hub:ListEnrollmentStatuses",
+        "cost-optimization-hub:ListRecommendations"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "BlueprintCloudWatchMetrics",
       "Effect": "Allow",
       "Action": [

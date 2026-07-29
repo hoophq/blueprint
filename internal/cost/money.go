@@ -33,12 +33,12 @@ type amount struct {
 // must not be read as a formula) depends on that string provably being a
 // plain decimal. Rejecting here means no other layer has to guess.
 func parseAmount(s string) (amount, error) {
-	if !validDecimal(s) {
+	if !ValidDecimal(s) {
 		return amount{}, fmt.Errorf("not a decimal number: %q", s)
 	}
 	r, ok := new(big.Rat).SetString(s)
 	if !ok {
-		// Unreachable for a string validDecimal accepts, but a silent zero
+		// Unreachable for a string ValidDecimal accepts, but a silent zero
 		// here would be a fabricated amount.
 		return amount{}, fmt.Errorf("not a decimal number: %q", s)
 	}
@@ -49,13 +49,19 @@ func parseAmount(s string) (amount, error) {
 	return amount{rat: r, raw: s, decimals: decimals}, nil
 }
 
-// validDecimal reports whether s matches ^-?\d+(\.\d+)?$.
+// ValidDecimal reports whether s matches ^-?\d+(\.\d+)?$.
 //
 // Written out rather than done with regexp so the accepted grammar is
 // obvious: big.Rat.SetString on its own is far more permissive (it accepts
 // "1/3", "1e9", and leading "+"), and those forms must not reach an artifact
 // that claims to quote AWS verbatim.
-func validDecimal(s string) bool {
+//
+// It is exported because Cost Explorer is no longer the only source of money
+// in the census: Cost Optimization Hub models its amounts as doubles, so that
+// path has to convert to a decimal string itself and then prove the result is
+// one this tool would have accepted from AWS directly. Two definitions of
+// "amount" would drift; there is one, and it lives here.
+func ValidDecimal(s string) bool {
 	s = strings.TrimPrefix(s, "-")
 	if s == "" {
 		return false

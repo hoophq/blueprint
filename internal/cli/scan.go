@@ -69,6 +69,7 @@ func scanCmd() *cobra.Command {
 					// The fixture's meter honestly reports zero requests and
 					// zero charge, because --demo makes no AWS calls at all.
 					snap.Cost = demo.CostReport()
+					demo.AddResourceCosts(snap)
 				}
 				if metrics {
 					demo.AddMetrics(snap)
@@ -112,7 +113,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against instead of the automatic history baseline")
 	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when the diff (auto or --compare) finds differences")
 	cmd.Flags().BoolVar(&noHistory, "no-history", false, "do not archive this scan in local history or auto-diff against the previous one")
-	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer (AWS BILLS $0.01 per request; off by default)")
+	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer, plus free per-resource estimates from Cost Optimization Hub (AWS BILLS $0.01 per Cost Explorer request; off by default)")
 	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
 	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
 	cmd.Flags().BoolVar(&metrics, "metrics", false, "also read CloudWatch utilization metrics for scanned resources (AWS BILLS $"+enrich.ChargeUSD(1000)+" per 1,000 metrics requested; off by default)")
@@ -205,13 +206,37 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 		fmt.Fprintf(cmd.OutOrStdout(), "  … metrics: reading CloudWatch for scanned resources — AWS bills $%s per 1,000 metrics requested\n",
 			enrich.ChargeUSD(1000))
 		metricsStage = enrich.NewMetrics()
-		runner.Enrichers = []scan.Enricher{metricsStage}
+		runner.Enrichers = append(runner.Enrichers, metricsStage)
+	}
+	var costHubStage *enrich.CostHub
+	if costs.enabled {
+		// Per-resource cost rides on --costs rather than a flag of its own:
+		// both answer "what does this cost", and splitting them would leave a
+		// user who asked about cost with only half an answer for no reason.
+		// Unlike Cost Explorer it is free, which is worth saying out loud next
+		// to a flag whose help text warns about being billed.
+		fmt.Fprintln(cmd.OutOrStdout(), "  … cost-hub: reading per-resource estimates from Cost Optimization Hub — not billed by AWS")
+		// Constructed with the caller's own credentials, like the Cost
+		// Explorer phase and for the same reason: the hub is one org-wide
+		// endpoint in the payer account, so there is no member role to assume
+		// and nothing to fan out over.
+		costHubStage = enrich.NewCostHub(cfg, account)
+		runner.Enrichers = append(runner.Enrichers, costHubStage)
 	}
 	snap := runner.Run(ctx, targets, Version)
 	if metricsStage != nil {
 		meter := metricsStage.Meter()
 		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ metrics: %d series requested in %d call(s), ~$%s charged by AWS\n",
 			meter.Series, meter.GetCalls, enrich.ChargeUSD(meter.Series))
+	}
+	if costHubStage != nil {
+		// Priced is reported against Recommendations, not on its own: the two
+		// together are the coverage figure. Cost Optimization Hub does not
+		// model every resource type, so a gap is expected — but "2,000 read,
+		// 0 attached" is an ARN mismatch, and only the pair shows it.
+		meter := costHubStage.Meter()
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost-hub: %d resource(s) priced from %d recommendation(s) in %d call(s), no charge\n",
+			meter.Priced, meter.Recommendations, meter.Requests)
 	}
 	// Org-mode pre-scan failures (unassumable member roles) belong in the
 	// same ledger as per-unit scan failures; re-sort so the artifact stays

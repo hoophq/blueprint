@@ -1,6 +1,9 @@
 package model
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // Cost census types.
 //
@@ -129,6 +132,69 @@ type CostByCurrency struct {
 type NamedAmount struct {
 	Name   string `json:"name"`
 	Amount string `json:"amount"`
+}
+
+// Cost attribution methods, used in ResourceCost.Method.
+//
+// The method travels with every per-resource amount because figures from
+// different sources answer different questions. A Cost Explorer figure is what
+// AWS billed over a closed month; a Cost Optimization Hub figure is a
+// forward-looking monthly rate modelled from recent usage. Adding one to the
+// other, or ranking resources priced by different sources against each other,
+// produces a number that means nothing — so the source is never dropped, and a
+// reader can always tell which question a figure answers.
+const (
+	// CostMethodCOH is Cost Optimization Hub's estimatedMonthlyCost for a
+	// resource's current configuration.
+	CostMethodCOH = "coh"
+)
+
+// ResourceCost is what one resource costs, according to one source.
+//
+// It hangs off Resource as a pointer and is set only when a source actually
+// reported a figure for that resource. Nil means nobody reported a cost for
+// it — never that the resource is free — the same rule the attribute bag's
+// absent keys carry. Nothing here is ever derived by dividing a group total
+// across the resources in it: a per-resource number that was never reported
+// per resource is exactly the fabricated value the honesty guardrails forbid.
+// That is why CostReport (account-level rollups) and this type stay separate
+// and are never reconciled against each other.
+type ResourceCost struct {
+	// Amount is a decimal string, for the same reason every other amount in
+	// this package is: binary floating point cannot hold a decimal amount
+	// exactly. A stored "0.00" is a real reported figure and must survive to
+	// the renderers — the absence of a cost is a nil *ResourceCost, not a zero.
+	Amount string `json:"amount"`
+	// Currency is the unit the source reported ("USD").
+	//
+	// Empty means the source reported an amount without naming a currency. It
+	// is never filled in with a default: an amount labelled USD that AWS never
+	// said was USD is a fabricated value, and renderers must show the figure
+	// unlabelled rather than assume.
+	Currency string `json:"currency,omitempty"`
+	// Method names the source, one of the CostMethod* constants above.
+	Method string `json:"method"`
+	// Estimated says whether the figure is modelled rather than billed. It is
+	// always written out, including when false, because "this is a real bill"
+	// is a claim worth making explicitly rather than by omission.
+	Estimated bool `json:"estimated"`
+	// ObservedFrom and ObservedTo bound the usage period the figure describes,
+	// in UTC. For a modelled monthly rate that is the lookback the model ran
+	// over, which is not the period being charged for — an unbounded "monthly
+	// cost" with no window attached cannot be judged for staleness, the same
+	// problem AsOfSuffix solves for metrics.
+	//
+	// Either may be nil when the source did not report enough to place the
+	// window.
+	ObservedFrom *time.Time `json:"observed_from,omitempty"`
+	ObservedTo   *time.Time `json:"observed_to,omitempty"`
+	// Caveats are per-resource disclosures that qualify this figure: that it
+	// covers only part of the resource, or that it extrapolates a period the
+	// resource did not exist for all of. They are limited to conditions
+	// derived from what the source reported about *this* resource — blanket
+	// statements true of every figure from a method belong in that method's
+	// documentation, not repeated on every row of the artifact.
+	Caveats []string `json:"caveats,omitempty"`
 }
 
 // CostMeter records what the cost lookup itself cost.
