@@ -4,6 +4,8 @@ package demo
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/hoophq/blueprint/internal/model"
@@ -19,7 +21,7 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 46 resources across all supported services, with realistic tag hygiene
+// 54 resources across all supported services, with realistic tag hygiene
 // gaps (~30% missing owner, ~20% missing environment) and two scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
@@ -140,6 +142,26 @@ func resources() []model.Resource {
 			"neptune", "1.3.2.0", "db.r5.xlarge", 120, false, "available",
 			"fraud-graph.cluster-c9k2hxu3qapb.us-east-1.neptune.amazonaws.com", d(2022, 3, 8),
 			tags("environment", "production", "owner", "risk")),
+		ec2Instance(acctProd, "us-east-1", "us-east-1a", "i-0a1b2c3d4e5f60011",
+			"m5.xlarge", "Linux/UNIX", "running", "ip-10-0-1-11.ec2.internal",
+			false, []string{"vol-0a1b2c3d4e5f60011"}, d(2021, 4, 2),
+			tags("Name", "api-gateway-1", "environment", "production", "owner", "platform")),
+		// Two volumes, to exercise the attachment list joining more than one.
+		ec2Instance(acctProd, "us-east-1", "us-east-1b", "i-0a1b2c3d4e5f60012",
+			"m5.xlarge", "Linux/UNIX", "running", "ip-10-0-2-12.ec2.internal",
+			false, []string{"vol-0a1b2c3d4e5f60013", "vol-0a1b2c3d4e5f60012"}, d(2021, 4, 2),
+			tags("Name", "api-gateway-2", "environment", "production", "owner", "platform")),
+		// The one box with a public IPv4 — an exposure row that is not a database.
+		ec2Instance(acctProd, "us-east-1", "us-east-1a", "i-0a1b2c3d4e5f60013",
+			"t3.small", "Linux/UNIX", "running", "ip-10-0-1-20.ec2.internal",
+			true, []string{"vol-0a1b2c3d4e5f60020"}, d(2018, 6, 11),
+			tags("Name", "bastion", "environment", "production")), // no owner
+		// No tags at all, so the name falls back to the instance ID the way an
+		// untagged instance reads in the console.
+		ec2Instance(acctProd, "us-east-1", "us-east-1b", "i-0a1b2c3d4e5f60014",
+			"r5.2xlarge", "Red Hat Enterprise Linux", "running", "ip-10-0-2-33.ec2.internal",
+			false, []string{"vol-0a1b2c3d4e5f60014"}, d(2019, 9, 5),
+			nil),
 
 		// ── prod account · us-west-2 ────────────────────────────────────
 		res(acctProd, "us-west-2", model.ServiceRDS, "instance", "orders-dr",
@@ -168,6 +190,10 @@ func resources() []model.Resource {
 			"redshift", "1.0.63269", "ra3.4xlarge", 3200, false, "paused",
 			"analytics-dr.cbq7xz1t9e2m.us-west-2.redshift.amazonaws.com", d(2020, 10, 15),
 			tags("environment", "production", "owner", "data")),
+		ec2Instance(acctProd, "us-west-2", "us-west-2a", "i-0b2c3d4e5f6a70021",
+			"c5.large", "Linux/UNIX", "running", "ip-10-1-1-21.us-west-2.compute.internal",
+			false, []string{"vol-0b2c3d4e5f6a70021"}, d(2022, 3, 15),
+			tags("Name", "batch-worker-1", "environment", "production", "owner", "data")),
 
 		// ── prod account · sa-east-1 ────────────────────────────────────
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "orders-latam",
@@ -188,6 +214,12 @@ func resources() []model.Resource {
 			"docdb", "4.0.0", "db.r5.large", 180, false, "available",
 			"catalog-docs-latam.cluster-c7n4jyt5sdrc.sa-east-1.docdb.amazonaws.com", d(2021, 8, 17),
 			tags("environment", "production")), // no owner
+		// Stopped, and therefore not publicly accessible: an instance without an
+		// Elastic IP releases its public address when it stops.
+		ec2Instance(acctProd, "sa-east-1", "sa-east-1a", "i-0c3d4e5f6a7b80031",
+			"t3.medium", "Windows", "stopped", "ip-10-2-1-31.sa-east-1.compute.internal",
+			false, []string{"vol-0c3d4e5f6a7b80031"}, d(2020, 11, 19),
+			tags("Name", "nfe-gateway", "environment", "production", "owner", "payments-latam")),
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
@@ -235,6 +267,14 @@ func resources() []model.Resource {
 			"neptune", "1.3.2.0", "db.t3.medium", 15, false, "available",
 			"fraud-graph-staging.cluster-c5p8gxr9tfsd.us-east-1.neptune.amazonaws.com", d(2022, 4, 12),
 			tags("environment", "staging", "owner", "risk")),
+		ec2Instance(acctStaging, "us-east-1", "us-east-1a", "i-0d4e5f6a7b8c90041",
+			"t3.medium", "Linux/UNIX", "running", "ip-10-3-1-41.ec2.internal",
+			false, []string{"vol-0d4e5f6a7b8c90041"}, d(2023, 1, 12),
+			tags("Name", "ci-runner", "environment", "staging", "owner", "platform")),
+		ec2Instance(acctStaging, "us-east-1", "us-east-1b", "i-0d4e5f6a7b8c90042",
+			"t3.micro", "Linux/UNIX", "stopped", "ip-10-3-2-42.ec2.internal",
+			false, []string{"vol-0d4e5f6a7b8c90042"}, d(2022, 8, 3),
+			tags("Name", "scratch-box")), // no owner, no environment
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
@@ -404,6 +444,77 @@ func arnFor(svc, shape, region, account, name string) string {
 		return fmt.Sprintf("arn:aws:rds:%s:%s:cluster:%s", region, account, name)
 	}
 }
+
+// ec2Instance builds one fixture EC2 instance. res() is shaped for managed
+// databases — engine, version, storage, Multi-AZ — and compute shares almost
+// none of those dimensions, so it gets its own constructor rather than four
+// more parameters most callers would pass empty (the reason withMeasure
+// exists, applied to a whole service).
+//
+// The name is resolved the way the scanner resolves it: the Name tag when
+// there is one, the instance ID otherwise, so an untagged fixture box reads
+// exactly like an untagged real one.
+func ec2Instance(account, region, az, id, instanceType, platform, status, privateDNS string,
+	publicIP bool, volumes []string, launched time.Time, t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = id
+	}
+	r := model.Resource{
+		// Reuse the scanner's builder so fixture ARNs match real scan output.
+		ARN:       scanners.EC2InstanceARN("aws", region, account, id),
+		Service:   model.ServiceEC2,
+		Type:      model.TypeEC2Instance,
+		Name:      name,
+		Status:    status,
+		Region:    region,
+		AccountID: account,
+		// LaunchTime, which is what EC2 reports — the last start, not the
+		// original creation.
+		CreatedAt: &launched,
+		Tags:      t,
+		// Set here rather than in applyExposure: unlike the database fixtures,
+		// whose exposure is overlaid by name, this follows from a field the
+		// callsite already states. Encrypted stays nil on purpose — on EC2
+		// that is a property of each attached volume, not of the instance.
+		PubliclyAccessible: ptr(publicIP),
+	}
+	r.SetAttr(model.AttrInstanceClass, instanceType)
+	r.SetAttr(model.AttrPlatform, platform)
+	// Private DNS only; the public name is an exposure signal, not an endpoint.
+	r.SetAttr(model.AttrEndpoint, privateDNS)
+	r.SetAttr(model.AttrAvailabilityZone, az)
+	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	// Sorted, like the scanner sorts them, so the fixture cannot drift into a
+	// value shape a real scan would never produce. The attachment only: the
+	// volumes are their own rows once ATR-182 lands, and summing their sizes
+	// here would count the same storage twice estate-wide.
+	ids := append([]string(nil), volumes...)
+	sort.Strings(ids)
+	r.SetAttr(model.AttrEBSVolumeIDs, strings.Join(ids, ","))
+	return r
+}
+
+// The fixture's network layout: one VPC per account per region, one subnet per
+// AZ. Two accounts never share a VPC, which is why these are keyed by account
+// and not by region alone.
+var (
+	demoVPCs = map[string]string{
+		acctProd + "/us-east-1":    "vpc-0a1b2c3d4e5f6a7b8",
+		acctProd + "/us-west-2":    "vpc-0b2c3d4e5f6a7b8c9",
+		acctProd + "/sa-east-1":    "vpc-0c3d4e5f6a7b8c9d0",
+		acctStaging + "/us-east-1": "vpc-0d4e5f6a7b8c9d0e1",
+	}
+	demoSubnets = map[string]string{
+		acctProd + "/us-east-1a":    "subnet-0a1b2c3d4e5f6a001",
+		acctProd + "/us-east-1b":    "subnet-0a1b2c3d4e5f6a002",
+		acctProd + "/us-west-2a":    "subnet-0b2c3d4e5f6a7b001",
+		acctProd + "/sa-east-1a":    "subnet-0c3d4e5f6a7b8c001",
+		acctStaging + "/us-east-1a": "subnet-0d4e5f6a7b8c9d001",
+		acctStaging + "/us-east-1b": "subnet-0d4e5f6a7b8c9d002",
+	}
+)
 
 // d returns a fixed timestamp so resource timestamps are deterministic.
 func d(year, month, day int) time.Time {

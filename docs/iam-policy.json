@@ -13,6 +13,7 @@
         "elasticache:ListTagsForResource",
         "redshift:Describe*",
         "redshift-serverless:List*",
+        "ec2:DescribeInstances",
         "ec2:DescribeRegions",
         "sts:GetCallerIdentity"
       ],
