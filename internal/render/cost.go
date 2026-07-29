@@ -43,6 +43,13 @@ func FormatMoney(amount, currency string) string {
 // the JSON and CSV; the terminal shows the head of it.
 const maxSpendersListed = 5
 
+// maxCaveatsListed caps the qualifier texts printed under one spend group. Some
+// caveats name a resource's own dates, so a large group can carry a distinct
+// sentence per resource and drown the ranking it is annotating. Whatever the cap
+// withholds is counted out loud — a truncation the reader cannot see is the same
+// failure as the missing caveat itself.
+const maxCaveatsListed = 3
+
 // costSection prints the cost census: the account-level rollup from the billing
 // system, then the per-resource figures, kept visibly apart.
 //
@@ -119,7 +126,15 @@ func resourceCostSection(w io.Writer, resources []model.Resource) {
 	fmt.Fprintf(w, "\n  ── per-resource cost ──\n")
 
 	for _, g := range groupSpenders(priced) {
-		fmt.Fprintf(w, "    top spend (%s)\n", g.label)
+		heading := "top spend"
+		if g.qualified {
+			// Not decoration. Every figure in this group is a floor its source
+			// declined to call a total, so "top spend" would be a claim the
+			// source did not make — and the reader has no way to tell from the
+			// number alone that it is one.
+			heading = "top spend, each figure a lower bound"
+		}
+		fmt.Fprintf(w, "    %s (%s)\n", heading, g.label)
 		shown := min(len(g.resources), maxSpendersListed)
 		// Right-align the amounts across the rows actually printed, so the
 		// decimal points line up and the ranking can be read down the column.
@@ -139,6 +154,7 @@ func resourceCostSection(w io.Writer, resources []model.Resource) {
 			fmt.Fprintf(w, "      … and %d more (full list in the JSON and CSV output)\n",
 				len(g.resources)-shown)
 		}
+		writeCaveats(w, g.caveats)
 	}
 
 	// The coverage caveat is the point of the section: a ranked list of priced
@@ -146,6 +162,26 @@ func resourceCostSection(w io.Writer, resources []model.Resource) {
 	total := len(priced) + len(unavailable)
 	for _, g := range groupReasons(unavailable) {
 		fmt.Fprintf(w, "    ⚠ cost unavailable for %d of %d resources — %s\n", g.count, total, g.reason)
+	}
+}
+
+// writeCaveats prints the qualifiers attached to a spend group, verbatim.
+//
+// The text is the source's own sentence, reproduced without editing: it says
+// what the figure covers and what it leaves out, and only the source knows
+// that. Paraphrasing to fit the column would be this renderer restating a
+// disclosure it does not understand.
+func writeCaveats(w io.Writer, caveats []string) {
+	if len(caveats) == 0 {
+		return
+	}
+	shown := min(len(caveats), maxCaveatsListed)
+	for _, c := range caveats[:shown] {
+		fmt.Fprintf(w, "      ⓘ %s\n", c)
+	}
+	if len(caveats) > shown {
+		fmt.Fprintf(w, "      ⓘ … and %d further qualifier(s) on these figures "+
+			"(full text in the JSON and CSV output)\n", len(caveats)-shown)
 	}
 }
 
@@ -168,16 +204,40 @@ func splitPriced(resources []model.Resource) (priced, unavailable []model.Resour
 // because a ranking across either is meaningless: different methods answer
 // different questions, and different currencies are not comparable at all
 // without an exchange rate this tool does not have and will not invent.
+//
+// Whether a figure carries caveats is the third such axis. A source that says
+// "this covers storage only" has priced a component, not a resource, so the
+// number is a lower bound on what the resource costs and its distance from the
+// real total is unknown. Ranking that against a figure covering a whole
+// resource asserts an ordering the data does not support — the same error as
+// ranking a billed figure against a modelled one, on a different axis. So the
+// two are separated and the qualifiers are printed with the group.
+//
+// Grouping reads only whether Caveats is empty, never what the caveats say.
+// Classifying a figure from the wording of its disclosure would be this
+// renderer deciding something the source is responsible for; the text is passed
+// through verbatim instead.
 type spenderGroup struct {
 	label     string
+	qualified bool
+	// caveats holds the distinct qualifier texts across the whole group, in
+	// the order they are first met walking the ranked resources — which is
+	// deterministic because that ranking is.
+	caveats   []string
 	resources []model.Resource
 }
 
 func groupSpenders(priced []model.Resource) []spenderGroup {
-	type key struct{ method, currency string }
+	type key struct {
+		method, currency string
+		qualified        bool
+	}
+	keyOf := func(r model.Resource) key {
+		return key{r.Cost.Method, r.Cost.Currency, len(r.Cost.Caveats) > 0}
+	}
 	byKey := map[key][]model.Resource{}
 	for _, r := range priced {
-		byKey[key{r.Cost.Method, r.Cost.Currency}] = append(byKey[key{r.Cost.Method, r.Cost.Currency}], r)
+		byKey[keyOf(r)] = append(byKey[keyOf(r)], r)
 	}
 	keys := make([]key, 0, len(byKey))
 	for k := range byKey {
@@ -187,7 +247,13 @@ func groupSpenders(priced []model.Resource) []spenderGroup {
 		if keys[i].method != keys[j].method {
 			return keys[i].method < keys[j].method
 		}
-		return keys[i].currency < keys[j].currency
+		if keys[i].currency != keys[j].currency {
+			return keys[i].currency < keys[j].currency
+		}
+		// Unqualified figures first: they are the ones that mean what they
+		// look like, so they lead and the qualified list follows as a
+		// correction to it rather than the other way round.
+		return !keys[i].qualified
 	})
 
 	out := make([]spenderGroup, 0, len(keys))
@@ -213,7 +279,34 @@ func groupSpenders(priced []model.Resource) []spenderGroup {
 		if k.currency != "" {
 			parts = append(parts, k.currency)
 		}
-		out = append(out, spenderGroup{label: strings.Join(parts, ", "), resources: rs})
+		out = append(out, spenderGroup{
+			label:     strings.Join(parts, ", "),
+			qualified: k.qualified,
+			caveats:   distinctCaveats(rs),
+			resources: rs,
+		})
+	}
+	return out
+}
+
+// distinctCaveats collects the qualifier texts across a ranked group, dropping
+// exact repeats so one disclosure shared by every figure is stated once.
+//
+// Deduplication is by exact string equality, which is not interpretation: two
+// identical sentences say one thing. Texts that differ — the partial-period
+// caveat names the resource's own creation date — stay separate, because
+// collapsing them would be this renderer deciding they mean the same thing.
+func distinctCaveats(rs []model.Resource) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range rs {
+		for _, c := range r.Cost.Caveats {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
 	}
 	return out
 }

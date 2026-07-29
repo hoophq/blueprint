@@ -75,10 +75,6 @@ func CSV(snap *model.Snapshot, path string) error {
 }
 
 func csvRow(r model.Resource) []string {
-	createdAt := ""
-	if r.CreatedAt != nil {
-		createdAt = r.CreatedAt.Format(time.RFC3339)
-	}
 	row := []string{
 		guardFormula(r.ARN),
 		guardFormula(r.Service),
@@ -87,7 +83,7 @@ func csvRow(r model.Resource) []string {
 		guardFormula(r.Status),
 		guardFormula(r.Region),
 		guardFormula(r.AccountID),
-		createdAt,
+		timeCell(r.CreatedAt),
 		guardFormula(r.Environment),
 		guardFormula(r.Owner),
 		guardFormula(joinTags(r.Tags)),
@@ -135,11 +131,21 @@ func costCells(r model.Resource) []string {
 	}
 }
 
+// timeCell renders an optional timestamp as RFC3339, empty when unreported.
+//
+// The result is formula-guarded like every other string cell. For every
+// timestamp this tool will realistically write the guard is a no-op, because
+// RFC3339 opens with a four-digit year — but "realistically" is the whole
+// problem with reasoning about it case by case, and Go does render a negative
+// year as "-0001-01-01T00:00:00Z", which opens with a character a spreadsheet
+// reads as arithmetic. Guarding unconditionally is free and means every string
+// column in this file is guarded, with exactly one exemption that says why it
+// is one.
 func timeCell(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(time.RFC3339)
+	return guardFormula(t.Format(time.RFC3339))
 }
 
 // joinCaveats packs the caveat list into one cell with the same reversible

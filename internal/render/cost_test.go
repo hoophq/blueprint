@@ -369,3 +369,122 @@ func TestReportSectionSilentWithoutCurrencies(t *testing.T) {
 		t.Errorf("printed a cost block with no currencies:\n%s", out)
 	}
 }
+
+// qualified returns a priced resource whose figure carries the caveats its
+// source attached — the shape the Cost Optimization Hub enricher produces when
+// it prices a component (storage, say) rather than a whole resource.
+func qualified(name, amount string, caveats ...string) model.Resource {
+	r := priced(name, amount, "USD", model.CostMethodCOH, true)
+	r.Cost.Caveats = caveats
+	return r
+}
+
+// A figure its source qualified is a floor, not a total, so it cannot be ranked
+// against one that is not qualified: the comparison asserts an ordering the data
+// does not support. This is the same reason method and currency split a
+// ranking, on a third axis, and it must split it the same way.
+func TestGroupSpendersSeparatesQualifiedFigures(t *testing.T) {
+	groups := groupSpenders([]model.Resource{
+		qualified("storage-only", "2000.00", "covers storage only"),
+		priced("whole", "1620.00", "USD", model.CostMethodCOH, true),
+	})
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want the qualified figure separated: %v", len(groups), groups)
+	}
+	if groups[0].qualified {
+		t.Error("unqualified figures must lead; the qualified list reads as a correction to them")
+	}
+	if !groups[1].qualified {
+		t.Fatalf("second group not marked qualified: %v", groups[1])
+	}
+	if n := groups[0].resources[0].Name; n != "whole" {
+		t.Errorf("unqualified group holds %q, want the whole-resource figure", n)
+	}
+	if n := groups[1].resources[0].Name; n != "storage-only" {
+		t.Errorf("qualified group holds %q, want the storage-only figure", n)
+	}
+	// The bug this replaces: 2000.00 storage-only printed above 1620.00
+	// whole-resource, as if the first resource cost more than the second.
+	if len(groups[0].resources) != 1 || len(groups[1].resources) != 1 {
+		t.Errorf("figures ranked together: %v", groups)
+	}
+}
+
+// The heading carries the whole warning for readers who skim the numbers, so
+// a qualified group may never be introduced as plain "top spend".
+func TestQualifiedFiguresNeverPrintAsBareSpend(t *testing.T) {
+	var buf bytes.Buffer
+	resourceCostSection(&buf, []model.Resource{
+		qualified("storage-only", "2000.00",
+			"covers storage only (Cost Optimization Hub resource type RdsDbInstanceStorage)"),
+	})
+	out := buf.String()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "top spend (") {
+			t.Errorf("qualified figure headed as an unqualified total:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "lower bound") {
+		t.Errorf("heading does not say the figure is a floor:\n%s", out)
+	}
+	if !strings.Contains(out, "covers storage only (Cost Optimization Hub resource type RdsDbInstanceStorage)") {
+		t.Errorf("caveat text not reproduced verbatim:\n%s", out)
+	}
+}
+
+// One disclosure shared by a whole group is stated once, and disclosures that
+// differ stay separate — the partial-period caveat names each resource's own
+// dates, and collapsing two different sentences would be the renderer deciding
+// they mean the same thing.
+func TestDistinctCaveatsDedupesExactRepeatsOnly(t *testing.T) {
+	got := distinctCaveats([]model.Resource{
+		qualified("a", "3.00", "covers storage only", "created 2026-07-01, after the period began"),
+		qualified("b", "2.00", "covers storage only", "created 2026-07-14, after the period began"),
+		qualified("c", "1.00", "covers storage only"),
+	})
+	want := []string{
+		"covers storage only",
+		"created 2026-07-01, after the period began",
+		"created 2026-07-14, after the period began",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d distinct caveats, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("caveat %d = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// Capping the qualifier list is a readability call; hiding that it happened is
+// not. Whatever the cap withholds must be counted out loud, or the group reads
+// as fully disclosed when it is not.
+func TestCaveatOverflowIsCounted(t *testing.T) {
+	var resources []model.Resource
+	for i := range maxCaveatsListed + 2 {
+		resources = append(resources, qualified(
+			string(rune('a'+i)), "10.00", "qualifier "+string(rune('a'+i))))
+	}
+	var buf bytes.Buffer
+	resourceCostSection(&buf, resources)
+	out := buf.String()
+	if got := strings.Count(out, "ⓘ qualifier "); got != maxCaveatsListed {
+		t.Errorf("printed %d qualifiers, want cap at %d:\n%s", got, maxCaveatsListed, out)
+	}
+	if !strings.Contains(out, "… and 2 further qualifier(s)") {
+		t.Errorf("cap applied silently:\n%s", out)
+	}
+}
+
+// An unqualified group has nothing to footnote, and an empty marker line would
+// read as a warning with the text missing.
+func TestUnqualifiedFiguresPrintNoCaveatLine(t *testing.T) {
+	var buf bytes.Buffer
+	resourceCostSection(&buf, []model.Resource{
+		priced("plain", "10.00", "USD", model.CostMethodCOH, true),
+	})
+	if out := buf.String(); strings.Contains(out, "ⓘ") {
+		t.Errorf("caveat marker printed for a figure with no caveats:\n%s", out)
+	}
+}

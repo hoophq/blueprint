@@ -304,6 +304,45 @@ func TestCSVFormulaGuard(t *testing.T) {
 	}
 }
 
+// Timestamp cells go through the same formula guard as every other string
+// column. Nearly every timestamp opens with a four-digit year and the guard
+// does nothing — but Go renders a negative year as "-0001-…", which opens with
+// a character a spreadsheet reads as arithmetic, so the guard is a real code
+// path and not a formality. This pins both halves: the odd year is quoted, and
+// an ordinary one is passed through byte for byte.
+func TestCSVTimeCellsAreGuarded(t *testing.T) {
+	odd := time.Date(-1, 3, 4, 5, 6, 7, 0, time.UTC)
+	ordinary := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	hostile := model.Resource{
+		ARN:       "arn:aws:rds:us-east-1:111111111111:db:odd",
+		Service:   model.ServiceRDS,
+		Type:      model.TypeRDSInstance,
+		Name:      "odd",
+		Region:    "us-east-1",
+		AccountID: "111111111111",
+		CreatedAt: &odd,
+	}
+	hostile.Cost = &model.ResourceCost{
+		Amount: "1.00", Currency: "USD", Method: model.CostMethodCOH,
+		ObservedFrom: &odd, ObservedTo: &ordinary,
+	}
+
+	records := renderAndParse(t, &model.Snapshot{Resources: []model.Resource{hostile}})
+	c := col(t, records[0])
+	row := records[1]
+
+	for _, tc := range []struct{ column, want string }{
+		{"created_at", "'-0001-03-04T05:06:07Z"},
+		{"cost_observed_from", "'-0001-03-04T05:06:07Z"},
+		{"cost_observed_to", "2026-03-04T05:06:07Z"},
+	} {
+		if got := row[c[tc.column]]; got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.column, got, tc.want)
+		}
+	}
+}
+
 func TestCSVTagEncoding(t *testing.T) {
 	snap := &model.Snapshot{
 		Resources: []model.Resource{{
