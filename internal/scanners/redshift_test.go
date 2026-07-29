@@ -23,23 +23,6 @@ func TestRedshiftClusterARN(t *testing.T) {
 	}
 }
 
-func TestArnPartition(t *testing.T) {
-	cases := map[string]string{
-		"arn:aws:redshift:us-east-1:1:namespace:ns":            "aws",
-		"arn:aws-us-gov:redshift:us-gov-west-1:1:namespace:ns": "aws-us-gov",
-		"arn:aws-cn:redshift:cn-north-1:1:namespace:ns":        "aws-cn",
-		"":       "aws", // absent ClusterNamespaceArn falls back
-		"arn::x": "aws", // empty partition falls back
-		"bogus":  "aws",
-		"a:b":    "aws",
-	}
-	for arn, want := range cases {
-		if got := arnPartition(arn); got != want {
-			t.Errorf("arnPartition(%q) = %q, want %q", arn, got, want)
-		}
-	}
-}
-
 func TestRedshiftClusterResource(t *testing.T) {
 	c := redshifttypes.Cluster{
 		ClusterIdentifier:               aws.String("analytics"),

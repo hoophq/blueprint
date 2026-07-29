@@ -237,6 +237,7 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "elasticache:ListTagsForResource",
         "redshift:Describe*",
         "redshift-serverless:List*",
+        "ec2:DescribeInstances",
         "ec2:DescribeRegions",
         "sts:GetCallerIdentity"
       ],

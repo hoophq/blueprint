@@ -17,6 +17,7 @@ const (
 	ServiceDynamoDB    = "dynamodb"
 	ServiceElastiCache = "elasticache"
 	ServiceRedshift    = "redshift"
+	ServiceEC2         = "ec2"
 )
 
 // Resource.Type values. These are CloudFormation type names — AWS's own
@@ -37,6 +38,7 @@ const (
 	TypeElastiCacheServerlessCache  = "AWS::ElastiCache::ServerlessCache"
 	TypeRedshiftCluster             = "AWS::Redshift::Cluster"
 	TypeRedshiftServerlessWorkgroup = "AWS::RedshiftServerless::Workgroup"
+	TypeEC2Instance                 = "AWS::EC2::Instance"
 )
 
 // Attribute keys used in Resource.Attributes. Keys are named after the AWS
@@ -49,6 +51,27 @@ const (
 	AttrBillingMode   = "billing_mode"
 	AttrEndpoint      = "endpoint" // host only, never a connection string
 	AttrMultiAZ       = "multi_az"
+	// AttrPlatform is the operating-system family a compute resource runs, as
+	// the service names it — EC2 fills it from PlatformDetails, the same string
+	// that appears on the bill. It is distinct from AttrEngine, which names a
+	// managed data engine the service is responsible for; nothing may infer one
+	// from the other, and a resource whose service does not report an OS has no
+	// platform key rather than a guessed one.
+	AttrPlatform = "platform"
+	// AttrAvailabilityZone is the single AZ a zonal resource sits in. Multi-AZ
+	// resources report AttrMultiAZ instead and have no AZ of their own.
+	AttrAvailabilityZone = "availability_zone"
+	// AttrVPCID and AttrSubnetID place a resource in its network. Absent for
+	// resources outside a VPC (EC2-Classic remnants, or a service that does not
+	// report placement) rather than blank.
+	AttrVPCID    = "vpc_id"
+	AttrSubnetID = "subnet_id"
+	// AttrEBSVolumeIDs lists the EBS volumes attached to an instance, comma
+	// separated and sorted. It records the attachment relationship only — the
+	// volumes are their own census rows with their own sizes, so an instance
+	// must never carry their bytes as a size measure or an estate-wide storage
+	// total would count the same volume twice.
+	AttrEBSVolumeIDs = "ebs_volume_ids"
 )
 
 // Measure keys used in Resource.Measures.

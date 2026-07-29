@@ -140,15 +140,6 @@ func RedshiftClusterARN(partition, region, accountID, clusterID string) string {
 	return fmt.Sprintf("arn:%s:redshift:%s:%s:cluster:%s", partition, region, accountID, clusterID)
 }
 
-// arnPartition extracts the partition from an ARN ("arn:PARTITION:...");
-// empty or malformed input falls back to the default "aws" partition.
-func arnPartition(arn string) string {
-	if parts := strings.SplitN(arn, ":", 3); len(parts) == 3 && parts[0] == "arn" && parts[1] != "" {
-		return parts[1]
-	}
-	return "aws"
-}
-
 // redshiftServerlessTags fetches tags for one workgroup ARN. A failure yields
 // nil tags plus the error; the caller keeps the workgroup and aggregates the
 // failure.
