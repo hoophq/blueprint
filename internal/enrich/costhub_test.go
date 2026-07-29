@@ -593,3 +593,109 @@ func TestFormatAmountPadsToCentsWithoutChangingTheValue(t *testing.T) {
 		}
 	}
 }
+
+// unscannedAccount is an account the census never covers, used to build
+// enrollment rows that must not answer for the scanned one.
+const unscannedAccount = "222233334444"
+
+// scannedAccount is the account the fixture census lives in, read off the
+// census itself so the literal lives in exactly one place.
+func scannedAccount() string { return census()[0].AccountID }
+
+// enrollment builds a single-page response from account/status pairs.
+func enrollment(rows ...cohtypes.AccountEnrollmentStatus) func(*costoptimizationhub.ListEnrollmentStatusesInput) (*costoptimizationhub.ListEnrollmentStatusesOutput, error) {
+	return func(*costoptimizationhub.ListEnrollmentStatusesInput) (*costoptimizationhub.ListEnrollmentStatusesOutput, error) {
+		return &costoptimizationhub.ListEnrollmentStatusesOutput{Items: rows}, nil
+	}
+}
+
+func enrolledRow(account string, status cohtypes.EnrollmentStatus) cohtypes.AccountEnrollmentStatus {
+	return cohtypes.AccountEnrollmentStatus{AccountId: aws.String(account), Status: status}
+}
+
+// An organization can have the hub switched on for accounts this scan never
+// touched. Reading "enrolled" off one of those rows would send the stage on to
+// a ListRecommendations filtered to the scanned account, which comes back
+// empty — the silent blank the enrollment check exists to prevent, just moved
+// one step later. Here the scanned account is positively named as inactive, so
+// there is evidence and the stage stops.
+func TestAnActiveRowForAnotherAccountDoesNotConfirmTheScannedOne(t *testing.T) {
+	f := &fakeCOH{
+		enrollFn: enrollment(
+			enrolledRow(unscannedAccount, cohtypes.EnrollmentStatusActive),
+			enrolledRow(scannedAccount(), cohtypes.EnrollmentStatusInactive),
+		),
+		listFn: recs(priced(dbARN, 10)),
+	}
+	got, failures := runHub(t, newHub(f), census())
+	ledgered(t, failures, "coh_not_enrolled")
+	if len(f.lists) != 0 {
+		t.Errorf("recommendations were read for an account the list said is not enrolled: %d calls", len(f.lists))
+	}
+	if got[0].Cost != nil {
+		t.Error("an account the list reported inactive must produce no costs")
+	}
+}
+
+// The converse mistake is worse. An account missing from the enrollment list
+// has not been reported unenrolled — it has not been reported at all — and a
+// management account that answers for the organization need not enumerate
+// every member. Suppressing here would drop real figures, so the stage reads
+// on and says in the ledger that the status is unknown.
+func TestAnUnmentionedScannedAccountIsNotTreatedAsUnenrolled(t *testing.T) {
+	f := &fakeCOH{
+		enrollFn: enrollment(enrolledRow(unscannedAccount, cohtypes.EnrollmentStatusActive)),
+		listFn:   recs(priced(dbARN, 10)),
+	}
+	got, failures := runHub(t, newHub(f), census())
+	ledgered(t, failures, "coh_enrollment_unconfirmed")
+	if len(f.lists) == 0 {
+		t.Error("an unmentioned account must still be read for recommendations, not written off")
+	}
+	if got[0].Cost == nil {
+		t.Error("a figure AWS actually returned was dropped on an unproven enrollment guess")
+	}
+}
+
+// A mixed organization prices what it can and names what it could not, rather
+// than failing whole or reporting a partial answer as a complete one.
+func TestAnUnenrolledAccountAlongsideAnEnrolledOneIsNamedNotSuppressed(t *testing.T) {
+	f := &fakeCOH{
+		enrollFn: enrollment(
+			enrolledRow(scannedAccount(), cohtypes.EnrollmentStatusActive),
+			enrolledRow(unscannedAccount, cohtypes.EnrollmentStatusInactive),
+		),
+		listFn: recs(priced(dbARN, 10)),
+	}
+	resources := census()
+	resources[1].AccountID = unscannedAccount
+	got, failures := runHub(t, newHub(f), resources)
+	ledgered(t, failures, "coh_account_not_enrolled")
+	if got[0].Cost == nil {
+		t.Error("the enrolled account's resource must still be priced")
+	}
+	if got[1].Cost != nil {
+		t.Error("the unenrolled account's resource must not be priced")
+	}
+}
+
+// Confirming every scanned account settles the question, so the rest of an
+// organization's enrollment pages go unread.
+func TestEnrollmentPagingStopsOnceEveryScannedAccountIsConfirmed(t *testing.T) {
+	f := &fakeCOH{
+		enrollFn: func(*costoptimizationhub.ListEnrollmentStatusesInput) (*costoptimizationhub.ListEnrollmentStatusesOutput, error) {
+			return &costoptimizationhub.ListEnrollmentStatusesOutput{
+				Items:     []cohtypes.AccountEnrollmentStatus{enrolledRow(scannedAccount(), cohtypes.EnrollmentStatusActive)},
+				NextToken: aws.String("more"),
+			}, nil
+		},
+		listFn: recs(priced(dbARN, 10)),
+	}
+	_, failures := runHub(t, newHub(f), census())
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %+v", failures)
+	}
+	if len(f.enrolls) != 1 {
+		t.Errorf("enrollment pages read = %d, want 1: the scanned account was confirmed on the first one", len(f.enrolls))
+	}
+}

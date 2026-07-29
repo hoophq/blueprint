@@ -242,16 +242,54 @@ func censusAccounts(resources []model.Resource) []string {
 // asking first, a census would quietly report no costs for anything and give
 // the reader no reason to doubt it. One extra free call converts a silent
 // blank into a ledger entry naming the fix.
+// The enrollment list is read against the accounts the census actually
+// covers, not merely for "is anything here active". An organization can have
+// the hub switched on for accounts this scan never touched, and answering
+// "enrolled" off one of those rows would send the stage on to a filtered
+// ListRecommendations that comes back empty with nothing in the ledger to
+// explain it — the silent blank this check exists to prevent, just moved one
+// step later.
+//
+// The converse mistake is worse, so absence is never read as a denial: an
+// account missing from the list has not been reported unenrolled, it has not
+// been reported at all, and suppressing its costs on that basis would drop
+// real figures. Only a scanned account the list positively names as inactive
+// counts as evidence against it.
 func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []string, report reporter) bool {
-	var token *string
-	for page := 0; page < maxEnrollmentPages; page++ {
+	scanned := make(map[string]bool, len(accounts))
+	for _, id := range accounts {
+		scanned[id] = true
+	}
+
+	var (
+		token *string
+		// activeScanned and inactiveScanned hold scanned accounts the list
+		// named, by what it said about them. An account in neither was not
+		// mentioned, which is not the same as being switched off.
+		activeScanned   = map[string]bool{}
+		inactiveScanned = map[string]bool{}
+		// unattributedActive covers a row that reports an active hub without
+		// naming an account — how a plain account hears about its own
+		// enrollment. There is nothing to match it against, so it is taken at
+		// its word.
+		unattributedActive bool
+		// otherActive means the hub is on somewhere outside the census. It
+		// cannot price a scanned resource, but it does rule out "the whole
+		// list is switched off" as the explanation for an empty result.
+		otherActive    bool
+		includeMembers *bool
+		// settled distinguishes a list that ended from one the page cap cut
+		// short. A truncated list is not evidence of anything.
+		settled bool
+	)
+
+	for page := 0; page < maxEnrollmentPages && !settled; page++ {
 		if ctx.Err() != nil {
 			return false
 		}
-		// AccountId is deliberately unset. From a plain account that asks about
-		// the caller's own enrollment; from a management account it also lists
-		// the members, and either answer settles the question this check
-		// exists to settle — is there anything here to read.
+		// AccountId is deliberately unset on the request. From a plain account
+		// that asks about the caller's own enrollment; from a management
+		// account it also lists the members, and both answers are read here.
 		out, err := api.ListEnrollmentStatuses(ctx, &costoptimizationhub.ListEnrollmentStatusesInput{NextToken: token})
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -261,45 +299,89 @@ func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []strin
 			return false
 		}
 		h.meter.Requests++
+		if out.IncludeMemberAccounts != nil {
+			includeMembers = out.IncludeMemberAccounts
+		}
 
 		for _, item := range out.Items {
-			if item.Status != cohtypes.EnrollmentStatusActive {
-				continue
+			id := aws.ToString(item.AccountId)
+			switch {
+			case item.Status == cohtypes.EnrollmentStatusActive && id == "":
+				unattributedActive = true
+			case item.Status == cohtypes.EnrollmentStatusActive && scanned[id]:
+				activeScanned[id] = true
+			case item.Status == cohtypes.EnrollmentStatusActive:
+				otherActive = true
+			case scanned[id]:
+				// Named, scanned, and not active — the only shape that is
+				// evidence a scanned account is switched off.
+				inactiveScanned[id] = true
 			}
-			// A payer enrolled for itself alone still answers
-			// ListRecommendations, but only about its own resources, so every
-			// other scanned account comes away unpriced for a reason that is
-			// a settings choice rather than a property of the estate.
-			if len(accounts) > 1 && out.IncludeMemberAccounts != nil && !*out.IncludeMemberAccounts {
-				report(h.Account, "", "coh_member_accounts_excluded: Cost Optimization Hub is enrolled for this "+
-					"account only, not for the organization, so resources in the other %d scanned account(s) "+
-					"come away with no cost estimate — enable member accounts in the Cost Optimization Hub "+
-					"console from the management account", len(accounts)-1)
-			}
-			return true
 		}
 
-		if out.NextToken == nil || *out.NextToken == "" {
-			// The whole list was read and nothing in it was active, which is
-			// the one case where "no recommendations" can be explained rather
-			// than merely observed.
-			report(h.Account, "", "coh_not_enrolled: Cost Optimization Hub is not enabled for this account, so no "+
-				"per-resource cost estimates were collected — opt in from the Cost Optimization Hub console "+
-				"(it is free, and AWS takes about 24 hours to produce the first recommendations); until then "+
-				"account-level spend from --costs is the only cost figure available")
-			return false
+		switch {
+		case len(activeScanned) == len(accounts):
+			// Every scanned account is confirmed on; nothing further in the
+			// list can change the answer, so the remaining pages of an
+			// organization's members go unread.
+			settled = true
+		case out.NextToken == nil || *out.NextToken == "":
+			settled = true
+		default:
+			token = out.NextToken
 		}
-		token = out.NextToken
 	}
 
-	// The list ran longer than the cap without an active status. That is not
-	// proof of anything: the run continues, because refusing to read
-	// recommendations here would suppress real costs on the strength of a
-	// check that did not finish, and an empty result is already reported by
-	// the meter's coverage figures.
-	report(h.Account, "", "coh_enrollment_unknown: gave up checking Cost Optimization Hub enrollment after %d pages "+
-		"of member accounts without finding an active one; recommendations were read anyway, so an empty result "+
-		"below may mean the service is not enabled rather than that nothing was found", maxEnrollmentPages)
+	if len(activeScanned) == 0 && !unattributedActive {
+		switch {
+		case !settled:
+			// The list ran past the cap without confirming anything. That is
+			// not proof either way: the run continues, because refusing to
+			// read recommendations here would suppress real costs on the
+			// strength of a check that did not finish.
+			report(h.Account, "", "coh_enrollment_unknown: gave up checking Cost Optimization Hub enrollment after %d "+
+				"pages of member accounts without reaching the scanned one(s); recommendations were read anyway, so "+
+				"an empty result below may mean the service is not enabled rather than that nothing was found",
+				maxEnrollmentPages)
+			return true
+		case len(inactiveScanned) == len(accounts), !otherActive:
+			// Either every scanned account was named and none is on, or the
+			// whole list was read and nothing anywhere is on. Both are the
+			// case where an empty result can be explained rather than merely
+			// observed.
+			report(h.Account, "", "coh_not_enrolled: Cost Optimization Hub is not enabled for the %d scanned "+
+				"account(s), so no per-resource cost estimates were collected — opt in from the Cost Optimization "+
+				"Hub console (it is free, and AWS takes about 24 hours to produce the first recommendations); "+
+				"until then account-level spend from --costs is the only cost figure available", len(accounts))
+			return false
+		default:
+			// The hub is on for accounts outside the census and the scanned
+			// ones were never mentioned. Proceeding is right — they may well
+			// be enrolled — but an empty result now has a second possible
+			// reading, and the reader is told which.
+			report(h.Account, "", "coh_enrollment_unconfirmed: Cost Optimization Hub is enabled in this organization, "+
+				"but the enrollment list never named the %d scanned account(s), so their status is unknown; "+
+				"recommendations were read anyway, and an empty result may mean those accounts are not enrolled "+
+				"rather than that nothing was found", len(accounts))
+			return true
+		}
+	}
+
+	if len(inactiveScanned) > 0 {
+		report(h.Account, "", "coh_account_not_enrolled: Cost Optimization Hub is not enabled for %d of the %d "+
+			"scanned account(s), so their resources come away with no cost estimate while the rest are priced "+
+			"— opt those accounts in from the Cost Optimization Hub console", len(inactiveScanned), len(accounts))
+	}
+	// A payer enrolled for itself alone still answers ListRecommendations, but
+	// only about its own resources, so every other scanned account comes away
+	// unpriced for a reason that is a settings choice rather than a property
+	// of the estate.
+	if len(accounts) > 1 && includeMembers != nil && !*includeMembers {
+		report(h.Account, "", "coh_member_accounts_excluded: Cost Optimization Hub is enrolled for this "+
+			"account only, not for the organization, so resources in the other %d scanned account(s) "+
+			"come away with no cost estimate — enable member accounts in the Cost Optimization Hub "+
+			"console from the management account", len(accounts)-1)
+	}
 	return true
 }
 
