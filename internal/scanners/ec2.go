@@ -154,10 +154,19 @@ func ec2InstanceResource(i ec2types.Instance, region, accountID string) model.Re
 func attachedVolumeIDs(mappings []ec2types.InstanceBlockDeviceMapping) string {
 	ids := make([]string, 0, len(mappings))
 	for _, m := range mappings {
-		if m.Ebs == nil {
+		// Presence is the pointer, never the converted string: a device with no
+		// EBS block is instance store, and a nil VolumeId is a volume AWS did
+		// not name.
+		if m.Ebs == nil || m.Ebs.VolumeId == nil {
 			continue
 		}
-		if id := aws.ToString(m.Ebs.VolumeId); id != "" {
+		// A second, different question — is this identifier usable? An empty
+		// name identifies nothing, and appending it would produce
+		// "vol-a,,vol-b": a list with a hole in it rather than a finding. This
+		// is not the zero-measure case the honesty guardrail protects; a
+		// zero-byte volume is a fact about storage, an unnamed volume is not a
+		// fact about anything.
+		if id := *m.Ebs.VolumeId; id != "" {
 			ids = append(ids, id)
 		}
 	}
@@ -172,14 +181,23 @@ func attachedVolumeIDs(mappings []ec2types.InstanceBlockDeviceMapping) string {
 // something attached to it, and those live in the same partition. When there
 // is none — the common case for a plain instance — the region name is the only
 // evidence left. See arn.go for why "aws" is not an acceptable default here.
+//
+// Two separate questions are asked in order, and conflating them is how this
+// goes wrong. Presence is decided on the pointer, so a field AWS did report is
+// never mistaken for one it withheld. Usability is then decided by the parse,
+// because a reported string that is empty or malformed is not evidence of any
+// partition — reading a bare "aws" out of it would beat the region fallback and
+// mis-key every instance in GovCloud or China, silently.
 func instancePartition(i ec2types.Instance, region string) string {
-	if i.IamInstanceProfile != nil {
-		if arn := aws.ToString(i.IamInstanceProfile.Arn); arn != "" {
-			return arnPartition(arn)
+	if p := i.IamInstanceProfile; p != nil && p.Arn != nil {
+		if partition, ok := partitionFromARN(*p.Arn); ok {
+			return partition
 		}
 	}
-	if arn := aws.ToString(i.OutpostArn); arn != "" {
-		return arnPartition(arn)
+	if i.OutpostArn != nil {
+		if partition, ok := partitionFromARN(*i.OutpostArn); ok {
+			return partition
+		}
 	}
 	return partitionForRegion(region)
 }

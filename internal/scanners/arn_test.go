@@ -19,6 +19,34 @@ func TestArnPartition(t *testing.T) {
 	}
 }
 
+// arnPartition answers "aws" for anything it cannot read, which is right for a
+// caller with no other evidence and wrong for one that has a region to fall
+// back on. partitionFromARN is where those two are told apart, so what it must
+// pin is the bool: every unreadable input reports false rather than a partition
+// that happens to be the commercial one.
+func TestPartitionFromARN(t *testing.T) {
+	readable := map[string]string{
+		"arn:aws:ec2:us-east-1:1:instance/i-1":            "aws",
+		"arn:aws-us-gov:iam::1:instance-profile/app":      "aws-us-gov",
+		"arn:aws-cn:outposts:cn-north-1:1:outpost/op-1":   "aws-cn",
+		"arn:aws-iso-b:ec2:us-isob-east-1:1:instance/i-1": "aws-iso-b",
+	}
+	for arn, want := range readable {
+		got, ok := partitionFromARN(arn)
+		if !ok || got != want {
+			t.Errorf("partitionFromARN(%q) = (%q, %v), want (%q, true)", arn, got, ok, want)
+		}
+	}
+
+	// None of these is an ARN naming a partition. Reporting "aws" with ok=true
+	// for any of them would let a malformed field outrank the region rule.
+	for _, arn := range []string{"", "bogus", "a:b", "arn::x", "arn::iam::1:role/r", "notarn:aws:ec2:::"} {
+		if got, ok := partitionFromARN(arn); ok {
+			t.Errorf("partitionFromARN(%q) = (%q, true), want ok=false", arn, got)
+		}
+	}
+}
+
 func TestPartitionForRegion(t *testing.T) {
 	cases := map[string]string{
 		"us-east-1":       "aws",

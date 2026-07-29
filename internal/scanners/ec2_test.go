@@ -55,10 +55,26 @@ func TestInstancePartition(t *testing.T) {
 	if got := instancePartition(ec2types.Instance{}, "us-east-1"); got != "aws" {
 		t.Errorf("bare instance in commercial = %q, want aws", got)
 	}
-	// An empty profile ARN is not an answer; fall through to the region.
-	empty := ec2types.Instance{IamInstanceProfile: &ec2types.IamInstanceProfile{}}
-	if got := instancePartition(empty, "cn-north-1"); got != "aws-cn" {
-		t.Errorf("empty profile ARN = %q, want aws-cn", got)
+	// Presence and usability are separate questions, and the answers differ.
+	//
+	// Presence is the pointer: a nil ARN was never reported. Usability is the
+	// parse: a string AWS did report, but that does not name a partition, is
+	// equally no answer. Both must lose to the region rule, because the
+	// alternative is reading a bare "aws" out of a non-ARN and mis-keying every
+	// instance in a non-commercial partition — a failure with no error attached
+	// to it. Each of these would read "aws" if presence alone decided.
+	unusable := map[string]ec2types.Instance{
+		"nil profile ARN":   {IamInstanceProfile: &ec2types.IamInstanceProfile{}},
+		"empty profile ARN": {IamInstanceProfile: &ec2types.IamInstanceProfile{Arn: aws.String("")}},
+		"non-ARN profile":   {IamInstanceProfile: &ec2types.IamInstanceProfile{Arn: aws.String("instance-profile/app")}},
+		"partitionless ARN": {IamInstanceProfile: &ec2types.IamInstanceProfile{Arn: aws.String("arn::iam::x:y")}},
+		"empty outpost ARN": {OutpostArn: aws.String("")},
+		"non-ARN outpost":   {OutpostArn: aws.String("op-1")},
+	}
+	for name, inst := range unusable {
+		if got := instancePartition(inst, "us-gov-west-1"); got != "aws-us-gov" {
+			t.Errorf("%s in GovCloud = %q, want aws-us-gov from the region rule", name, got)
+		}
 	}
 }
 
@@ -276,8 +292,12 @@ func TestAttachedVolumeIDs(t *testing.T) {
 		{DeviceName: aws.String("/dev/sdb")},
 		{Ebs: &ec2types.EbsInstanceBlockDevice{VolumeId: aws.String("vol-a")}},
 		// A mapping AWS returned without an ID contributes nothing rather
-		// than an empty slot in the list.
+		// than an empty slot in the list — whether the ID is absent (nil) or
+		// reported as an empty string. The two are distinguished at the
+		// pointer, but neither names a volume, so "vol-a,,vol-b" is not an
+		// honest rendering of either.
 		{Ebs: &ec2types.EbsInstanceBlockDevice{}},
+		{Ebs: &ec2types.EbsInstanceBlockDevice{VolumeId: aws.String("")}},
 	}
 	if got := attachedVolumeIDs(mappings); got != "vol-a,vol-b" {
 		t.Errorf("attachedVolumeIDs = %q, want vol-a,vol-b", got)

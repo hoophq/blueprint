@@ -10,14 +10,29 @@ import "strings"
 // instance written as arn:aws:… matches nothing: it looks newly created on
 // every scan and never picks up a cost figure. Both failures are silent.
 
+// partitionFromARN reads the partition out of an ARN ("arn:PARTITION:..."),
+// reporting whether the input was an ARN naming one at all.
+//
+// The bool matters to any caller that has a second source of evidence. A string
+// that does not parse is not a partition of "aws" — it is no answer, and a
+// caller that can fall back to the region name must be able to tell those
+// apart. Callers with nothing to fall back on want arnPartition instead.
+func partitionFromARN(arn string) (string, bool) {
+	parts := strings.SplitN(arn, ":", 3)
+	if len(parts) == 3 && parts[0] == "arn" && parts[1] != "" {
+		return parts[1], true
+	}
+	return "", false
+}
+
 // arnPartition extracts the partition from an ARN ("arn:PARTITION:...");
 // empty or malformed input falls back to the default "aws" partition.
 //
 // Preferred over partitionForRegion whenever the response carries any ARN at
 // all, because it is AWS's own answer rather than this tool's reconstruction.
 func arnPartition(arn string) string {
-	if parts := strings.SplitN(arn, ":", 3); len(parts) == 3 && parts[0] == "arn" && parts[1] != "" {
-		return parts[1]
+	if partition, ok := partitionFromARN(arn); ok {
+		return partition
 	}
 	return "aws"
 }
