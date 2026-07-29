@@ -57,11 +57,14 @@ func AddResourceCosts(snap *model.Snapshot) {
 	n := 0
 	for i := range snap.Resources {
 		r := &snap.Resources[i]
-		if r.Type != model.TypeRDSInstance {
-			continue
-		}
 		size, ok := r.Measure(model.MeasureSizeBytes)
-		if !ok {
+		if r.Type != model.TypeRDSInstance || !ok {
+			// The fixture stands in for a completed hub read, so everything it
+			// does not price carries the reason it was not priced — the same
+			// named absence the real stage writes. A demo whose unpriced
+			// resources came away blank would hide the coverage caveat, which
+			// is the part of the cost output a reader most needs to see.
+			r.CostUnavailable = unpricedReason
 			continue
 		}
 		s := shapes[n%len(shapes)]
@@ -84,6 +87,12 @@ func AddResourceCosts(snap *model.Snapshot) {
 	// snapshot, and a real one has every derivation run after enrichment.
 	snap.Finalize()
 }
+
+// unpricedReason mirrors what the Cost Optimization Hub stage says about a
+// resource it looked up and found no figure for. It is duplicated here rather
+// than imported so the demo package keeps depending on nothing but the model —
+// the fixture is data, not a second caller of the enricher.
+const unpricedReason = "no Cost Optimization Hub recommendation for this resource"
 
 // gib renders a byte count as whole gibibytes, floored. The fixture prices
 // from it rather than reporting it, so losing the remainder costs nothing.

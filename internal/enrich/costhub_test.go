@@ -699,3 +699,73 @@ func TestEnrollmentPagingStopsOnceEveryScannedAccountIsConfirmed(t *testing.T) {
 		t.Errorf("enrollment pages read = %d, want 1: the scanned account was confirmed on the first one", len(f.enrolls))
 	}
 }
+
+// A hub read that finished is evidence about every resource in the census: the
+// list was complete, so a resource missing from it has no recommendation. That
+// absence is written down by name rather than left as a nil cost, which a
+// reader could take for zero spend.
+func TestACompletedReadNamesTheAbsenceOnUnpricedResources(t *testing.T) {
+	// Only the database is priced; the cache cluster is not.
+	got, failures := runHub(t, newHub(&fakeCOH{listFn: recs(priced(dbARN, 10))}), census())
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %+v", failures)
+	}
+	if got[0].CostUnavailable != "" {
+		t.Errorf("a priced resource carries an absence reason: %q", got[0].CostUnavailable)
+	}
+	if got[1].Cost != nil {
+		t.Fatal("the unpriced resource was given a cost")
+	}
+	if got[1].CostUnavailable == "" {
+		t.Error("the hub answered in full and named nothing for this resource, but the absence was left blank")
+	}
+}
+
+// A read that stopped early says nothing about the resources it never reached.
+// Naming an absence off a truncated list would turn "the read stopped" into
+// "AWS has no figure for this", which is a claim the response does not support.
+func TestATruncatedReadDoesNotClaimTheHubHasNothing(t *testing.T) {
+	page := 0
+	f := &fakeCOH{listFn: func(*costoptimizationhub.ListRecommendationsInput) (*costoptimizationhub.ListRecommendationsOutput, error) {
+		page++
+		if page == 1 {
+			return &costoptimizationhub.ListRecommendationsOutput{
+				Items:     []cohtypes.Recommendation{priced(dbARN, 7)},
+				NextToken: aws.String("more"),
+			}, nil
+		}
+		return nil, errors.New("boom")
+	}}
+	got, failures := runHub(t, newHub(f), census())
+	ledgered(t, failures, "coh_failed")
+
+	// The page that arrived still prices what it named.
+	if got[0].Cost == nil {
+		t.Error("the page that did arrive was discarded")
+	}
+	// The one it did not reach stays a plain unknown: no cost, and no reason
+	// either, because nothing looked all the way for it.
+	if got[1].Cost != nil {
+		t.Error("a resource on an unread page was given a cost")
+	}
+	if got[1].CostUnavailable != "" {
+		t.Errorf("a truncated read claimed the hub has nothing: %q", got[1].CostUnavailable)
+	}
+}
+
+// The same rule for the other early exit: an unenrolled account never reached
+// the recommendation list at all, so nothing may be said about coverage.
+func TestAnUnenrolledAccountLeavesTheAbsenceUnexplained(t *testing.T) {
+	f := &fakeCOH{enrollFn: func(*costoptimizationhub.ListEnrollmentStatusesInput) (*costoptimizationhub.ListEnrollmentStatusesOutput, error) {
+		return &costoptimizationhub.ListEnrollmentStatusesOutput{
+			Items: []cohtypes.AccountEnrollmentStatus{enrolledRow(scannedAccount(), cohtypes.EnrollmentStatusInactive)},
+		}, nil
+	}}
+	got, failures := runHub(t, newHub(f), census())
+	ledgered(t, failures, "coh_not_enrolled")
+	for _, r := range got {
+		if r.CostUnavailable != "" {
+			t.Errorf("%s: claimed a coverage answer from a hub that was never read: %q", r.Name, r.CostUnavailable)
+		}
+	}
+}

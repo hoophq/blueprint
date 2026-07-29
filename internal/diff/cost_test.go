@@ -111,3 +111,44 @@ func TestCompareIgnoresPerResourceCost(t *testing.T) {
 		})
 	}
 }
+
+// The named absence is invisible to the resource diff too. It says what a cost
+// source found, not what the resource is, so it appears and disappears purely
+// with whether --costs was passed — the same toggle the cost report itself is
+// kept out of the diff for.
+func TestCompareIgnoresCostUnavailableReason(t *testing.T) {
+	snap := func(reason string) *model.Snapshot {
+		r := model.Resource{
+			ARN:       "arn:aws:dynamodb:us-east-1:111111111111:table/orders",
+			Name:      "orders",
+			Service:   model.ServiceDynamoDB,
+			Type:      model.TypeDynamoDBTable,
+			Region:    "us-east-1",
+			AccountID: "111111111111",
+		}
+		r.CostUnavailable = reason
+		s := &model.Snapshot{
+			Schema:    model.SchemaVersion,
+			Accounts:  []string{"111111111111"},
+			Regions:   []string{"us-east-1"},
+			Resources: []model.Resource{r},
+		}
+		s.Finalize()
+		return s
+	}
+	const reason = "no Cost Optimization Hub recommendation for this resource"
+	for _, tc := range []struct {
+		name      string
+		old, curr string
+	}{
+		{"reason added", "", reason},
+		{"reason removed", reason, ""},
+		{"reason reworded", reason, "resource type not modelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Compare(snap(tc.old), snap(tc.curr)); !got.Empty() {
+				t.Errorf("cost-unavailable reason leaked into the resource diff: %+v", got)
+			}
+		})
+	}
+}
