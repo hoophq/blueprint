@@ -280,6 +280,42 @@ func TestCompareSeparatesUnreportedMeasuresFromZero(t *testing.T) {
 	}
 }
 
+// A CloudWatch reading carries the instant it was observed, and that instant
+// moves every scan. Diffing it would mark every metric-bearing resource as
+// changed on every run — the reading is the drift, the clock is not.
+func TestCompareIgnoresObservationTimestamps(t *testing.T) {
+	yesterday := time.Date(2026, 7, 27, 4, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC)
+
+	old := res("arn:a", "widget", "postgres", "15.4", "available")
+	old.SetObservedMeasure(model.MeasureFreeStorageBytes, 4096, yesterday)
+	same := res("arn:a", "widget", "postgres", "15.4", "available")
+	same.SetObservedMeasure(model.MeasureFreeStorageBytes, 4096, today)
+
+	if d := Compare(
+		&model.Snapshot{Resources: []model.Resource{old}},
+		&model.Snapshot{Resources: []model.Resource{same}},
+	); !d.Empty() {
+		t.Errorf("a re-observed but unchanged reading drifted: %+v", d.Changed)
+	}
+
+	// The value moving is still drift, and it reports alone rather than
+	// dragging the timestamp along with it.
+	moved := res("arn:a", "widget", "postgres", "15.4", "available")
+	moved.SetObservedMeasure(model.MeasureFreeStorageBytes, 2048, today)
+	d := Compare(
+		&model.Snapshot{Resources: []model.Resource{old}},
+		&model.Snapshot{Resources: []model.Resource{moved}},
+	)
+	if len(d.Changed) != 1 || len(d.Changed[0].Fields) != 1 {
+		t.Fatalf("Changed = %+v, want one resource with exactly one field", d.Changed)
+	}
+	f := d.Changed[0].Fields[0]
+	if f.Field != model.MeasureFreeStorageBytes || f.Old != "4096" || f.New != "2048" {
+		t.Errorf("field change = %+v, want free_storage_bytes 4096 → 2048", f)
+	}
+}
+
 func TestWriteEmpty(t *testing.T) {
 	var sb strings.Builder
 	Result{}.Write(&sb, "prev.json")

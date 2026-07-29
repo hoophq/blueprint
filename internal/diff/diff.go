@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoophq/blueprint/internal/model"
@@ -113,6 +114,14 @@ func fieldChanges(o, n model.Resource) []FieldChange {
 		add("tag:"+k, tagStr(o.Tags, k), tagStr(n.Tags, k))
 	}
 	for _, k := range unionKeys(o.Attributes, n.Attributes) {
+		// An observation timestamp advances on every scan by definition, so
+		// diffing it would mark every metric-bearing resource as changed on
+		// every run and bury the drift that is real. The measure it belongs to
+		// is still compared below — the reading moving is drift, the clock
+		// moving is not.
+		if strings.HasSuffix(k, model.AsOfSuffix) {
+			continue
+		}
 		add(k, o.Attributes[k], n.Attributes[k])
 	}
 	for _, k := range unionKeys(o.Measures, n.Measures) {

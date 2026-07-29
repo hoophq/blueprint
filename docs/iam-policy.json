@@ -23,6 +23,15 @@
       "Effect": "Allow",
       "Action": "ce:GetCostAndUsage",
       "Resource": "*"
+    },
+    {
+      "Sid": "BlueprintCloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:ListMetrics",
+        "cloudwatch:GetMetricData"
+      ],
+      "Resource": "*"
     }
   ]
 }

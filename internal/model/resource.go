@@ -56,7 +56,27 @@ const (
 	MeasureSizeBytes           = "size_bytes"
 	MeasureBackupRetentionDays = "backup_retention_days"
 	MeasureBaseCapacityRPU     = "base_capacity_rpu"
+	// MeasureFreeStorageBytes is the unused space left on an instance's
+	// volume, observed from CloudWatch rather than reported by a describe
+	// call — so it always carries an observation time (see AsOfSuffix).
+	MeasureFreeStorageBytes = "free_storage_bytes"
 )
+
+// AsOfSuffix names the attribute that carries a measure's observation time:
+// measure "free_storage_bytes" is timestamped by attribute
+// "free_storage_bytes_as_of", holding RFC 3339 UTC.
+//
+// Describe-call measures are true as of the scan. Metric measures are not:
+// CloudWatch daily statistics lag 24–48h, and a stopped resource stops
+// publishing entirely, so its newest datapoint can be far older than the
+// scan. Rendering a two-day-old reading as if it were current is the same
+// class of lie as rendering an unreported value as zero, so the timestamp
+// travels with the value instead of being implied by GeneratedAt.
+//
+// It is a suffixed attribute rather than a field because measures live in an
+// open bag: a parallel map of times would have to be threaded through the
+// diff, CSV flattening, and report for a value only some measures have.
+const AsOfSuffix = "_as_of"
 
 // Resource is one discovered AWS resource, normalized across services.
 //
@@ -180,6 +200,37 @@ func (r *Resource) SetMeasureInt64(key string, v *int64) {
 		return
 	}
 	r.SetMeasure(key, *v)
+}
+
+// SetObservedMeasure records a measure read from a time series together with
+// the instant AWS observed it, stored under key+AsOfSuffix in UTC.
+//
+// A zero observation time leaves the measure unwritten. That is stricter than
+// SetMeasure, and deliberately so: an untimed datapoint is one whose staleness
+// cannot be judged, and for metrics — where the newest reading may predate the
+// scan by days — an unjudgeable value is worse than an absent one. Callers
+// with a value that is true as of the scan want SetMeasure.
+func (r *Resource) SetObservedMeasure(key string, v int64, at time.Time) {
+	if key == "" || at.IsZero() {
+		return
+	}
+	r.SetMeasure(key, v)
+	r.SetAttr(key+AsOfSuffix, at.UTC().Format(time.RFC3339))
+}
+
+// MeasureAsOf returns when key's value was observed. The bool is false for a
+// measure that carries no observation time — every describe-sourced measure,
+// which is current as of the scan.
+func (r *Resource) MeasureAsOf(key string) (time.Time, bool) {
+	raw := r.Attr(key + AsOfSuffix)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at.UTC(), true
 }
 
 // Exposed reports whether any collected exposure flag is in its risky state:

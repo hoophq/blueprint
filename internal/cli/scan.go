@@ -17,6 +17,7 @@ import (
 	"github.com/hoophq/blueprint/internal/cost"
 	"github.com/hoophq/blueprint/internal/demo"
 	"github.com/hoophq/blueprint/internal/diff"
+	"github.com/hoophq/blueprint/internal/enrich"
 	"github.com/hoophq/blueprint/internal/history"
 	"github.com/hoophq/blueprint/internal/model"
 	"github.com/hoophq/blueprint/internal/orgmode"
@@ -42,6 +43,7 @@ func scanCmd() *cobra.Command {
 		failOnChange bool
 		noHistory    bool
 		costs        costFlags
+		metrics      bool
 	)
 
 	cmd := &cobra.Command{
@@ -68,9 +70,12 @@ func scanCmd() *cobra.Command {
 					// zero charge, because --demo makes no AWS calls at all.
 					snap.Cost = demo.CostReport()
 				}
+				if metrics {
+					demo.AddMetrics(snap)
+				}
 			} else {
 				var err error
-				snap, err = runScan(ctx, cmd, profile, regions, org, roleName, concurrency, costs)
+				snap, err = runScan(ctx, cmd, profile, regions, org, roleName, concurrency, costs, metrics)
 				if err != nil {
 					return err
 				}
@@ -110,6 +115,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer (AWS BILLS $0.01 per request; off by default)")
 	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
 	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
+	cmd.Flags().BoolVar(&metrics, "metrics", false, "also read CloudWatch utilization metrics for scanned resources (AWS BILLS $"+enrich.ChargeUSD(1000)+" per 1,000 metrics requested; off by default)")
 	return cmd
 }
 
@@ -133,7 +139,7 @@ func (c costFlags) validate() error {
 	return nil
 }
 
-func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int, costs costFlags) (*model.Snapshot, error) {
+func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int, costs costFlags, metrics bool) (*model.Snapshot, error) {
 	cfg, err := awsx.Load(ctx, profile)
 	if err != nil {
 		return nil, err
@@ -185,8 +191,28 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 				fmt.Fprintf(cmd.OutOrStdout(), "  ✓ %s/%s/%s: %d\n", accountID, region, service, found)
 			}
 		},
+		OnEnrich: func(name string, failed int) {
+			if failed > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  ! %s: %d coverage gap(s), see the failure ledger\n", name, failed)
+			}
+		},
+	}
+	var metricsStage *enrich.Metrics
+	if metrics {
+		// Enrichment runs inside Run, after the scan and before Finalize, so
+		// the exact number of series cannot be known here — only the rate.
+		// The count follows below, once it has been spent.
+		fmt.Fprintf(cmd.OutOrStdout(), "  … metrics: reading CloudWatch for scanned resources — AWS bills $%s per 1,000 metrics requested\n",
+			enrich.ChargeUSD(1000))
+		metricsStage = enrich.NewMetrics()
+		runner.Enrichers = []scan.Enricher{metricsStage}
 	}
 	snap := runner.Run(ctx, targets, Version)
+	if metricsStage != nil {
+		meter := metricsStage.Meter()
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ metrics: %d series requested in %d call(s), ~$%s charged by AWS\n",
+			meter.Series, meter.GetCalls, enrich.ChargeUSD(meter.Series))
+	}
 	// Org-mode pre-scan failures (unassumable member roles) belong in the
 	// same ledger as per-unit scan failures; re-sort so the artifact stays
 	// deterministic after the append.
