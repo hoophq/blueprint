@@ -207,8 +207,8 @@ func (h *CostHub) Enrich(ctx context.Context, req scan.Enrichment) []model.Failu
 		return failures
 	}
 
-	figures := h.recommendations(ctx, api, accounts, report)
-	h.attach(req.Resources, figures)
+	figures, complete := h.recommendations(ctx, api, accounts, report)
+	h.attach(req.Resources, figures, complete)
 	return failures
 }
 
@@ -386,8 +386,14 @@ func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []strin
 }
 
 // recommendations reads the whole list and reduces it to one figure per ARN.
-func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts []string, report reporter) map[string]figure {
+func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts []string, report reporter) (map[string]figure, bool) {
 	figures := map[string]figure{}
+	// complete records that the hub was read all the way to its last page. Only
+	// then does a resource's absence from figures mean the hub has nothing for
+	// it; on any early exit the absence means the read stopped, and saying
+	// otherwise would turn a truncated list into a statement about resources
+	// that were never reached.
+	complete := false
 	// conflicting holds ARNs two recommendations disagreed about; they are
 	// dropped rather than resolved, so nothing is published that cannot be
 	// defended. Tracked separately from figures so a conflict discovered on a
@@ -397,7 +403,7 @@ func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts 
 	var token *string
 	for page := 0; ; page++ {
 		if ctx.Err() != nil {
-			return nil
+			return nil, false
 		}
 		if page >= maxRecommendationPages {
 			report(h.Account, "", "coh_pagination_incomplete: stopped reading Cost Optimization Hub after %d pages, "+
@@ -419,7 +425,7 @@ func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts 
 		})
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return figures
+				return figures, false
 			}
 			report(h.Account, "", "%s", h.classify(fmt.Sprintf("reading Cost Optimization Hub recommendations (page %d)", page+1), err))
 			break
@@ -455,11 +461,12 @@ func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts 
 		}
 
 		if out.NextToken == nil || *out.NextToken == "" {
+			complete = true
 			break
 		}
 		token = out.NextToken
 	}
-	return figures
+	return figures, complete
 }
 
 // reduce turns one recommendation into a storable figure, or reports why it
@@ -496,14 +503,21 @@ func (h *CostHub) reduce(rec cohtypes.Recommendation, report reporter) (figure, 
 // worse than none. A systematic mismatch is not hidden by that strictness: the
 // meter reports how many resources were priced against how many
 // recommendations were read, so "thousands read, none matched" is visible.
-func (h *CostHub) attach(resources []model.Resource, figures map[string]figure) {
-	if len(figures) == 0 {
-		return
-	}
+func (h *CostHub) attach(resources []model.Resource, figures map[string]figure, complete bool) {
 	for i := range resources {
 		r := &resources[i]
 		f, ok := figures[r.ARN]
 		if !ok {
+			// The hub answered in full and named no price for this resource.
+			// That is a reportable absence, so it is written down rather than
+			// left as a blank a reader could take for zero. It deliberately
+			// does not distinguish "resource type the hub does not model" from
+			// "modelled but no recommendation": the response says only that
+			// nothing came back, and a coverage list maintained here would be
+			// this tool asserting something AWS did not.
+			if complete {
+				r.CostUnavailable = costUnavailableNoRecommendation
+			}
 			continue
 		}
 		r.Cost = &model.ResourceCost{
@@ -518,6 +532,13 @@ func (h *CostHub) attach(resources []model.Resource, figures map[string]figure) 
 		h.meter.Priced++
 	}
 }
+
+// costUnavailableNoRecommendation is what this stage can honestly say about a
+// resource it looked up and found no figure for. It is phrased as a statement
+// about the hub's answer, not about the resource: "no recommendation" is a fact
+// the response supports, whereas "this resource is free" or "this type is not
+// covered" are conclusions it does not.
+const costUnavailableNoRecommendation = "no Cost Optimization Hub recommendation for this resource"
 
 // partialScope names Cost Optimization Hub resource types whose
 // estimatedMonthlyCost covers one component of a resource rather than all of

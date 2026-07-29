@@ -79,13 +79,19 @@ func TestCSVDemoSnapshot(t *testing.T) {
 		t.Fatalf("row count = %d, want %d (resources + header)", got, want)
 	}
 
-	// The columns are the narrow core only. Everything service-specific rides
-	// in the attributes cell, so this header must not grow when a new scanner
-	// lands — that stability is the contract downstream scripts depend on.
+	// The columns are the narrow core, then the flattened bag, then cost.
+	// Everything service-specific rides in the attributes cell, so this header
+	// must not grow when a new scanner lands — that stability is the contract
+	// downstream scripts depend on. Cost is not service-specific: it is one
+	// block of columns for every service rather than one per service, and it
+	// sits last so every column above keeps the index it has always had.
 	wantHeader := []string{
 		"arn", "service", "type", "name", "status", "region", "account_id",
 		"created_at", "environment", "owner", "tags", "eol", "eol_date",
 		"publicly_accessible", "encrypted", "attributes",
+		"cost_amount", "cost_currency", "cost_method", "cost_estimated",
+		"cost_observed_from", "cost_observed_to", "cost_caveats",
+		"cost_unavailable_reason",
 	}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header has %d columns, want %d", len(records[0]), len(wantHeader))
@@ -325,6 +331,114 @@ func TestCSVTagEncoding(t *testing.T) {
 	}
 	if got := splitPairs(t, records[1][c["tags"]])["a=b"]; got != "c;d" {
 		t.Errorf("decoded tag = %q, want %q", got, "c;d")
+	}
+}
+
+// The cost columns carry the same absence rules as the rest of the row, with
+// one extra hazard: a spreadsheet's SUM and AVERAGE skip blank cells and count
+// zeros, so writing "0" where nothing was reported drags a user's own average
+// down and tells them a resource is free.
+func TestCSVCostCells(t *testing.T) {
+	base := func(name string) model.Resource {
+		return model.Resource{
+			ARN: "arn:aws:rds:us-east-1:210987654321:db:" + name, Name: name,
+			Service: model.ServiceRDS, Type: model.TypeRDSInstance,
+			Region: "us-east-1", AccountID: "210987654321",
+		}
+	}
+	from := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 0, 14)
+
+	full := base("full")
+	full.Cost = &model.ResourceCost{
+		Amount: "1620.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true,
+		ObservedFrom: &from, ObservedTo: &to,
+		// A caveat holding both structural characters proves the cell stays
+		// splittable: neither may forge a separator.
+		Caveats: []string{"covers storage only; not compute", "modelled from usage=recent"},
+	}
+
+	// A source that priced this resource at nothing. Zero is a finding.
+	zero := base("zero")
+	zero.Cost = &model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCOH}
+
+	// A credit: negative money, and the reason the amount column is exempt
+	// from the formula guard.
+	credit := base("credit")
+	credit.Cost = &model.ResourceCost{Amount: "-450.00", Currency: "USD", Method: "ce"}
+
+	// Looked at, nothing found — blank figures with the reason beside them.
+	named := base("named")
+	named.CostUnavailable = "no Cost Optimization Hub recommendation for this resource"
+
+	// Nobody looked: blank everywhere, including the reason.
+	untouched := base("untouched")
+
+	records := renderAndParse(t, &model.Snapshot{
+		Resources: []model.Resource{full, zero, credit, named, untouched},
+	})
+	c := col(t, records[0])
+	rows := map[string][]string{}
+	for _, r := range records[1:] {
+		rows[r[c["name"]]] = r
+	}
+
+	got := rows["full"]
+	for name, want := range map[string]string{
+		"cost_amount":        "1620.00",
+		"cost_currency":      "USD",
+		"cost_method":        model.CostMethodCOH,
+		"cost_estimated":     "true",
+		"cost_observed_from": "2026-06-15T12:00:00Z",
+		"cost_observed_to":   "2026-06-29T12:00:00Z",
+		// ';' inside a caveat is encoded so the joined cell stays splittable
+		// on the literal ';'. '=' is encoded by the same replacer.
+		"cost_caveats":            "covers storage only%3B not compute;modelled from usage%3Drecent",
+		"cost_unavailable_reason": "",
+	} {
+		if got[c[name]] != want {
+			t.Errorf("full.%s = %q, want %q", name, got[c[name]], want)
+		}
+	}
+
+	// A reported zero renders as the figure the source gave, never as a blank.
+	if got := rows["zero"][c["cost_amount"]]; got != "0.00" {
+		t.Errorf("reported zero amount = %q, want %q", got, "0.00")
+	}
+	// ...and it is priced, so it has no absence to explain.
+	if got := rows["zero"][c["cost_unavailable_reason"]]; got != "" {
+		t.Errorf("priced-at-zero resource carries a reason: %q", got)
+	}
+	// Estimated is written out even when false: "this is a real bill" is a
+	// claim worth making explicitly rather than by omission.
+	if got := rows["zero"][c["cost_estimated"]]; got != "false" {
+		t.Errorf("cost_estimated = %q, want %q", got, "false")
+	}
+
+	// The amount column is deliberately not formula-guarded — a leading quote
+	// would turn every credit into text a spreadsheet will not sum.
+	if got := rows["credit"][c["cost_amount"]]; got != "-450.00" {
+		t.Errorf("credit amount = %q, want an unguarded %q", got, "-450.00")
+	}
+
+	// Looked and found nothing: seven blanks and a reason.
+	namedRow := rows["named"]
+	for _, name := range []string{
+		"cost_amount", "cost_currency", "cost_method", "cost_estimated",
+		"cost_observed_from", "cost_observed_to", "cost_caveats",
+	} {
+		if got := namedRow[c[name]]; got != "" {
+			t.Errorf("unpriced %s = %q, want empty", name, got)
+		}
+	}
+	if got := namedRow[c["cost_unavailable_reason"]]; got == "" {
+		t.Error("a source looked and found nothing, but no reason was written")
+	}
+
+	// Nobody looked: even the reason is blank, because "not asked" is not a
+	// coverage gap to report.
+	if got := rows["untouched"][c["cost_unavailable_reason"]]; got != "" {
+		t.Errorf("un-queried resource carries a reason: %q", got)
 	}
 }
 

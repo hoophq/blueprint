@@ -42,6 +42,7 @@ func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 	if len(sum.Services) > 0 {
 		fmt.Fprintf(w, "  by service: %s\n", formatCounts(sum.Services))
 	}
+	costSection(w, snap)
 	if sum.Failures > 0 {
 		fmt.Fprintf(w, "\n  ⚠ incomplete coverage — %d scan unit(s) failed:\n", sum.Failures)
 		groups := groupFailures(snap.Failures)

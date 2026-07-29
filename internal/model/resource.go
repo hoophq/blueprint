@@ -142,6 +142,15 @@ type Resource struct {
 	// diff does not read it, so it cannot fabricate drift across the boundary
 	// the version guards. An older baseline simply has no costs to compare.
 	Cost *ResourceCost `json:"cost,omitempty"`
+	// CostUnavailable names why no source priced this resource, when a source
+	// looked and came back empty. It is the absence made explicit: a blank cost
+	// cell with a reason beside it cannot be misread as zero spend, which a
+	// blank cell on its own invites. Empty means nothing looked — no cost stage
+	// ran, or it stopped before reaching this resource — which is a different
+	// statement from "looked and found nothing" and must not be collapsed into
+	// it. Only a source that actually queried for this resource may set it, and
+	// only to something that source can support; render never invents one.
+	CostUnavailable string `json:"cost_unavailable,omitempty"`
 
 	Attributes map[string]string `json:"attributes,omitempty"`
 	Measures   map[string]int64  `json:"measures,omitempty"`
