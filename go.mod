@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/elasticache v1.55.1
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing v1.36.2
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.58.3
+	github.com/aws/aws-sdk-go-v2/service/lambda v1.100.2
 	github.com/aws/aws-sdk-go-v2/service/organizations v1.52.1
 	github.com/aws/aws-sdk-go-v2/service/rds v1.120.1
 	github.com/aws/aws-sdk-go-v2/service/redshift v1.64.1
@@ -24,6 +25,7 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.15 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.33 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.33 // indirect

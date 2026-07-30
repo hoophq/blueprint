@@ -36,6 +36,12 @@ const (
 	// whatever they happen to be attached to.
 	ServicePublicIP = "publicip"
 	ServiceELB      = "elb"
+	// ServiceLambda is the one service here that bills nothing at rest. A
+	// function nobody invokes costs nothing, so it will never appear in a cost
+	// report and never draw a second look — which is exactly why an unpatched
+	// runtime survives in one for years. Its census row is a lifecycle finding
+	// rather than a spend finding.
+	ServiceLambda = "lambda"
 )
 
 // Resource.Type values. These are CloudFormation type names — AWS's own
@@ -70,6 +76,7 @@ const (
 	TypeNetworkInterface = "AWS::EC2::NetworkInterface"
 	TypeLoadBalancerV2   = "AWS::ElasticLoadBalancingV2::LoadBalancer"
 	TypeLoadBalancer     = "AWS::ElasticLoadBalancing::LoadBalancer"
+	TypeLambdaFunction   = "AWS::Lambda::Function"
 )
 
 // Attribute keys used in Resource.Attributes. Keys are named after the AWS
@@ -167,6 +174,34 @@ const (
 	// truncated list is indistinguishable from an empty one. If the call
 	// failed the key is absent and the ledger says why.
 	AttrTargetGroupARNs = "target_group_arns"
+	// AttrRuntime is a Lambda function's runtime identifier exactly as AWS
+	// names it — "python3.12", "nodejs18.x", "java8.al2", "provided.al2". It is
+	// deliberately not split into AttrEngine and AttrEngineVersion: AWS's
+	// deprecation table is published against these identifiers whole, and
+	// re-joining two halves to look a date up would let a parsing slip produce
+	// a lifecycle verdict for a runtime that does not exist.
+	//
+	// Absent means AWS reported no runtime, which for a container-image
+	// function is the correct answer rather than a gap — the runtime lives
+	// inside an image blueprint cannot see, so no lifecycle verdict can honestly
+	// be drawn. AttrPackageType says which case a reader is looking at.
+	AttrRuntime = "runtime"
+	// AttrPackageType is "Zip" or "Image". It is the difference between a
+	// function whose runtime AWS manages and patches, and one whose base image
+	// the owner is responsible for rebuilding — the same deprecation date
+	// applies to both, but only one of them gets an email about it.
+	AttrPackageType = "package_type"
+	// AttrArchitecture is the instruction set a function runs on ("x86_64",
+	// "arm64"), comma separated on the rare function that declares both. Lambda
+	// prices arm64 roughly 20% below x86_64 for identical work, so it is a
+	// standing price difference visible from a describe call alone.
+	AttrArchitecture = "architecture"
+	// AttrLastModified is when a function's code or configuration last changed,
+	// RFC 3339 as Lambda reports it. It is emphatically not a creation time and
+	// must never be read into CreatedAt: a function untouched since 2019 and one
+	// created yesterday are the opposite findings, and Lambda reports no
+	// creation time at all.
+	AttrLastModified = "last_modified"
 )
 
 // Measure keys used in Resource.Measures.
@@ -229,6 +264,29 @@ const (
 	// separately, which is the forgotten multiplier the issue behind this
 	// scanner names.
 	MeasureAvailabilityZoneCount = "availability_zone_count"
+	// MeasureMemoryMB and MeasureTimeoutSeconds are what a Lambda function is
+	// configured to be allowed, not what it used. Lambda bills GB-seconds, so
+	// memory is a direct multiplier on every invocation's price and timeout is
+	// the ceiling on how long one can bill for — a function at 10240 MB that
+	// needs 256 is paying 40x, and no describe call will say so. What it
+	// actually consumed is a CloudWatch question and is left to the enrich
+	// stage; guessing it from the configuration would be inventing the finding.
+	MeasureMemoryMB       = "memory_mb"
+	MeasureTimeoutSeconds = "timeout_seconds"
+	// MeasureCodeSizeBytes is the deployment package size. Deliberately not
+	// MeasureSizeBytes: that key means stored data, and folding code artifacts
+	// into an estate-wide storage total would mix two unrelated things. It is
+	// its own quota — 75 GB of code storage per region — which is the number
+	// this measure adds up to.
+	//
+	// Zero is a real value and is stored. A container-image function reports 0
+	// here because its code is in ECR, not in Lambda, and that zero is the
+	// finding rather than a gap.
+	MeasureCodeSizeBytes = "code_size_bytes"
+	// MeasureEphemeralStorageMB is the /tmp allocation. Everything above the
+	// 512 MB default is separately billed per GB-second, so it is a charge that
+	// exists whether or not the function ever writes a file.
+	MeasureEphemeralStorageMB = "ephemeral_storage_mb"
 )
 
 // AsOfSuffix names the attribute that carries a measure's observation time:
