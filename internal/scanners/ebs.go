@@ -288,28 +288,11 @@ func ebsSnapshotResource(s ec2types.Snapshot, region, accountID string, join sna
 	return r
 }
 
-// attachedInstanceIDs joins the instances a volume is attached to, sorted and
-// deduplicated so the value is stable across scans. Empty for an unattached
-// volume, which SetAttr turns into an absent key — and which, paired with state
-// "available", is the definitive unattached signal.
+// attachedInstanceIDs joins the instances a volume is attached to. Empty for an
+// unattached volume, which SetAttr turns into an absent key — and which, paired
+// with state "available", is the definitive unattached signal.
 func attachedInstanceIDs(attachments []ec2types.VolumeAttachment) string {
-	ids := make([]string, 0, len(attachments))
-	for _, a := range attachments {
-		// Presence is the pointer; usability is then a separate question, and
-		// an attachment AWS reported with an empty instance ID names no
-		// instance. Appending it would render "i-a,,i-b" — a list with a hole
-		// in it. That is not the zero-measure case the honesty guardrail
-		// protects: a zero-byte volume is a fact about storage, an unnamed
-		// attachment is not a fact about anything.
-		if a.InstanceId == nil {
-			continue
-		}
-		if id := *a.InstanceId; id != "" {
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
-	return strings.Join(slices.Compact(ids), ",")
+	return joinIDs(attachments, func(a ec2types.VolumeAttachment) *string { return a.InstanceId })
 }
 
 // setGiBMeasure records a size AWS reports in whole GiB as bytes.
