@@ -354,3 +354,48 @@ func TestReportClassFallsBackToMeasures(t *testing.T) {
 		}
 	}
 }
+
+// Most sizes in the report are current as of the scan; a bucket's is not,
+// because CloudWatch publishes it once a day. The label that says so has to be
+// the observation's own UTC day — not the reader's, or the report would name a
+// different day than the datapoint belongs to — and has to be absent for every
+// measure read directly, or the column would imply staleness that isn't there.
+func TestReportObservationLabelNamesTheUTCDay(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string // JSON string; null stands for no observation time
+		want string
+	}{
+		{"no observation time", `null`, ""},
+		{"empty", `""`, ""},
+		{"utc timestamp", `"2026-07-29T12:58:50Z"`, "as of 2026-07-29"},
+		{"late enough to move a day westward", `"2026-07-29T01:15:00Z"`, "as of 2026-07-29"},
+		{"early enough to move a day eastward", `"2026-07-29T23:45:00Z"`, "as of 2026-07-29"},
+		// An offset timestamp names its own day as written, which is the day
+		// the stored string claims.
+		{"offset timestamp", `"2026-07-29T22:00:00-03:00"`, "as of 2026-07-29"},
+		{"not a timestamp", `"whenever"`, ""},
+		{"date with no time", `"2026-07-29"`, ""},
+		{"well formed but impossible", `"2026-13-45T00:00:00Z"`, ""},
+	}
+
+	in := make([]string, len(cases))
+	for i, c := range cases {
+		in[i] = c.in
+	}
+	script := strings.Join([]string{
+		jsFunc(t, "formatObserved"),
+		`console.log(JSON.stringify([` + strings.Join(in, ",") + `].map(formatObserved)));`,
+	}, "\n")
+
+	var got []string
+	evalJSON(t, script, &got)
+	if len(got) != len(cases) {
+		t.Fatalf("got %d results, want %d", len(got), len(cases))
+	}
+	for i, c := range cases {
+		if got[i] != c.want {
+			t.Errorf("%s: formatObserved(%s) = %q, want %q", c.name, c.in, got[i], c.want)
+		}
+	}
+}

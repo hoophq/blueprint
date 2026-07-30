@@ -549,6 +549,7 @@
     r._engineVersion = attr(r, "engine_version");
     r._class = classOf(r);
     r._sizeBytes = measure(r, "size_bytes");
+    r._sizeAsOf = attr(r, "size_bytes_as_of");
     r._backup = measure(r, "backup_retention_days");
     // "AWS::RDS::DBCluster" → "DBCluster": the CloudFormation type without the
     // provider/service prefix already shown in the Service column.
@@ -585,6 +586,33 @@
     var kb = bytes / 1024;
     if (kb >= 1) return (kb >= 10 ? Math.round(kb) : kb.toFixed(1)) + " KB";
     return bytes + " B";
+  }
+
+  // formatObserved turns an observation timestamp into the short label printed
+  // under a size that did not come from the scan.
+  //
+  // Most measures are read from a describe call and are current as of the
+  // scan. A bucket's size is not: CloudWatch publishes BucketSizeBytes once a
+  // day, so the newest datapoint can be two days old, and it would otherwise
+  // sit in the same column as a table size read seconds ago with nothing to
+  // separate them. Printing the day the value was observed is the whole
+  // disclosure — a reader deciding whether a bucket grew last night needs to
+  // know the report cannot answer that.
+  //
+  // Only a measure carrying an observation time gets a label, so the column
+  // stays quiet for everything read directly.
+  //
+  // The date stays in UTC, which is what CloudWatch reported and what the
+  // stored timestamp says. Rendering it in the reader's local time would move
+  // the label across midnight for most of the world and have the report name a
+  // different day than the one the datapoint belongs to — a day being exactly
+  // the resolution in question here.
+  function formatObserved(raw) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T/.exec(String(raw || ""));
+    if (!m) return "";
+    var d = new Date(raw);
+    if (isNaN(d.getTime())) return "";
+    return "as of " + m[1] + "-" + m[2] + "-" + m[3];
   }
 
   function el(tag, cls, text) {
@@ -947,7 +975,15 @@
 
     tr.appendChild(cellOrDash(r._class, "mono"));
 
-    tr.appendChild(cellOrDash(formatSize(r._sizeBytes), "num"));
+    var sizeTd = cellOrDash(formatSize(r._sizeBytes), "num");
+    var observed = formatObserved(r._sizeAsOf);
+    if (observed && typeof r._sizeBytes === "number") {
+      sizeTd.appendChild(document.createElement("br"));
+      sizeTd.appendChild(el("span", "sub", observed));
+      sizeTd.title = "observed " + r._sizeAsOf +
+        " — CloudWatch publishes this daily, so it can be up to 48h behind, and it counts noncurrent versions and incomplete multipart uploads";
+    }
+    tr.appendChild(sizeTd);
 
     tr.appendChild(cellOrDash(r.region, "mono"));
     tr.appendChild(cellOrDash(r.account_id, "mono"));

@@ -42,6 +42,13 @@ const (
 	// runtime survives in one for years. Its census row is a lifecycle finding
 	// rather than a spend finding.
 	ServiceLambda = "lambda"
+	// ServiceS3 is object storage. Its buckets are the one resource in this
+	// census whose cost is invisible from the control plane entirely: a bucket
+	// with a petabyte in it and an empty one describe identically, and the only
+	// free source for the difference is a daily CloudWatch metric. So an S3 row
+	// leaves the scan with its configuration and picks up its size later, or
+	// not at all — see internal/enrich.
+	ServiceS3 = "s3"
 )
 
 // Resource.Type values. These are CloudFormation type names — AWS's own
@@ -77,6 +84,7 @@ const (
 	TypeLoadBalancerV2   = "AWS::ElasticLoadBalancingV2::LoadBalancer"
 	TypeLoadBalancer     = "AWS::ElasticLoadBalancing::LoadBalancer"
 	TypeLambdaFunction   = "AWS::Lambda::Function"
+	TypeS3Bucket         = "AWS::S3::Bucket"
 )
 
 // Attribute keys used in Resource.Attributes. Keys are named after the AWS
@@ -202,6 +210,50 @@ const (
 	// created yesterday are the opposite findings, and Lambda reports no
 	// creation time at all.
 	AttrLastModified = "last_modified"
+	// AttrSSEAlgorithm is the default server-side encryption a bucket applies
+	// to new objects, under the name S3 gives it: "AES256" (SSE-S3),
+	// "aws:kms", or "aws:kms:dsse". Absent means S3 reported no default
+	// encryption configuration, which is not the same as unencrypted — see the
+	// Encrypted field's contract and the s3 scanner for why the core flag stays
+	// nil there.
+	AttrSSEAlgorithm = "sse_algorithm"
+	// AttrBucketKeyEnabled is S3 Bucket Keys, which cut the KMS request charge
+	// on an SSE-KMS bucket by up to 99% by deriving a per-bucket key instead of
+	// calling KMS per object. It is a pure cost lever with no behavioural
+	// difference, which is why a bucket that never turned it on is a finding
+	// and false must survive to the page.
+	AttrBucketKeyEnabled = "bucket_key_enabled"
+	// AttrVersioning is a bucket's versioning state, verbatim: "Enabled" or
+	// "Suspended". Absent means never enabled — S3 answers that case with an
+	// empty status rather than a third word, and inventing one ("Disabled")
+	// would put a value in the census that no API ever said.
+	//
+	// It belongs in a cost census because noncurrent versions are billed and
+	// invisible: they do not appear in a bucket listing, and a bucket with
+	// versioning on and no lifecycle rule grows forever.
+	AttrVersioning = "versioning"
+	// AttrMFADelete is whether deleting a version requires MFA. Almost always
+	// disabled; recorded because it is in the same response and is the one
+	// setting that distinguishes a versioned bucket kept for compliance from
+	// one versioned by accident.
+	AttrMFADelete = "mfa_delete"
+	// The four Block Public Access settings, each under the name S3 gives it.
+	// They are four keys rather than one summary because they do different
+	// jobs and the difference decides whether a bucket is reachable:
+	// AttrBlockPublicACLs and AttrBlockPublicPolicy reject public
+	// configurations at write time, while AttrIgnorePublicACLs and
+	// AttrRestrictPublicBuckets neutralize the ones already there. Only the
+	// second pair says anything about a bucket that is public today.
+	AttrBlockPublicACLs       = "block_public_acls"
+	AttrIgnorePublicACLs      = "ignore_public_acls"
+	AttrBlockPublicPolicy     = "block_public_policy"
+	AttrRestrictPublicBuckets = "restrict_public_buckets"
+	// AttrPolicyIsPublic is S3's own verdict on whether a bucket's policy makes
+	// it public, from GetBucketPolicyStatus. It is recorded beside the core
+	// PubliclyAccessible flag rather than folded into it because the two answer
+	// different questions: this one is about the policy alone, while the flag
+	// has to account for Block Public Access overriding it.
+	AttrPolicyIsPublic = "policy_is_public"
 )
 
 // Measure keys used in Resource.Measures.
@@ -287,6 +339,16 @@ const (
 	// 512 MB default is separately billed per GB-second, so it is a charge that
 	// exists whether or not the function ever writes a file.
 	MeasureEphemeralStorageMB = "ephemeral_storage_mb"
+	// MeasureObjectCount is how many objects a bucket holds, observed from
+	// CloudWatch rather than reported by any describe call — so it carries an
+	// observation time (see AsOfSuffix), and an absent key means the metric had
+	// no datapoint in the window rather than an empty bucket.
+	//
+	// The distinction is the whole value of the key. A brand-new bucket and a
+	// bucket S3 stopped publishing for look identical from the control plane,
+	// and writing 0 for either would turn "we do not know" into "we checked and
+	// it is empty" — the exact claim someone deletes a bucket on.
+	MeasureObjectCount = "object_count"
 )
 
 // AsOfSuffix names the attribute that carries a measure's observation time:
