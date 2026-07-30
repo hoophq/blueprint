@@ -328,25 +328,135 @@ func usableDimensions(dims map[string]string) bool {
 }
 
 func (m *Metrics) enrichScope(ctx context.Context, api API, resources []model.Resource, sc scope, asked time.Time, report reporter) {
-	queries := sc.queries
-	if known, ok := m.discover(ctx, api, sc, report); ok {
-		kept := make([]query, 0, len(queries))
-		for _, q := range queries {
-			if known[signature(q.spec.Namespace, q.spec.MetricName, q.dims)] {
-				kept = append(kept, q)
-			}
-		}
-		queries = kept
-	}
+	disc, ok := m.discover(ctx, api, sc, report)
+	queries := resolve(sc, disc, ok, report)
 
+	// Readings accumulate here and are written once, after the last batch.
+	//
+	// A measure can take more than one series — S3's size is a sum across
+	// storage classes — and those series can fall either side of a 500-query
+	// batch boundary. Writing as each batch returned would store the first
+	// half of a bucket's size as the bucket's size, which is worse than not
+	// answering: it is a smaller number that looks like an answer.
+	acc := newTotals(queries)
 	for start := 0; start < len(queries); start += maxQueriesPerCall {
 		if ctx.Err() != nil {
-			return
+			break
 		}
 		end := min(start+maxQueriesPerCall, len(queries))
-		m.fetch(ctx, api, resources, sc, queries[start:end], asked, report)
+		m.fetch(ctx, api, sc, queries[start:end], asked, report, acc)
 	}
+	acc.flush(resources)
 }
+
+// resolve turns the planned queries into the ones worth asking for, given what
+// discovery found.
+//
+// A plain spec is filtered: keep it if the series exists. An enumerated spec is
+// expanded instead — one query per discovered value of the enumerated
+// dimension — so the planned query is a template rather than a request.
+func resolve(sc scope, disc *discovered, ok bool, report reporter) []query {
+	if !ok {
+		// Discovery failed or was truncated, so queries go out unfiltered:
+		// filtering on a partial list would drop real measures, and paying for
+		// a few empty answers is the cheaper mistake. Enumerated queries have
+		// no such fallback — an unexpanded template names no series, and
+		// widening it to the dimensions it does have would match a rollup — so
+		// they are dropped, and said out loud rather than left as a silent hole
+		// where a size should be.
+		kept := make([]query, 0, len(sc.queries))
+		dropped := 0
+		for _, q := range sc.queries {
+			if q.spec.Enumerate != "" {
+				dropped++
+				continue
+			}
+			kept = append(kept, q)
+		}
+		if dropped > 0 {
+			report(sc.account, sc.region,
+				"%d series need discovery to enumerate their dimensions and were not read", dropped)
+		}
+		return kept
+	}
+
+	// Enumerated specs are indexed once per (namespace, metric, dimension) and
+	// then looked up, rather than rescanned for every query. An estate can hold
+	// ten thousand buckets publishing five storage classes each, and a scan per
+	// query would be fifty million comparisons before a single metric is read.
+	indexes := map[string]map[string][]map[string]string{}
+
+	out := make([]query, 0, len(sc.queries))
+	for _, q := range sc.queries {
+		series := seriesKey(q.spec.Namespace, q.spec.MetricName)
+		if q.spec.Enumerate == "" {
+			if disc.sigs[signature(q.spec.Namespace, q.spec.MetricName, q.dims)] {
+				out = append(out, q)
+			}
+			continue
+		}
+		key := series + "\x00" + q.spec.Enumerate
+		idx, built := indexes[key]
+		if !built {
+			idx = indexByBase(disc.series[series], q.spec.Enumerate)
+			indexes[key] = idx
+		}
+		for _, dims := range idx[baseSignature(q.dims)] {
+			out = append(out, query{res: q.res, spec: q.spec, dims: dims})
+		}
+	}
+	return out
+}
+
+// indexByBase groups discovered dimension sets by what is left of each once the
+// enumerated dimension is taken out of it, which is exactly the set a query
+// planned. Expanding a query is then a lookup on the dimensions it already has.
+//
+// Grouping this way is also what keeps a sum honest. CloudWatch publishes the
+// same metric name against several dimension combinations, and a series joins a
+// query's group only if it is that query's dimension set plus a value for the
+// enumerated one, and nothing else — so a rollup, or a per-filter-id variant,
+// has a different base and cannot be added to a per-resource total as if it
+// were another part of it.
+func indexByBase(sets []map[string]string, enumerate string) map[string][]map[string]string {
+	idx := make(map[string][]map[string]string, len(sets))
+	for _, dims := range sets {
+		if dims[enumerate] == "" {
+			continue
+		}
+		base := make(map[string]string, len(dims)-1)
+		for k, v := range dims {
+			if k != enumerate {
+				base[k] = v
+			}
+		}
+		sig := baseSignature(base)
+		idx[sig] = append(idx[sig], dims)
+	}
+	return idx
+}
+
+// baseSignature keys the index above: signature with no namespace and no metric
+// name, since the index is already per namespace and metric name.
+//
+// A planned set that names the enumerated dimension itself cannot match any
+// group, because every group's key was built with that dimension removed. That
+// is the intended answer — the spec asked to enumerate a dimension it had
+// already pinned, so there is nothing to enumerate over.
+func baseSignature(dims map[string]string) string { return signature("", "", dims) }
+
+// discovered is what one scope's ListMetrics calls found.
+//
+// sigs answers "does this exact series exist", which is what filtering a plain
+// query needs. series carries the dimension sets themselves, keyed by
+// namespace and metric name, which is what expanding an enumerated query
+// needs — there the dimension values are the answer, not the question.
+type discovered struct {
+	series map[string][]map[string]string
+	sigs   map[string]bool
+}
+
+func seriesKey(namespace, name string) string { return namespace + "\x00" + name }
 
 // discover lists the series that actually exist, so the batch only asks for
 // metrics AWS will answer. ListMetrics is free and GetMetricData is not, so
@@ -356,8 +466,9 @@ func (m *Metrics) enrichScope(ctx context.Context, api API, resources []model.Re
 // failed or truncated listing returns false and the caller queries everything:
 // filtering on a partial list would drop real measures, and the worst case for
 // failing open is paying for queries that come back empty — at $0.01 per 1,000
-// metrics, a rounding error against a silent coverage gap.
-func (m *Metrics) discover(ctx context.Context, api API, sc scope, report reporter) (map[string]bool, bool) {
+// metrics, a rounding error against a silent coverage gap. Enumerated specs are
+// the exception and the caller handles them; see resolve.
+func (m *Metrics) discover(ctx context.Context, api API, sc scope, report reporter) (*discovered, bool) {
 	type series struct{ namespace, name string }
 	wanted := map[series]bool{}
 	for _, q := range sc.queries {
@@ -374,8 +485,12 @@ func (m *Metrics) discover(ctx context.Context, api API, sc scope, report report
 		return names[i].name < names[j].name
 	})
 
-	known := map[string]bool{}
+	found := &discovered{
+		series: make(map[string][]map[string]string, len(names)),
+		sigs:   map[string]bool{},
+	}
 	for _, s := range names {
+		key := seriesKey(s.namespace, s.name)
 		var token *string
 		for page := 0; ; page++ {
 			if ctx.Err() != nil {
@@ -400,25 +515,34 @@ func (m *Metrics) discover(ctx context.Context, api API, sc scope, report report
 			}
 			m.countDiscovery()
 			for _, mt := range out.Metrics {
-				known[metricSignature(mt)] = true
+				dims := dimensionMap(mt)
+				if sig := signature(s.namespace, s.name, dims); !found.sigs[sig] {
+					found.sigs[sig] = true
+					found.series[key] = append(found.series[key], dims)
+				}
 			}
 			if out.NextToken == nil || *out.NextToken == "" {
 				break
 			}
 			token = out.NextToken
 		}
+		// Sorted so an expanded query set — and therefore the batching, the
+		// call order, and every failure message — does not depend on the order
+		// AWS happened to page the listing in.
+		sortDimensionSets(found.series[key])
 	}
-	return known, true
+	return found, true
 }
 
-// fetch reads one batch and writes the newest datapoint of each series into
-// its resource.
+// fetch reads one batch and hands the newest datapoint of each series to the
+// accumulator. Nothing is written to a resource here — a measure can span
+// batches, so only the caller knows when a reading is whole.
 //
 // The window ends at the instant the stage started rather than now, so every
 // batch in the run asks about the same span. Its width still varies with the
 // batch, because a batch holding a coarser period needs a longer reach back to
 // find three buckets of it.
-func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource, sc scope, batch []query, asked time.Time, report reporter) {
+func (m *Metrics) fetch(ctx context.Context, api API, sc scope, batch []query, asked time.Time, report reporter, acc *totals) {
 	end := asked
 	start := end.Add(-m.window(batch))
 
@@ -453,6 +577,11 @@ func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource
 		return
 	}
 	m.countFetch(len(batch))
+	// CloudWatch answered for every series in the batch. Answered is not the
+	// same as returned a datapoint: a series with nothing in the window is a
+	// real "nothing there", where a call that never completed is a hole. Only
+	// the second one may block a reading from being written.
+	acc.answered(batch)
 
 	// The response is not paginated through. A batch asks for at most 500
 	// series over three daily buckets — 1,500 datapoints against a ceiling of
@@ -501,11 +630,12 @@ func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource
 		v, ok := toInt64(dp.value)
 		if !ok {
 			unusable++
+			acc.unusable(q)
 			continue
 		}
 		// The timestamp is the start of the aggregation bucket, so it errs
 		// old — which is the safe direction for a staleness judgement.
-		resources[q.res].SetObservedMeasure(q.spec.Measure, v, dp.at)
+		acc.add(q, v, dp.at)
 	}
 	if unusable > 0 {
 		report(sc.account, sc.region, "%d of %d series returned a value outside the representable range and were dropped", unusable, len(batch))
@@ -515,6 +645,86 @@ func (m *Metrics) fetch(ctx context.Context, api API, resources []model.Resource
 type datapoint struct {
 	value float64
 	at    time.Time
+}
+
+// slot is one measure on one resource: the unit a reading is written to, and
+// the unit several series may have to be summed over to produce.
+type slot struct {
+	res     int
+	measure string
+}
+
+type total struct {
+	want  int       // series resolved for this slot
+	asked int       // series CloudWatch actually answered for
+	seen  int       // series that came back with a datapoint
+	sum   int64     // the reading, once whole
+	at    time.Time // oldest contributing observation
+	bad   bool      // a value was unrepresentable, or the sum overflowed
+}
+
+// totals collects readings across every batch in a scope and writes each one
+// only if it is whole.
+//
+// Whole means every series the slot resolved to was asked for and answered.
+// Missing datapoints are fine — a storage class emptied last week is still
+// listed but publishes nothing, and its zero contribution is correct. A call
+// that failed or never went out is not fine: it would turn part of a bucket's
+// bytes into the bucket's size, a smaller number wearing the same clothes as a
+// real one.
+type totals struct{ byslot map[slot]*total }
+
+func newTotals(queries []query) *totals {
+	t := &totals{byslot: make(map[slot]*total, len(queries))}
+	for _, q := range queries {
+		t.get(q).want++
+	}
+	return t
+}
+
+func (t *totals) get(q query) *total {
+	k := slot{res: q.res, measure: q.spec.Measure}
+	cur := t.byslot[k]
+	if cur == nil {
+		cur = &total{}
+		t.byslot[k] = cur
+	}
+	return cur
+}
+
+func (t *totals) answered(batch []query) {
+	for _, q := range batch {
+		t.get(q).asked++
+	}
+}
+
+func (t *totals) add(q query, v int64, at time.Time) {
+	cur := t.get(q)
+	// A sum of byte counts that wraps would render as a negative size, or as a
+	// plausible small one. Neither is an answer.
+	sum := cur.sum + v
+	if (v > 0 && sum < cur.sum) || (v < 0 && sum > cur.sum) {
+		cur.bad = true
+		return
+	}
+	cur.sum = sum
+	cur.seen++
+	// The oldest part sets the age of the whole: a total is only as current as
+	// its stalest contributor.
+	if cur.at.IsZero() || at.Before(cur.at) {
+		cur.at = at
+	}
+}
+
+func (t *totals) unusable(q query) { t.get(q).bad = true }
+
+func (t *totals) flush(resources []model.Resource) {
+	for k, v := range t.byslot {
+		if v.bad || v.seen == 0 || v.asked != v.want {
+			continue
+		}
+		resources[k.res].SetObservedMeasure(k.measure, v.sum, v.at)
+	}
 }
 
 // reporter records a coverage gap in the failure ledger.
@@ -577,12 +787,21 @@ func signature(namespace, name string, dims map[string]string) string {
 	return b.String()
 }
 
-func metricSignature(mt cwtypes.Metric) string {
+func dimensionMap(mt cwtypes.Metric) map[string]string {
 	dims := make(map[string]string, len(mt.Dimensions))
 	for _, d := range mt.Dimensions {
 		dims[aws.ToString(d.Name)] = aws.ToString(d.Value)
 	}
-	return signature(aws.ToString(mt.Namespace), aws.ToString(mt.MetricName), dims)
+	return dims
+}
+
+// sortDimensionSets orders dimension sets by their rendered signature, which is
+// itself sorted by dimension name, so the ordering is total and stable however
+// AWS paged the listing.
+func sortDimensionSets(sets []map[string]string) {
+	sort.Slice(sets, func(i, j int) bool {
+		return signature("", "", sets[i]) < signature("", "", sets[j])
+	})
 }
 
 // toInt64 rounds a CloudWatch value to the integer the census stores. A NaN,

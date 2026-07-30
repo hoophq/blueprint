@@ -22,8 +22,8 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 89 resources across all supported services, with realistic tag hygiene
-// gaps (~30% missing owner, ~20% missing environment) and four scan failures
+// 96 resources across all supported services, with realistic tag hygiene
+// gaps (~30% missing owner, ~20% missing environment) and five scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
 	now := time.Now().UTC()
@@ -63,6 +63,14 @@ func Snapshot(version string) *model.Snapshot {
 			{AccountID: acctProd, Region: "us-west-2", Service: model.ServiceELB,
 				Error: "ThrottlingException: Rate exceeded (elasticloadbalancing:DescribeTargetGroups)",
 				Time:  now.Add(9 * time.Second)},
+			// A per-bucket call that failed on every bucket it was tried on.
+			// The count is the point: the two us-west-2 buckets show no
+			// encryption attribute, and this says the setting was unreadable
+			// rather than unset. Without it the same rows read as
+			// "unencrypted", which is a claim the scan never earned.
+			{AccountID: acctProd, Region: "us-west-2", Service: model.ServiceS3,
+				Error: "GetBucketEncryption: 2 of 2 buckets: AccessDenied: User is not authorized to perform s3:GetEncryptionConfiguration",
+				Time:  now.Add(11 * time.Second)},
 		},
 	}
 	snap.Finalize()
@@ -307,6 +315,24 @@ func resources() []model.Resource {
 				10240, 900, 0, false, d(2024, 7, 19),
 				tags("environment", "production", "owner", "data")),
 			model.MeasureEphemeralStorageMB, 10240),
+		// The estate's largest single thing, and the row a control-plane-only
+		// census cannot see: nothing in ListBuckets says four terabytes. Its
+		// size arrives with --metrics, from CloudWatch, with an age attached.
+		s3Bucket(acctProd, "us-east-1", "acme-prod-assets", "AES256", ptr(false),
+			"Enabled", "", bpaLocked, ptr(false), d(2018, 2, 9),
+			tags("environment", "production", "owner", "platform", "app", "web")),
+		// The finding. Three of the four Block Public Access switches are on,
+		// which reads as locked down at a glance and is not: BlockPublicPolicy
+		// only refuses *new* public policies, and the one attached in 2019 is
+		// still live because RestrictPublicBuckets is off. Public, provably.
+		s3Bucket(acctProd, "us-east-1", "acme-public-downloads", "AES256", ptr(false),
+			"", "", bpaPolicyLive, ptr(true), d(2019, 4, 30),
+			tags("environment", "production", "owner", "marketing")),
+		// The well-run one, for contrast: customer-managed KMS with a bucket
+		// key, versioned, and every switch on.
+		s3Bucket(acctProd, "us-east-1", "acme-cloudtrail-archive", "aws:kms", ptr(true),
+			"Enabled", "", bpaLocked, ptr(false), d(2020, 8, 17),
+			tags("environment", "production", "owner", "security", "app", "audit")),
 
 		// ── prod account · us-west-2 ────────────────────────────────────
 		// The guardrail on the page: DescribeVolumes failed in this region (see
@@ -367,6 +393,15 @@ func resources() []model.Resource {
 		lambdaFunction(acctProd, "us-west-2", "log-shipper", "go1.x", "x86_64",
 			256, 120, 12_582_912, false, d(2019, 10, 8),
 			nil), // no tags at all
+		// Both buckets in this region carry no encryption attribute and no
+		// Encrypted verdict: GetBucketEncryption was denied here, and the
+		// ledger says so. Not "unencrypted" — unanswered.
+		s3Bucket(acctProd, "us-west-2", "acme-etl-scratch", "", nil,
+			"", "", bpaLocked, ptr(false), d(2021, 9, 2),
+			tags("environment", "production", "owner", "data")),
+		s3Bucket(acctProd, "us-west-2", "acme-backup-vault", "", nil,
+			"Enabled", "", bpaLocked, ptr(false), d(2020, 11, 12),
+			tags("environment", "production", "owner", "platform")),
 
 		// ── prod account · sa-east-1 ────────────────────────────────────
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "orders-latam",
@@ -413,6 +448,12 @@ func resources() []model.Resource {
 		lambdaFunction(acctProd, "sa-east-1", "nfe-signer", "java8.al2", "x86_64",
 			1536, 30, 41_943_040, false, d(2024, 2, 21),
 			tags("environment", "production")), // no owner
+		// The fixture's only bucket with MFA delete on — a compliance posture
+		// almost nobody adopts, kept here because the attribute is otherwise
+		// absent from every row and an absent-everywhere key is untestable.
+		s3Bucket(acctProd, "sa-east-1", "acme-nfe-documentos", "aws:kms", ptr(true),
+			"Enabled", "Enabled", bpaLocked, ptr(false), d(2022, 5, 31),
+			tags("environment", "production", "owner", "payments-latam", "app", "nfe")),
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
@@ -505,6 +546,16 @@ func resources() []model.Resource {
 		lambdaFunction(acctStaging, "us-east-1", "slack-notifier", "nodejs16.x", "x86_64",
 			256, 15, 1_048_576, true, d(2022, 4, 26),
 			tags("environment", "staging", "owner", "platform")),
+		// The row that declines to answer. This bucket has no Block Public
+		// Access configuration at all — S3 returns
+		// NoSuchPublicAccessBlockConfiguration, which is data, not a failure —
+		// and its policy is not public. Public ACLs would still be live, and
+		// the census does not call GetBucketAcl, so it says nothing rather than
+		// a reassuring false. Versioning is Suspended, the state that keeps
+		// billing for every version already written.
+		s3Bucket(acctStaging, "us-east-1", "acme-staging-uploads", "AES256", ptr(false),
+			"Suspended", "", nil, ptr(false), d(2023, 1, 24),
+			nil), // no tags at all
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
@@ -1048,6 +1099,65 @@ func lambdaFunction(account, region, name, runtime, arch string,
 	// Every function gets the 512 MB AWS gives it by default; the one that
 	// asked for more says so at its own callsite.
 	r.SetMeasure(model.MeasureEphemeralStorageMB, 512)
+	return r
+}
+
+// The Block Public Access shapes the fixture uses.
+//
+// bpaLocked is what AWS applies to every bucket created since April 2023.
+// bpaPolicyLive is the dangerous one and the reason all four settings are
+// recorded separately: it looks locked down — three switches on — but
+// RestrictPublicBuckets is off, so a public policy attached before the others
+// went on is still serving.
+var (
+	bpaLocked = &scanners.S3PublicAccess{
+		BlockACLs: ptr(true), IgnoreACLs: ptr(true), BlockPolicy: ptr(true), Restrict: ptr(true),
+	}
+	bpaPolicyLive = &scanners.S3PublicAccess{
+		BlockACLs: ptr(true), IgnoreACLs: ptr(true), BlockPolicy: ptr(true), Restrict: ptr(false),
+	}
+)
+
+// s3Bucket builds an S3 bucket row.
+//
+// Every reported field is passed as the API reports it, with the zero value
+// meaning "not reported": an empty sse is a bucket whose encryption
+// configuration the scan never got, a nil access is one with no Block Public
+// Access configuration at all, an empty versioning is a bucket that never
+// enabled it. Each becomes an absent key, which is the only way this census
+// distinguishes those from a configured "off".
+//
+// No size and no object count. A real scan leaves both absent too — they come
+// from CloudWatch, and only with --metrics. See AddMetrics.
+func s3Bucket(account, region, name, sse string, bucketKey *bool,
+	versioning, mfaDelete string, access *scanners.S3PublicAccess, policyPublic *bool,
+	created time.Time, t map[string]string) model.Resource {
+	r := model.Resource{
+		// Neither region nor account, exactly as S3 writes it: bucket names are
+		// globally unique, so the ARN has nothing else to carry.
+		ARN:       "arn:aws:s3:::" + name,
+		Service:   model.ServiceS3,
+		Type:      model.TypeS3Bucket,
+		Name:      name,
+		Region:    region,
+		AccountID: account,
+		CreatedAt: &created,
+		Tags:      t,
+		// Status stays empty. A bucket has no lifecycle state to report.
+	}
+	r.SetAttr(model.AttrSSEAlgorithm, sse)
+	r.SetBoolAttr(model.AttrBucketKeyEnabled, bucketKey)
+	if sse != "" {
+		// True or absent, never false — the same rule the scanner applies, and
+		// for the same reason: S3 encrypts new objects whether or not a bucket
+		// asks, so "no configuration" is not "unencrypted".
+		r.Encrypted = ptr(true)
+	}
+	r.SetAttr(model.AttrVersioning, versioning)
+	r.SetAttr(model.AttrMFADelete, mfaDelete)
+	// Through the scanner's own derivation rather than a copy of it, so the
+	// fixture cannot call a bucket safe on evidence the scanner would refuse.
+	scanners.ApplyS3PublicAccess(&r, access, policyPublic)
 	return r
 }
 

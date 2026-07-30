@@ -272,6 +272,12 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "elasticloadbalancing:DescribeTags",
         "lambda:ListFunctions",
         "lambda:ListTags",
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketTagging",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketPolicyStatus",
+        "s3:GetBucketVersioning",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
