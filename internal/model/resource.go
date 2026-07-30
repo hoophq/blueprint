@@ -18,6 +18,11 @@ const (
 	ServiceElastiCache = "elasticache"
 	ServiceRedshift    = "redshift"
 	ServiceEC2         = "ec2"
+	// ServiceEBS is block storage. It is scanned through the EC2 API but kept
+	// separate from ServiceEC2 so the failure ledger can say which of the two
+	// blueprint could not read — losing DescribeVolumes in a region tells the
+	// reader something quite different from losing DescribeInstances there.
+	ServiceEBS = "ebs"
 )
 
 // Resource.Type values. These are CloudFormation type names — AWS's own
@@ -39,6 +44,8 @@ const (
 	TypeRedshiftCluster             = "AWS::Redshift::Cluster"
 	TypeRedshiftServerlessWorkgroup = "AWS::RedshiftServerless::Workgroup"
 	TypeEC2Instance                 = "AWS::EC2::Instance"
+	TypeEBSVolume                   = "AWS::EC2::Volume"
+	TypeEBSSnapshot                 = "AWS::EC2::Snapshot"
 )
 
 // Attribute keys used in Resource.Attributes. Keys are named after the AWS
@@ -72,6 +79,46 @@ const (
 	// must never carry their bytes as a size measure or an estate-wide storage
 	// total would count the same volume twice.
 	AttrEBSVolumeIDs = "ebs_volume_ids"
+	// AttrVolumeType is the EBS volume type ("gp2", "gp3", "io2", "st1", ...).
+	// Read alongside MeasureIOPS and MeasureThroughputMiBps it is the whole of
+	// the gp2-to-gp3 question, stated as three numbers rather than a verdict:
+	// what the volume is, and what it was actually provisioned to deliver.
+	AttrVolumeType = "volume_type"
+	// AttrAttachedInstanceIDs lists the instances a volume is attached to,
+	// comma separated and sorted. Usually one; multi-attach io1/io2 volumes
+	// report several. Absent means AWS reported no attachments, which for a
+	// volume in state "available" is the definitive unattached signal — the
+	// volume still bills at the full per-GiB rate. That is a fact, and the
+	// conclusion drawn from it is the reader's.
+	AttrAttachedInstanceIDs = "attached_instance_ids"
+	// AttrSourceVolumeID is the volume a snapshot was taken from, as AWS
+	// reports it. Absent when the snapshot has no source volume in this
+	// account — a copied or imported snapshot, which AWS marks with a
+	// placeholder rather than a real volume ID.
+	AttrSourceVolumeID = "source_volume_id"
+	// AttrSourceVolumeExists says whether that source volume was still present
+	// in this region's census. It is derived rather than reported, so it is
+	// written only when the derivation was sound — both the volume and image
+	// enumerations ran to completion. If either failed the key is absent and
+	// the failure ledger says why, because "I could not finish looking" must
+	// never render as "it is gone".
+	AttrSourceVolumeExists = "source_volume_exists"
+	// AttrBackingImageIDs lists the account's own AMIs whose block device
+	// mappings reference this snapshot, comma separated and sorted. A snapshot
+	// backing an AMI is not an orphan however long its source volume has been
+	// gone, which is why deleting on source_volume_exists=false alone is a
+	// mistake this key exists to prevent.
+	//
+	// Unlike AttrSourceVolumeExists this is written whenever any were found,
+	// complete enumeration or not: it is positive evidence, and withholding a
+	// known "this snapshot backs an AMI" is the one error that could get a
+	// snapshot deleted. Its absence is correspondingly weaker — it means no
+	// backing AMI was seen, which is only "there is none" when the ledger
+	// shows nothing failed.
+	AttrBackingImageIDs = "backing_image_ids"
+	// AttrStorageTier is a snapshot's storage tier ("standard", "archive").
+	// Archived snapshots bill differently and take hours to restore.
+	AttrStorageTier = "storage_tier"
 )
 
 // Measure keys used in Resource.Measures.
@@ -83,6 +130,31 @@ const (
 	// volume, observed from CloudWatch rather than reported by a describe
 	// call — so it always carries an observation time (see AsOfSuffix).
 	MeasureFreeStorageBytes = "free_storage_bytes"
+	// MeasureIOPS and MeasureThroughputMiBps are what a volume is provisioned
+	// to deliver, reported only for the volume types that carry them. A gp3
+	// left at its 3000/125 baseline reports those numbers, and zero is a real
+	// value wherever AWS returns one.
+	MeasureIOPS            = "iops"
+	MeasureThroughputMiBps = "throughput_mibps"
+	// MeasureSourceVolumeBytes and MeasureFullSnapshotBytes are the two sizes
+	// AWS reports for a snapshot, and neither is what the snapshot costs.
+	//
+	// No API reports a snapshot's billed size. EBS snapshots are incremental:
+	// the charge is for blocks this snapshot is the only remaining owner of,
+	// which depends on every other snapshot of the same volume and on the
+	// order they are deleted in. VolumeSize is the source volume's provisioned
+	// size, unchanged by how much of it was ever written.
+	// FullSnapshotSizeInBytes is the size of all written blocks — what a full
+	// restore would produce, and an upper bound the actual charge is usually
+	// far below.
+	//
+	// So these are deliberately not MeasureSizeBytes: summing them into a
+	// storage or cost total would produce a confident number that is wrong by
+	// an unknowable factor, most badly in exactly the accounts with the most
+	// snapshots. They are named for what AWS measured, and they are per-row
+	// facts only.
+	MeasureSourceVolumeBytes = "source_volume_bytes"
+	MeasureFullSnapshotBytes = "full_snapshot_bytes"
 )
 
 // AsOfSuffix names the attribute that carries a measure's observation time:

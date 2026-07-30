@@ -4,9 +4,9 @@
 
 ### What databases are you actually running?
 
-`blueprint` is a read-only census of every managed database reachable from
-your AWS credentials — RDS, Aurora, DocumentDB, Neptune, DynamoDB,
-ElastiCache, Redshift — **entirely from your machine**.
+`blueprint` is a read-only census of what you are actually running on AWS —
+RDS, Aurora, DocumentDB, Neptune, DynamoDB, ElastiCache, Redshift, EC2, EBS —
+**entirely from your machine**.
 
 Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
 
@@ -97,6 +97,14 @@ keeps its last 30 censuses; history lives on your disk and nowhere else.
 - DynamoDB
 - ElastiCache (Redis, Valkey, Memcached)
 - Redshift, including Redshift Serverless
+- EC2 instances
+- EBS volumes and snapshots
+
+Volumes and snapshots are rows of their own rather than fields on the
+instance. An instance names the volumes attached to it and carries none of
+their bytes, so the same storage is never counted twice — and a volume nothing
+is attached to still shows up, which is the one no console view puts in front
+of you.
 
 Every resource is normalized into one model with a narrow core — CloudFormation type (`AWS::RDS::DBInstance`), name, status, region, account, creation time, tags, and the exposure flags — plus an open bag of service-specific `attributes` (engine, version, instance class, endpoint host, …) and numeric `measures` (`size_bytes`, `backup_retention_days`, …) keyed by AWS's own field names. A key that is absent means the service did not report it; it never means zero. Environment and owner are taken from tags only — imported, never inferred.
 
@@ -238,6 +246,9 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "redshift:Describe*",
         "redshift-serverless:List*",
         "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeImages",
         "ec2:DescribeRegions",
         "sts:GetCallerIdentity"
       ],

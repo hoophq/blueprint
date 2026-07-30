@@ -5,6 +5,7 @@ package demo
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,8 +22,8 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 54 resources across all supported services, with realistic tag hygiene
-// gaps (~30% missing owner, ~20% missing environment) and two scan failures
+// 68 resources across all supported services, with realistic tag hygiene
+// gaps (~30% missing owner, ~20% missing environment) and three scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
 	now := time.Now().UTC()
@@ -47,6 +48,14 @@ func Snapshot(version string) *model.Snapshot {
 			{AccountID: acctStaging, Region: "eu-west-1", Service: model.ServiceDynamoDB,
 				Error: "ThrottlingException: Rate exceeded (retries exhausted)",
 				Time:  now.Add(5 * time.Second)},
+			// The other half of the withheld-verdict story: the us-west-2
+			// snapshot row carries a source volume ID and no verdict on whether
+			// that volume still exists, and this is the entry that says why.
+			// Read together they are the guardrail; read alone, either one is
+			// just a gap.
+			{AccountID: acctProd, Region: "us-west-2", Service: model.ServiceEBS,
+				Error: "RequestLimitExceeded: Request limit exceeded (ec2:DescribeVolumes)",
+				Time:  now.Add(7 * time.Second)},
 		},
 	}
 	snap.Finalize()
@@ -163,7 +172,66 @@ func resources() []model.Resource {
 			false, []string{"vol-0a1b2c3d4e5f60014"}, d(2019, 9, 5),
 			nil),
 
+		// The volumes those instances are attached to, as their own rows. The
+		// instance rows record the attachment and none of the bytes, so the
+		// same storage is never counted twice.
+		ebsVolume(acctProd, "us-east-1", "us-east-1a", "vol-0a1b2c3d4e5f60011",
+			"gp3", 100, ptr(int32(3000)), ptr(int32(125)), true,
+			[]string{"i-0a1b2c3d4e5f60011"}, d(2021, 4, 2),
+			tags("Name", "api-gateway-1-root", "environment", "production", "owner", "platform")),
+		ebsVolume(acctProd, "us-east-1", "us-east-1b", "vol-0a1b2c3d4e5f60012",
+			"gp3", 200, ptr(int32(3000)), ptr(int32(125)), true,
+			[]string{"i-0a1b2c3d4e5f60012"}, d(2021, 4, 2),
+			tags("Name", "api-gateway-2-root", "environment", "production", "owner", "platform")),
+		// st1 reports neither IOPS nor throughput, so both keys are absent —
+		// the fixture's proof that absent and zero stay distinguishable.
+		ebsVolume(acctProd, "us-east-1", "us-east-1b", "vol-0a1b2c3d4e5f60013",
+			"st1", 4096, nil, nil, true,
+			[]string{"i-0a1b2c3d4e5f60012"}, d(2021, 4, 2),
+			tags("Name", "api-gateway-2-logs", "environment", "production", "owner", "platform")),
+		// A terabyte of gp2 at 3072 provisioned IOPS: the gp2-to-gp3 case, put
+		// on the page as three numbers with no recommendation attached.
+		ebsVolume(acctProd, "us-east-1", "us-east-1b", "vol-0a1b2c3d4e5f60014",
+			"gp2", 1024, ptr(int32(3072)), nil, false,
+			[]string{"i-0a1b2c3d4e5f60014"}, d(2019, 9, 5),
+			nil),
+		ebsVolume(acctProd, "us-east-1", "us-east-1a", "vol-0a1b2c3d4e5f60020",
+			"gp2", 8, ptr(int32(100)), nil, false,
+			[]string{"i-0a1b2c3d4e5f60013"}, d(2018, 6, 11),
+			tags("Name", "bastion-root", "environment", "production")),
+		// Unattached, and billing at the full per-GiB rate for six years. State
+		// "available" with no attachments is the whole finding.
+		ebsVolume(acctProd, "us-east-1", "us-east-1a", "vol-0a1b2c3d4e5f60099",
+			"gp2", 512, ptr(int32(1536)), nil, false,
+			nil, d(2019, 2, 14),
+			tags("Name", "orders-migration-scratch", "environment", "production", "owner", "payments")),
+
+		// A snapshot whose source volume is still there: the ordinary case, and
+		// the control the two below are read against.
+		ebsSnapshot(acctProd, "us-east-1", "snap-0a1b2c3d4e5f60031", "vol-0a1b2c3d4e5f60011",
+			100, 38_654_705_664, true, nil, ptr(true), d(2024, 11, 3),
+			tags("Name", "api-gateway-1-root-daily", "environment", "production", "owner", "platform")),
+		// Source volume long gone and backing nothing — an orphan, stated as
+		// the two facts it is made of rather than as a verdict.
+		ebsSnapshot(acctProd, "us-east-1", "snap-0a1b2c3d4e5f60032", "vol-0a1b2c3d4e5f60077",
+			512, 190_753_542_144, false, nil, ptr(false), d(2019, 3, 20),
+			nil),
+		// Reads like an orphan and is not: the source volume is gone, but an AMI
+		// is built on it. This row is why the scanner spends a DescribeImages
+		// call it otherwise would not need.
+		ebsSnapshot(acctProd, "us-east-1", "snap-0a1b2c3d4e5f60033", "vol-0a1b2c3d4e5f60088",
+			64, 21_474_836_480, true, []string{"ami-0a1b2c3d4e5f60041"}, ptr(false), d(2020, 7, 9),
+			tags("Name", "golden-base-image", "environment", "production", "owner", "platform")),
+
 		// ── prod account · us-west-2 ────────────────────────────────────
+		// The guardrail on the page: DescribeVolumes failed in this region (see
+		// the ledger), so this snapshot carries the source volume ID AWS
+		// reported and no verdict about whether that volume still exists.
+		// "I could not finish looking" is not "it is gone".
+		ebsSnapshot(acctProd, "us-west-2", "snap-0b2c3d4e5f6a70051", "vol-0b2c3d4e5f6a70052",
+			256, 88_046_829_568, true, nil, nil, d(2023, 5, 30),
+			tags("Name", "search-metadata-pre-upgrade", "environment", "production", "owner", "search")),
+
 		res(acctProd, "us-west-2", model.ServiceRDS, "instance", "orders-dr",
 			"postgres", "15.4", "db.r6g.xlarge", 500, true, "available",
 			"orders-dr.c8m1kwv2rbqc.us-west-2.rds.amazonaws.com", d(2021, 6, 2),
@@ -190,6 +258,10 @@ func resources() []model.Resource {
 			"redshift", "1.0.63269", "ra3.4xlarge", 3200, false, "paused",
 			"analytics-dr.cbq7xz1t9e2m.us-west-2.redshift.amazonaws.com", d(2020, 10, 15),
 			tags("environment", "production", "owner", "data")),
+		// This instance names an attached volume that has no row of its own —
+		// DescribeVolumes failed in this region, so the volumes here were never
+		// enumerated. The gap is in the ledger, which is the difference between
+		// a census that is incomplete and one that is wrong.
 		ec2Instance(acctProd, "us-west-2", "us-west-2a", "i-0b2c3d4e5f6a70021",
 			"c5.large", "Linux/UNIX", "running", "ip-10-1-1-21.us-west-2.compute.internal",
 			false, []string{"vol-0b2c3d4e5f6a70021"}, d(2022, 3, 15),
@@ -220,6 +292,11 @@ func resources() []model.Resource {
 			"t3.medium", "Windows", "stopped", "ip-10-2-1-31.sa-east-1.compute.internal",
 			false, []string{"vol-0c3d4e5f6a7b80031"}, d(2020, 11, 19),
 			tags("Name", "nfe-gateway", "environment", "production", "owner", "payments-latam")),
+		// The stopped instance's volume, still attached and still billing.
+		ebsVolume(acctProd, "sa-east-1", "sa-east-1a", "vol-0c3d4e5f6a7b80031",
+			"gp2", 120, ptr(int32(360)), nil, false,
+			[]string{"i-0c3d4e5f6a7b80031"}, d(2020, 11, 19),
+			tags("Name", "nfe-gateway-root", "environment", "production", "owner", "payments-latam")),
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
@@ -275,6 +352,24 @@ func resources() []model.Resource {
 			"t3.micro", "Linux/UNIX", "stopped", "ip-10-3-2-42.ec2.internal",
 			false, []string{"vol-0d4e5f6a7b8c90042"}, d(2022, 8, 3),
 			tags("Name", "scratch-box")), // no owner, no environment
+
+		ebsVolume(acctStaging, "us-east-1", "us-east-1a", "vol-0d4e5f6a7b8c90041",
+			"gp3", 50, ptr(int32(3000)), ptr(int32(125)), true,
+			[]string{"i-0d4e5f6a7b8c90041"}, d(2023, 1, 12),
+			tags("Name", "ci-runner-root", "environment", "staging", "owner", "platform")),
+		// Attached to a stopped instance. EBS bills a stopped box's volume at
+		// the same per-GiB rate as a running one, which is the point of showing
+		// the volume as its own row rather than as a field on the instance.
+		ebsVolume(acctStaging, "us-east-1", "us-east-1b", "vol-0d4e5f6a7b8c90042",
+			"gp3", 30, ptr(int32(3000)), ptr(int32(125)), true,
+			[]string{"i-0d4e5f6a7b8c90042"}, d(2022, 8, 3),
+			nil),
+		// Sixteen terabytes, unattached, untagged, unencrypted. Nobody is going
+		// to find this by looking at the EC2 console's instance list.
+		ebsVolume(acctStaging, "us-east-1", "us-east-1b", "vol-0d4e5f6a7b8c90093",
+			"gp3", 16384, ptr(int32(3000)), ptr(int32(125)), false,
+			nil, d(2022, 11, 8),
+			nil),
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
@@ -488,11 +583,109 @@ func ec2Instance(account, region, az, id, instanceType, platform, status, privat
 	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
 	// Sorted, like the scanner sorts them, so the fixture cannot drift into a
 	// value shape a real scan would never produce. The attachment only: the
-	// volumes are their own rows once ATR-182 lands, and summing their sizes
-	// here would count the same storage twice estate-wide.
+	// volumes are their own rows, and summing their sizes here would count the
+	// same storage twice estate-wide.
 	ids := append([]string(nil), volumes...)
 	sort.Strings(ids)
 	r.SetAttr(model.AttrEBSVolumeIDs, strings.Join(ids, ","))
+	return r
+}
+
+// ebsVolume builds an EBS volume row. iops and throughput are pointers because
+// volume types differ in what they report — st1 and sc1 report neither — and
+// the fixture has to be able to express "AWS said nothing" as distinct from
+// "AWS said zero". Passing no attachments makes the volume unattached, which is
+// the finding the demo exists to show.
+func ebsVolume(account, region, az, id, volumeType string, sizeGiB int32,
+	iops, throughput *int32, encrypted bool, instances []string,
+	created time.Time, t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = id
+	}
+	// An unattached volume is "available"; an attached one is "in-use". That is
+	// EBS's own vocabulary, and the whole waste signal, so it is derived from
+	// the attachments rather than passed in and allowed to disagree with them.
+	status := "available"
+	if len(instances) > 0 {
+		status = "in-use"
+	}
+	r := model.Resource{
+		ARN:       scanners.EBSVolumeARN("aws", region, account, id),
+		Service:   model.ServiceEBS,
+		Type:      model.TypeEBSVolume,
+		Name:      name,
+		Status:    status,
+		Region:    region,
+		AccountID: account,
+		CreatedAt: &created,
+		Tags:      t,
+		// Unlike the instance, a volume can answer this one honestly: encryption
+		// at rest is a property of the volume itself. PubliclyAccessible stays
+		// nil — a volume has no network identity to expose.
+		Encrypted: ptr(encrypted),
+	}
+	r.SetAttr(model.AttrVolumeType, volumeType)
+	r.SetAttr(model.AttrAvailabilityZone, az)
+	ids := append([]string(nil), instances...)
+	sort.Strings(ids)
+	r.SetAttr(model.AttrAttachedInstanceIDs, strings.Join(ids, ","))
+	// Provisioned size is billed size for a volume, so this is the one EBS row
+	// type where size_bytes is answerable. Snapshots are the opposite case.
+	r.SetMeasure(model.MeasureSizeBytes, int64(sizeGiB)<<30)
+	if iops != nil {
+		r.SetMeasure(model.MeasureIOPS, int64(*iops))
+	}
+	if throughput != nil {
+		r.SetMeasure(model.MeasureThroughputMiBps, int64(*throughput))
+	}
+	return r
+}
+
+// ebsSnapshot builds an EBS snapshot row.
+//
+// sourceExists is a *bool with three meanings, which is the point of the
+// signature: true and false are verdicts the scanner reached because it
+// enumerated the region's volumes completely, and nil is the case where it
+// could not — the region's DescribeVolumes failed, so the row states the source
+// volume ID AWS reported and refuses to say whether that volume is still there.
+// The fixture carries one of each so the guardrail is visible in the demo and
+// not only in the tests.
+func ebsSnapshot(account, region, id, sourceVolumeID string, sourceVolumeGiB int32,
+	fullSnapshotBytes int64, encrypted bool, backingImages []string,
+	sourceExists *bool, started time.Time, t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = id
+	}
+	r := model.Resource{
+		// No account ID in a snapshot ARN — that is AWS's shape, not an
+		// oversight. See scanners.EBSSnapshotARN.
+		ARN:       scanners.EBSSnapshotARN("aws", region, id),
+		Service:   model.ServiceEBS,
+		Type:      model.TypeEBSSnapshot,
+		Name:      name,
+		Status:    "completed",
+		Region:    region,
+		AccountID: account,
+		CreatedAt: &started,
+		Tags:      t,
+		Encrypted: ptr(encrypted),
+	}
+	r.SetAttr(model.AttrStorageTier, "standard")
+	r.SetAttr(model.AttrSourceVolumeID, sourceVolumeID)
+	images := append([]string(nil), backingImages...)
+	sort.Strings(images)
+	r.SetAttr(model.AttrBackingImageIDs, strings.Join(images, ","))
+	if sourceExists != nil {
+		r.SetAttr(model.AttrSourceVolumeExists, strconv.FormatBool(*sourceExists))
+	}
+	// Deliberately no size_bytes. A snapshot is incremental and no API reports
+	// what it actually bills; these two are the honest neighbours of that
+	// number and neither is a substitute for it, which is why they are named
+	// after what they measure and never summed.
+	r.SetMeasure(model.MeasureSourceVolumeBytes, int64(sourceVolumeGiB)<<30)
+	r.SetMeasure(model.MeasureFullSnapshotBytes, fullSnapshotBytes)
 	return r
 }
 
