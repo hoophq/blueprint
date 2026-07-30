@@ -22,8 +22,8 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 68 resources across all supported services, with realistic tag hygiene
-// gaps (~30% missing owner, ~20% missing environment) and three scan failures
+// 83 resources across all supported services, with realistic tag hygiene
+// gaps (~30% missing owner, ~20% missing environment) and four scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
 	now := time.Now().UTC()
@@ -56,6 +56,13 @@ func Snapshot(version string) *model.Snapshot {
 			{AccountID: acctProd, Region: "us-west-2", Service: model.ServiceEBS,
 				Error: "RequestLimitExceeded: Request limit exceeded (ec2:DescribeVolumes)",
 				Time:  now.Add(7 * time.Second)},
+			// The same story on a second measure. The load balancers in this
+			// region were listed; their target groups were not, so those rows
+			// carry no target group count. A partial unit is still a ledgered
+			// unit — the rows it did return are real and the gap is stated.
+			{AccountID: acctProd, Region: "us-west-2", Service: model.ServiceELB,
+				Error: "ThrottlingException: Rate exceeded (elasticloadbalancing:DescribeTargetGroups)",
+				Time:  now.Add(9 * time.Second)},
 		},
 	}
 	snap.Finalize()
@@ -223,6 +230,60 @@ func resources() []model.Resource {
 			64, 21_474_836_480, true, []string{"ami-0a1b2c3d4e5f60041"}, ptr(false), d(2020, 7, 9),
 			tags("Name", "golden-base-image", "environment", "production", "owner", "platform")),
 
+		// Two NAT gateways, one per AZ, for one VPC. Neither is remarkable on
+		// its own and together they are ~$64 a month before a byte of data
+		// processing — the multiplier the console never adds up.
+		natGateway(acctProd, "us-east-1", "us-east-1a", "nat-0a1b2c3d4e5f60051",
+			"203.0.113.11", d(2021, 4, 2),
+			tags("Name", "egress-1a", "environment", "production", "owner", "platform")),
+		natGateway(acctProd, "us-east-1", "us-east-1b", "nat-0a1b2c3d4e5f60052",
+			"203.0.113.12", d(2021, 4, 2),
+			tags("Name", "egress-1b", "environment", "production")), // no owner
+
+		// The addresses those gateways hold, as their own rows: each is a
+		// separately billable public IPv4, and the gateway row records the same
+		// address as the join between the two rather than as a second charge.
+		elasticIP(acctProd, "us-east-1", "eipalloc-0a1b2c3d4e5f60061", "203.0.113.11",
+			"nat-0a1b2c3d4e5f60051", demoSubnets[acctProd+"/us-east-1a"],
+			tags("Name", "egress-1a-eip", "environment", "production", "owner", "platform")),
+		elasticIP(acctProd, "us-east-1", "eipalloc-0a1b2c3d4e5f60062", "203.0.113.12",
+			"nat-0a1b2c3d4e5f60052", demoSubnets[acctProd+"/us-east-1b"],
+			tags("Name", "egress-1b-eip", "environment", "production")), // no owner
+		// Allocated, attached to nothing, billing the same as the two above.
+		// Since February 2024 that is true of every public IPv4, which turned
+		// this from a tidiness problem into a line item.
+		elasticIP(acctProd, "us-east-1", "eipalloc-0a1b2c3d4e5f60063", "198.51.100.23",
+			"", "", tags("Name", "orders-migration-vip", "environment", "production",
+				"owner", "payments")),
+		// The bastion's launch-assigned address. No allocation stands behind it,
+		// so DescribeAddresses does not return it — this row exists only because
+		// the scanner also reads the network interfaces, and in most accounts
+		// addresses like this one are the majority.
+		autoAssignedIP(acctProd, "us-east-1", "us-east-1a", "eni-0a1b2c3d4e5f60064",
+			"198.51.100.77", "i-0a1b2c3d4e5f60013",
+			tags("Name", "bastion", "environment", "production")), // no owner
+
+		// The ordinary case: an internet-facing ALB with traffic to send.
+		loadBalancerV2(acctProd, "us-east-1", "application", "web", "internet-facing",
+			"web-0a1b2c3d4e5f6071.us-east-1.elb.amazonaws.com", 2, ptr(3), d(2021, 4, 2),
+			tags("environment", "production", "owner", "platform")),
+		// Zero target groups, and the zero is complete — the listing succeeded
+		// in this region and found none. A load balancer with nowhere to send
+		// traffic, still billing by the hour since the checkout rewrite.
+		loadBalancerV2(acctProd, "us-east-1", "application", "legacy-checkout", "internet-facing",
+			"legacy-checkout-0a1b2c3d4e5f6072.us-east-1.elb.amazonaws.com", 2, ptr(0), d(2019, 8, 21),
+			tags("environment", "production", "owner", "payments")),
+		loadBalancerV2(acctProd, "us-east-1", "network", "internal-grpc", "internal",
+			"internal-grpc-0a1b2c3d4e5f6073.elb.us-east-1.amazonaws.com", 2, ptr(2), d(2022, 6, 30),
+			tags("environment", "production", "owner", "platform")),
+		// The other zero, and the one the v2 rows cannot express: the classic
+		// API returns registered instances inline, so this count is complete by
+		// construction. Nine years old, internal, nothing behind it.
+		classicLoadBalancer(acctProd, "us-east-1", "legacy-payments-elb", "internal",
+			"internal-legacy-payments-elb-1234567890.us-east-1.elb.amazonaws.com",
+			2, 0, d(2016, 2, 9),
+			nil), // no tags at all
+
 		// ── prod account · us-west-2 ────────────────────────────────────
 		// The guardrail on the page: DescribeVolumes failed in this region (see
 		// the ledger), so this snapshot carries the source volume ID AWS
@@ -266,6 +327,15 @@ func resources() []model.Resource {
 			"c5.large", "Linux/UNIX", "running", "ip-10-1-1-21.us-west-2.compute.internal",
 			false, []string{"vol-0b2c3d4e5f6a70021"}, d(2022, 3, 15),
 			tags("Name", "batch-worker-1", "environment", "production", "owner", "data")),
+		// The same guardrail as the snapshot above, on a different number.
+		// DescribeTargetGroups was throttled in this region (see the ledger), so
+		// this load balancer carries no target group count at all — an unknown
+		// count and a complete zero read identically, and only one of them is a
+		// finding.
+		loadBalancerV2(acctProd, "us-west-2", "application", "batch-api", "internal",
+			"internal-batch-api-0b2c3d4e5f6a7074.us-west-2.elb.amazonaws.com",
+			1, nil, d(2022, 3, 15),
+			tags("environment", "production", "owner", "data")),
 
 		// ── prod account · sa-east-1 ────────────────────────────────────
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "orders-latam",
@@ -297,6 +367,13 @@ func resources() []model.Resource {
 			"gp2", 120, ptr(int32(360)), nil, false,
 			[]string{"i-0c3d4e5f6a7b80031"}, d(2020, 11, 19),
 			tags("Name", "nfe-gateway-root", "environment", "production", "owner", "payments-latam")),
+		// A private NAT gateway: it routes to on-premises over Direct Connect
+		// and holds no public address at all. The public_ip key is absent rather
+		// than empty, which is the difference between "it has none" and "the
+		// scan could not read it" — and it bills the same hourly rate either way.
+		natGateway(acctProd, "sa-east-1", "sa-east-1a", "nat-0c3d4e5f6a7b80051",
+			"", d(2022, 5, 31),
+			tags("Name", "onprem-egress", "environment", "production", "owner", "payments-latam")),
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
@@ -370,6 +447,18 @@ func resources() []model.Resource {
 			"gp3", 16384, ptr(int32(3000)), ptr(int32(125)), false,
 			nil, d(2022, 11, 8),
 			nil),
+		// Staging's own NAT gateway and its address: the same ~$32 a month as
+		// production's, for an environment nobody uses at the weekend.
+		natGateway(acctStaging, "us-east-1", "us-east-1a", "nat-0d4e5f6a7b8c90051",
+			"203.0.113.44", d(2021, 6, 15),
+			tags("environment", "staging", "owner", "platform")),
+		elasticIP(acctStaging, "us-east-1", "eipalloc-0d4e5f6a7b8c90061", "203.0.113.44",
+			"nat-0d4e5f6a7b8c90051", demoSubnets[acctStaging+"/us-east-1a"],
+			tags("environment", "staging", "owner", "platform")),
+		loadBalancerV2(acctStaging, "us-east-1", "application", "staging-frontend",
+			"internet-facing", "staging-frontend-0d4e5f6a7b8c9075.us-east-1.elb.amazonaws.com",
+			2, ptr(1), d(2021, 6, 15),
+			tags("environment", "staging")), // no owner
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
@@ -687,6 +776,195 @@ func ebsSnapshot(account, region, id, sourceVolumeID string, sourceVolumeGiB int
 	r.SetMeasure(model.MeasureSourceVolumeBytes, int64(sourceVolumeGiB)<<30)
 	r.SetMeasure(model.MeasureFullSnapshotBytes, fullSnapshotBytes)
 	return r
+}
+
+// natGateway builds a NAT gateway row. An empty publicIP makes it a private
+// gateway, which holds no billable address — distinct from a public one whose
+// address the scan failed to read, and expressible only as an absent key.
+func natGateway(account, region, az, id, publicIP string,
+	created time.Time, t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = id
+	}
+	connectivity := "public"
+	if publicIP == "" {
+		connectivity = "private"
+	}
+	r := model.Resource{
+		ARN:       scanners.NATGatewayARN("aws", region, account, id),
+		Service:   model.ServiceNATGateway,
+		Type:      model.TypeNATGateway,
+		Name:      name,
+		Status:    "available",
+		Region:    region,
+		AccountID: account,
+		CreatedAt: &created,
+		Tags:      t,
+		// Both nil, as the scanner leaves them: a NAT gateway accepts no inbound
+		// connections, and it stores nothing.
+	}
+	r.SetAttr(model.AttrConnectivityType, connectivity)
+	r.SetAttr(model.AttrPublicIP, publicIP)
+	r.SetAttr(model.AttrAvailabilityZone, az)
+	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	// Zonal, like almost every NAT gateway in existence — which is the point:
+	// the cost is per gateway, and the classic layout puts one in every AZ.
+	r.SetMeasure(model.MeasureAvailabilityZoneCount, 1)
+	// No data-processed measure, matching the scanner: the bytes are a
+	// CloudWatch question and a zero would read as "nothing went through this".
+	return r
+}
+
+// elasticIP builds an Elastic IP row. An empty holder makes it unassociated,
+// which is the finding: since February 2024 an address bills whether or not
+// anything is using it.
+func elasticIP(account, region, allocationID, ip, holder, subnetID string,
+	t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = ip
+	}
+	status := "unassociated"
+	if holder != "" {
+		status = "associated"
+	}
+	r := model.Resource{
+		ARN:       scanners.ElasticIPARN("aws", region, account, allocationID),
+		Service:   model.ServicePublicIP,
+		Type:      model.TypeEIP,
+		Name:      name,
+		Status:    status,
+		Region:    region,
+		AccountID: account,
+		// No CreatedAt, as the scanner records none: DescribeAddresses reports
+		// no allocation time, and how long the address has sat idle is exactly
+		// the question a reader brings to this row.
+		Tags: t,
+		// PubliclyAccessible stays nil. Whatever holds the address is already
+		// counted as exposed on its own row; repeating it here would make a
+		// metric about risk into a metric about addresses.
+	}
+	r.SetAttr(model.AttrPublicIP, ip)
+	r.SetAttr(model.AttrAssociatedWith, holder)
+	r.SetAttr(model.AttrSubnetID, subnetID)
+	return r
+}
+
+// autoAssignedIP builds a public IPv4 row for an address that has no allocation
+// behind it — the kind an instance is handed at launch.
+//
+// It is in the fixture because it is the reason the scanner makes two calls:
+// DescribeAddresses never returns these, and in most accounts they are the
+// majority. A census built on that one call reports a confident undercount.
+func autoAssignedIP(account, region, az, interfaceID, ip, instanceID string,
+	t map[string]string) model.Resource {
+	name := t["Name"]
+	if name == "" {
+		name = ip
+	}
+	r := model.Resource{
+		ARN:       scanners.NetworkInterfaceARN("aws", region, account, interfaceID),
+		Service:   model.ServicePublicIP,
+		Type:      model.TypeNetworkInterface,
+		Name:      name,
+		Status:    "associated",
+		Region:    region,
+		AccountID: account,
+		Tags:      t,
+	}
+	r.SetAttr(model.AttrPublicIP, ip)
+	r.SetAttr(model.AttrAssociatedWith, instanceID)
+	r.SetAttr(model.AttrAvailabilityZone, az)
+	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	return r
+}
+
+// loadBalancerV2 builds an application or network load balancer row.
+//
+// targetGroups is a *int because the count has three meanings and the fixture
+// has to carry all three: a positive count, a complete zero — a load balancer
+// billing by the hour with nowhere to send traffic — and nil, where the
+// region's target group listing failed and the scanner refuses to write a zero
+// it did not observe.
+func loadBalancerV2(account, region, lbType, name, scheme, dnsName string,
+	azCount int, targetGroups *int, created time.Time, t map[string]string) model.Resource {
+	// The v2 ARN's opaque suffix is fixture data like any other ID; what matters
+	// is the shape, since it is the diff match key and the cost join key.
+	shortType := lbType[:3]
+	arn := "arn:aws:elasticloadbalancing:" + region + ":" + account +
+		":loadbalancer/" + shortType + "/" + name + "/" + demoLBSuffixes[name]
+	r := model.Resource{
+		ARN:                arn,
+		Service:            model.ServiceELB,
+		Type:               model.TypeLoadBalancerV2,
+		Name:               name,
+		Status:             "active",
+		Region:             region,
+		AccountID:          account,
+		CreatedAt:          &created,
+		Tags:               t,
+		PubliclyAccessible: ptr(scheme == "internet-facing"),
+	}
+	r.SetAttr(model.AttrScheme, scheme)
+	r.SetAttr(model.AttrLoadBalancerType, lbType)
+	r.SetAttr(model.AttrEndpoint, dnsName)
+	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetMeasure(model.MeasureAvailabilityZoneCount, int64(azCount))
+	if targetGroups != nil {
+		arns := make([]string, 0, *targetGroups)
+		for i := range *targetGroups {
+			arns = append(arns, fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:targetgroup/%s-%d/%s",
+				region, account, name, i+1, demoLBSuffixes[name]))
+		}
+		r.SetAttr(model.AttrTargetGroupARNs, strings.Join(arns, ","))
+		r.SetMeasure(model.MeasureTargetGroupCount, int64(*targetGroups))
+	}
+	// No registered_instance_count: counting targets on a v2 load balancer is
+	// one request per target group, which the scanner does not make.
+	return r
+}
+
+// classicLoadBalancer builds a Classic Load Balancer row. The v1 API returns
+// registered instances inline, so unlike its successor this row can answer the
+// idle question from the same response that named it — and zero instances is a
+// load balancer from 2016 still billing for nothing.
+func classicLoadBalancer(account, region, name, scheme, dnsName string,
+	azCount, instances int, created time.Time, t map[string]string) model.Resource {
+	r := model.Resource{
+		ARN:     scanners.ClassicLoadBalancerARN("aws", region, account, name),
+		Service: model.ServiceELB,
+		Type:    model.TypeLoadBalancer,
+		Name:    name,
+		// Empty, as the scanner leaves it: the v1 API has no state field, and
+		// "active" would be a guess that happens to be right most of the time.
+		Status:             "",
+		Region:             region,
+		AccountID:          account,
+		CreatedAt:          &created,
+		Tags:               t,
+		PubliclyAccessible: ptr(scheme == "internet-facing"),
+	}
+	r.SetAttr(model.AttrScheme, scheme)
+	r.SetAttr(model.AttrLoadBalancerType, "classic")
+	r.SetAttr(model.AttrEndpoint, dnsName)
+	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetMeasure(model.MeasureAvailabilityZoneCount, int64(azCount))
+	r.SetMeasure(model.MeasureRegisteredInstanceCount, int64(instances))
+	return r
+}
+
+// The opaque suffix AWS appends to a v2 load balancer ARN, fixed per fixture
+// load balancer so the ARNs — and therefore the diff and the cost join — are
+// stable across runs.
+var demoLBSuffixes = map[string]string{
+	"web":              "0a1b2c3d4e5f6071",
+	"legacy-checkout":  "0a1b2c3d4e5f6072",
+	"internal-grpc":    "0a1b2c3d4e5f6073",
+	"batch-api":        "0b2c3d4e5f6a7074",
+	"staging-frontend": "0d4e5f6a7b8c9075",
 }
 
 // The fixture's network layout: one VPC per account per region, one subnet per

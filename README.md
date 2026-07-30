@@ -99,12 +99,25 @@ keeps its last 30 censuses; history lives on your disk and nowhere else.
 - Redshift, including Redshift Serverless
 - EC2 instances
 - EBS volumes and snapshots
+- NAT gateways
+- Public IPv4 addresses — Elastic IPs *and* auto-assigned instance addresses
+- Load balancers (Application, Network, Gateway, and Classic)
 
 Volumes and snapshots are rows of their own rather than fields on the
 instance. An instance names the volumes attached to it and carries none of
 their bytes, so the same storage is never counted twice — and a volume nothing
 is attached to still shows up, which is the one no console view puts in front
 of you.
+
+The public IPv4 census is deliberately built from two calls, not one. Since
+February 2024 AWS bills every public IPv4 address it has handed you — about
+$3.60 a month each, attached or not. `DescribeAddresses` only returns
+addresses you explicitly allocated, so a census built on it alone silently
+omits every address an instance was auto-assigned at launch, which in most
+accounts is the majority. Those are read from the network interfaces instead,
+and the overlap between the two listings is removed by the address itself.
+The result is one row per billable address, including the allocated ones
+attached to nothing at all.
 
 Every resource is normalized into one model with a narrow core — CloudFormation type (`AWS::RDS::DBInstance`), name, status, region, account, creation time, tags, and the exposure flags — plus an open bag of service-specific `attributes` (engine, version, instance class, endpoint host, …) and numeric `measures` (`size_bytes`, `backup_retention_days`, …) keyed by AWS's own field names. A key that is absent means the service did not report it; it never means zero. Environment and owner are taken from tags only — imported, never inferred.
 
@@ -249,7 +262,13 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "ec2:DescribeVolumes",
         "ec2:DescribeSnapshots",
         "ec2:DescribeImages",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeRegions",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTags",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"

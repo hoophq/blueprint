@@ -17,7 +17,13 @@
         "ec2:DescribeVolumes",
         "ec2:DescribeSnapshots",
         "ec2:DescribeImages",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeRegions",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTags",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"

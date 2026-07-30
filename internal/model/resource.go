@@ -23,6 +23,19 @@ const (
 	// blueprint could not read — losing DescribeVolumes in a region tells the
 	// reader something quite different from losing DescribeInstances there.
 	ServiceEBS = "ebs"
+	// ServiceNATGateway, ServicePublicIP and ServiceELB are the network line
+	// items — each an hourly charge that accrues whether or not anything is
+	// using it. They are separate services for the same reason EBS is separate
+	// from EC2: they are separate describe calls, they fail independently, and
+	// a ledger saying "NAT gateways in eu-west-1" is worth more than one saying
+	// "some networking".
+	ServiceNATGateway = "natgateway"
+	// ServicePublicIP covers billable public IPv4 addresses. Since February
+	// 2024 AWS charges for every one of them, in use or not, which is what
+	// makes them worth a census row of their own rather than a field on
+	// whatever they happen to be attached to.
+	ServicePublicIP = "publicip"
+	ServiceELB      = "elb"
 )
 
 // Resource.Type values. These are CloudFormation type names — AWS's own
@@ -46,6 +59,17 @@ const (
 	TypeEC2Instance                 = "AWS::EC2::Instance"
 	TypeEBSVolume                   = "AWS::EC2::Volume"
 	TypeEBSSnapshot                 = "AWS::EC2::Snapshot"
+	TypeNATGateway                  = "AWS::EC2::NatGateway"
+	// TypeEIP is an allocated Elastic IP. TypeNetworkInterface is the other way
+	// a public IPv4 address gets billed: auto-assigned to an ENI at launch,
+	// with no EIP allocation behind it. Both are census rows under
+	// ServicePublicIP because both are the same charge; the type says which
+	// AWS resource is holding the address, since only one of the two is
+	// something you can release on its own.
+	TypeEIP              = "AWS::EC2::EIP"
+	TypeNetworkInterface = "AWS::EC2::NetworkInterface"
+	TypeLoadBalancerV2   = "AWS::ElasticLoadBalancingV2::LoadBalancer"
+	TypeLoadBalancer     = "AWS::ElasticLoadBalancing::LoadBalancer"
 )
 
 // Attribute keys used in Resource.Attributes. Keys are named after the AWS
@@ -119,6 +143,30 @@ const (
 	// AttrStorageTier is a snapshot's storage tier ("standard", "archive").
 	// Archived snapshots bill differently and take hours to restore.
 	AttrStorageTier = "storage_tier"
+	// AttrConnectivityType distinguishes a public NAT gateway from a private
+	// one. Both bill by the hour; only the public one holds a billable IPv4.
+	AttrConnectivityType = "connectivity_type"
+	// AttrPublicIP is the billable IPv4 address itself.
+	AttrPublicIP = "public_ip"
+	// AttrAssociatedWith names what a public IPv4 or a NAT gateway address is
+	// attached to — an instance ID, a network interface ID, a NAT gateway ID.
+	// Absent means AWS reported no association, which for an Elastic IP is the
+	// finding: an unassociated EIP bills exactly the same as a working one.
+	AttrAssociatedWith = "associated_with"
+	// AttrScheme is a load balancer's "internet-facing" or "internal".
+	AttrScheme = "scheme"
+	// AttrLoadBalancerType is "application", "network", "gateway" for the v2
+	// API, and "classic" for the original one.
+	AttrLoadBalancerType = "load_balancer_type"
+	// AttrTargetGroupARNs lists the target groups pointed at a v2 load
+	// balancer, comma separated and sorted.
+	//
+	// It is written only when the target group enumeration finished, for the
+	// same reason source_volume_exists is: an empty list means "nothing is
+	// attached to this load balancer", which is a delete signal, and a
+	// truncated list is indistinguishable from an empty one. If the call
+	// failed the key is absent and the ledger says why.
+	AttrTargetGroupARNs = "target_group_arns"
 )
 
 // Measure keys used in Resource.Measures.
@@ -155,6 +203,32 @@ const (
 	// facts only.
 	MeasureSourceVolumeBytes = "source_volume_bytes"
 	MeasureFullSnapshotBytes = "full_snapshot_bytes"
+	// MeasureTargetGroupCount and MeasureRegisteredInstanceCount are the
+	// structural idle signal for a load balancer: how many places it can send
+	// traffic, counted from describe calls alone. Zero is the whole point of
+	// recording them and must survive to the page — a load balancer with
+	// nothing behind it bills the same hourly rate as one serving production.
+	//
+	// Neither is a verdict about traffic. "Idle" in the sense of "nobody is
+	// calling it" is a CloudWatch question, and answering it here from a
+	// structural count would be an inference dressed as a fact: a load
+	// balancer with healthy targets and no requests is idle, and one with no
+	// targets may have been drained thirty seconds ago.
+	//
+	// They are not two views of the same number, and only one appears per row.
+	// The classic API returns registered instances inline, so that count is
+	// free and always complete. The v2 APIs answer the same question one
+	// request per target group, which is the N+1 the scanner is shaped to
+	// avoid — so a v2 row carries the target group count instead, and leaves
+	// the instance count absent rather than filling it with a number nothing
+	// measured.
+	MeasureTargetGroupCount        = "target_group_count"
+	MeasureRegisteredInstanceCount = "registered_instance_count"
+	// MeasureAvailabilityZoneCount is how many AZs a load balancer or NAT
+	// gateway deployment spans. NAT gateways are per-AZ and each one bills
+	// separately, which is the forgotten multiplier the issue behind this
+	// scanner names.
+	MeasureAvailabilityZoneCount = "availability_zone_count"
 )
 
 // AsOfSuffix names the attribute that carries a measure's observation time:
