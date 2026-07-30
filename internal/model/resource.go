@@ -341,9 +341,13 @@ type Resource struct {
 	// imported, never inferred). Empty means "no matching tag".
 	Environment string `json:"environment,omitempty"`
 	Owner       string `json:"owner,omitempty"`
-	// EOL marks resources whose upstream end-of-life date has passed, per the
-	// table baked into the binary (see eol.go for scope and exclusions);
-	// EOLDate carries that date as YYYY-MM-DD. The verdict lives in the core
+	// EOL marks resources whose end-of-life date has passed, per the table
+	// baked into the binary (see eol.go for scope and exclusions); EOLDate
+	// carries that date as YYYY-MM-DD. Whose end of life it is depends on the
+	// service — an RDS engine's date is the community's, a Lambda runtime's is
+	// AWS's own, and the two disagree by years — so the table records the date
+	// its own publisher gave and this field claims only that it has passed.
+	// The verdict lives in the core
 	// because every renderer reads it for every service, while the inputs it
 	// is derived from — the service's platform and version — stay in the bag
 	// under the names AWS gives them.

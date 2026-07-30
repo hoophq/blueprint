@@ -33,7 +33,12 @@ func Terminal(w io.Writer, snap *model.Snapshot, written []string) {
 		sum.Total, len(sum.Types), countNonZero(sum.Regions), len(sum.Accounts))
 	fmt.Fprintf(w, "  %d without owner tag  ·  %d without environment tag\n", sum.NoOwner, sum.NoEnv)
 	if sum.EOL > 0 {
-		fmt.Fprintf(w, "  ⚠ %d on end-of-life engine versions (upstream support ended)\n", sum.EOL)
+		// Not "upstream": whose support ended depends on the service. An RDS
+		// engine's date is the community's, a Lambda runtime's is AWS's own,
+		// and AWS kept patching Python 3.8 for two years after python.org
+		// stopped. Naming one source would misstate the other, so the line
+		// says only what is true of every row — support ended.
+		fmt.Fprintf(w, "  ⚠ %d on end-of-life engine or runtime versions (support ended)\n", sum.EOL)
 	}
 	if sum.Exposed > 0 {
 		fmt.Fprintf(w, "  ⚠ %d exposed — %d publicly accessible · %d unencrypted · %d without backups\n",

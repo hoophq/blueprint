@@ -209,6 +209,108 @@ func TestReportRendersEverySizingDimensionInFixture(t *testing.T) {
 	}
 }
 
+// The Platform column shows the software a resource runs, which each service
+// names differently: RDS reports an engine, Lambda reports a runtime. Both feed
+// the same column, the same grouping, and the same end-of-life badge, so a
+// column that read only the first key this report happened to support would
+// blank every Lambda row — and drop the runtime from the search haystack with
+// it, hiding exactly the deprecated runtime the scanner exists to surface.
+func TestReportPlatformReadsEveryServicesNameForIt(t *testing.T) {
+	cases := []struct {
+		name     string
+		resource string // JSON
+		want     string
+	}{
+		{"engine", `{"attributes":{"engine":"postgres"}}`, "postgres"},
+		{"runtime", `{"attributes":{"runtime":"python3.8"}}`, "python3.8"},
+		// A runtime identifier carries its own version, so such rows have no
+		// engine_version beside them — the sub-label is simply absent.
+		{"runtime with no version attribute", `{"attributes":{"runtime":"go1.x"}}`, "go1.x"},
+		{"engine wins over runtime", `{"attributes":{"engine":"aurora-postgresql","runtime":"x"}}`, "aurora-postgresql"},
+		// A container-image function seals its runtime inside the image, and no
+		// verdict follows from a key AWS never filled in.
+		{"nothing reported", `{"attributes":{"instance_class":"m5.large"}}`, ""},
+		{"no attributes at all", `{}`, ""},
+	}
+
+	in := make([]string, len(cases))
+	for i, c := range cases {
+		in[i] = c.resource
+	}
+	script := strings.Join([]string{
+		jsFunc(t, "attr"),
+		jsVar(t, "PLATFORM_KEYS"),
+		jsFunc(t, "platformOf"),
+		`console.log(JSON.stringify([` + strings.Join(in, ",") + `].map(platformOf)));`,
+	}, "\n")
+
+	var got []string
+	evalJSON(t, script, &got)
+	if len(got) != len(cases) {
+		t.Fatalf("got %d results, want %d", len(got), len(cases))
+	}
+	for i, c := range cases {
+		if got[i] != c.want {
+			t.Errorf("%s: platformOf(%s) = %q, want %q", c.name, c.resource, got[i], c.want)
+		}
+	}
+}
+
+// The same rule against the data the report actually ships. The hand-built
+// cases above pin the function; this one pins that no shipped row reports a
+// platform the report then declines to show — the gap the Lambda rows fell into
+// when the column read "engine" alone.
+func TestReportRendersEveryPlatformInFixture(t *testing.T) {
+	var snap model.Snapshot
+	if err := json.Unmarshal([]byte(embeddedJSON(t, renderDemo(t))), &snap); err != nil {
+		t.Fatalf("embedded data block is not valid JSON: %v", err)
+	}
+
+	type want struct {
+		name     string
+		platform string
+	}
+	wants := make([]want, len(snap.Resources))
+	runtimes := 0
+	for i, r := range snap.Resources {
+		p := r.Attr(model.AttrEngine)
+		if p == "" {
+			p = r.Attr(model.AttrRuntime)
+			if p != "" {
+				runtimes++
+			}
+		}
+		wants[i] = want{name: r.Name, platform: p}
+	}
+	// Without a runtime row in the fixture this test would pass on engines
+	// alone and prove nothing about the case it was written for.
+	if runtimes == 0 {
+		t.Fatal("fixture reports no runtime at all; this test proves nothing")
+	}
+
+	resources, err := json.Marshal(snap.Resources)
+	if err != nil {
+		t.Fatalf("re-encoding resources: %v", err)
+	}
+	script := strings.Join([]string{
+		jsFunc(t, "attr"),
+		jsVar(t, "PLATFORM_KEYS"),
+		jsFunc(t, "platformOf"),
+		"console.log(JSON.stringify((" + string(resources) + ").map(platformOf)));",
+	}, "\n")
+
+	var got []string
+	evalJSON(t, script, &got)
+	if len(got) != len(wants) {
+		t.Fatalf("got %d platforms, want %d", len(got), len(wants))
+	}
+	for i, w := range wants {
+		if got[i] != w.platform {
+			t.Errorf("%s renders platform %q, want %q", w.name, got[i], w.platform)
+		}
+	}
+}
+
 // The Class column shows whichever dimension a service is sized by. Redshift
 // Serverless is sized by a number of RPUs, which lives in the measure bag
 // rather than the attribute bag — reading only attributes would blank the

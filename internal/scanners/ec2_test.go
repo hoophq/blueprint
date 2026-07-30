@@ -195,6 +195,69 @@ func TestEC2InstanceWithoutPublicIPIsNotExposed(t *testing.T) {
 	}
 }
 
+// The top-level PublicIpAddress mirrors device index 0 only, so an instance
+// whose Elastic IP sits on a *second* interface reports nil there. This field
+// is written as a hard true/false rather than left nil, so reading only that
+// one would not leave the question open — it would assert "not exposed" about
+// a box reachable from the internet.
+//
+// The interface list arrives in the same DescribeInstances response, so this
+// costs no call and no IAM action.
+func TestEC2InstanceExposureReadsEverySecondaryInterface(t *testing.T) {
+	i := ec2types.Instance{
+		InstanceId: aws.String("i-1"),
+		NetworkInterfaces: []ec2types.InstanceNetworkInterface{
+			// eth0, private only — which is why AWS left PublicIpAddress nil.
+			{NetworkInterfaceId: aws.String("eni-0primary")},
+			{
+				NetworkInterfaceId: aws.String("eni-0secondary"),
+				Association: &ec2types.InstanceNetworkInterfaceAssociation{
+					PublicIp: aws.String("203.0.113.10"),
+				},
+			},
+		},
+	}
+	r := ec2InstanceResource(i, "us-east-1", testAccount)
+	if r.PubliclyAccessible == nil {
+		t.Fatal("PubliclyAccessible = nil, want a reported true")
+	}
+	if !*r.PubliclyAccessible {
+		t.Error("PubliclyAccessible = false for an instance whose second interface holds a public IPv4")
+	}
+}
+
+// The false must stay earnable. An association AWS listed with no public
+// address on it is not an address, and neither is an interface list with
+// nothing in it — otherwise the fix above would turn the flag into a constant
+// true for every multi-homed instance.
+func TestEC2InstanceExposureFalseSurvivesEmptyAssociations(t *testing.T) {
+	i := ec2types.Instance{
+		InstanceId: aws.String("i-1"),
+		NetworkInterfaces: []ec2types.InstanceNetworkInterface{
+			{NetworkInterfaceId: aws.String("eni-0a")},
+			{
+				NetworkInterfaceId: aws.String("eni-0b"),
+				// A carrier IP is not a billable AWS public IPv4 and not the
+				// exposure this flag reports.
+				Association: &ec2types.InstanceNetworkInterfaceAssociation{
+					CarrierIp: aws.String("198.51.100.4"),
+				},
+			},
+			{
+				NetworkInterfaceId: aws.String("eni-0c"),
+				Association:        &ec2types.InstanceNetworkInterfaceAssociation{PublicIp: aws.String("")},
+			},
+		},
+	}
+	r := ec2InstanceResource(i, "us-east-1", testAccount)
+	if r.PubliclyAccessible == nil {
+		t.Fatal("PubliclyAccessible = nil, want a reported false")
+	}
+	if *r.PubliclyAccessible {
+		t.Error("PubliclyAccessible = true for an instance no interface gave a public IPv4")
+	}
+}
+
 // Everything EC2 does not report must stay key-absent rather than render as a
 // zero or an empty string, and nothing may be inferred to fill the gap.
 func TestEC2InstanceUnreportedFieldsStayAbsent(t *testing.T) {

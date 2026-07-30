@@ -408,7 +408,7 @@
 
   <section class="rr-section" id="engines-section">
     <div class="rr-section-head">
-      <h2 class="rr-section-title">Engines</h2>
+      <h2 class="rr-section-title">Platforms</h2>
       <span class="rr-section-sub" id="engines-sub"></span>
     </div>
     <div class="rr-eng-table" id="engine-rows"></div>
@@ -426,7 +426,7 @@
           <option value="none" selected>none</option>
           <option value="service">service</option>
           <option value="type">type</option>
-          <option value="engine">engine</option>
+          <option value="engine">platform</option>
           <option value="environment">environment</option>
           <option value="region">region</option>
           <option value="account">account</option>
@@ -503,6 +503,23 @@
   var CLASS_KEYS = ["instance_class", "billing_mode"];
   var CLASS_MEASURES = [{ key: "base_capacity_rpu", unit: "RPU" }];
 
+  // PLATFORM_KEYS names the software a resource runs, which each service calls
+  // something different: RDS reports "engine", Lambda reports "runtime". Both
+  // feed the same column and the same end-of-life badge, so both are read here
+  // rather than only the first one this report happened to support.
+  //
+  // A runtime identifier carries its own version ("python3.8"), so those rows
+  // have no engine_version beside them and the sub-label is simply absent.
+  var PLATFORM_KEYS = ["engine", "runtime"];
+
+  function platformOf(r) {
+    for (var i = 0; i < PLATFORM_KEYS.length; i++) {
+      var a = attr(r, PLATFORM_KEYS[i]);
+      if (a) return a;
+    }
+    return "";
+  }
+
   function classOf(r) {
     for (var i = 0; i < CLASS_KEYS.length; i++) {
       var a = attr(r, CLASS_KEYS[i]);
@@ -528,7 +545,7 @@
     r._tier = tierOf(r);
     TIER_BY_KEY[r._tier].count++;
 
-    r._engine = attr(r, "engine");
+    r._engine = platformOf(r);
     r._engineVersion = attr(r, "engine_version");
     r._class = classOf(r);
     r._sizeBytes = measure(r, "size_bytes");
@@ -659,7 +676,7 @@
   addStat("Untagged", TIER_BY_KEY.untagged.count.toLocaleString(), "no owner or environment");
   addStat("Missing owner", noOwner.toLocaleString(), Math.round((100 * noOwner) / total) + "% of all resources");
   addStat("End-of-life", eolCount.toLocaleString(),
-    eolCount === 0 ? "no EOL engine versions" : "upstream support ended",
+    eolCount === 0 ? "no EOL engine or runtime versions" : "support ended",
     eolCount === 0 ? { ok: true } : { bad: true });
   addStat("Exposed", exposedCount.toLocaleString(),
     exposedCount === 0 ? "no exposure flags" : "public, unencrypted, or no backups",
@@ -723,7 +740,7 @@
       servicesSeen[r.service] = true;
       serviceCount++;
     }
-    // Services with no engine concept (object stores, compute, networking)
+    // Services with no platform concept (object stores, networking, storage)
     // are simply absent here rather than piling into an "(unknown)" bucket
     // that would imply blueprint failed to read something.
     if (!r._engine) return;
@@ -765,8 +782,8 @@
   });
   engRowsEl.replaceChildren(engFrag);
   document.getElementById("engines-sub").textContent =
-    plural(engineRows.length, "engine") + " · " + plural(serviceCount, "service");
-  // Nothing in scope reports an engine — hide the section instead of showing
+    plural(engineRows.length, "platform") + " · " + plural(serviceCount, "service");
+  // Nothing in scope reports a platform — hide the section instead of showing
   // an empty chart.
   if (engineRows.length === 0) document.getElementById("engines-section").hidden = true;
 
@@ -774,7 +791,7 @@
   var COLUMNS = [
     { key: "name", label: "Name" },
     { key: "service", label: "Service" },
-    { key: "_engine", label: "Engine" },
+    { key: "_engine", label: "Platform" },
     { key: "_class", label: "Class" },
     { key: "_sizeBytes", label: "Size", num: true },
     { key: "region", label: "Region" },
@@ -923,7 +940,7 @@
     if (r.eol) {
       eng.appendChild(document.createTextNode(" "));
       var eol = el("span", "tag tag-red", "EOL");
-      if (r.eol_date) eol.title = "upstream end of life: " + r.eol_date;
+      if (r.eol_date) eol.title = "end of life: " + r.eol_date;
       eng.appendChild(eol);
     }
     tr.appendChild(eng);

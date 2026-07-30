@@ -199,6 +199,68 @@ func TestElasticIPKeepsItsARNWhenOnlyTheInterfaceListingSawIt(t *testing.T) {
 	}
 }
 
+// The same fallback must not borrow the interface's identity along with its
+// ARN. DescribeAddresses is the only call that reports an Elastic IP's own
+// tags, so reaching this path means the address has none — and the interface's
+// tags belong to the interface. They disagree often enough to matter: a
+// bastion's interface tagged staging can hold an address the payments team
+// tagged production, and copying them across would carry a wrong environment
+// and owner into the summary while reading as the address's own.
+//
+// The auto-assigned row in the same listing keeps its tags, which is the
+// contrast that makes this a rule rather than a blanket drop: there, the
+// interface *is* the subject of the row.
+func TestElasticIPFoundViaInterfaceBorrowsNoIdentityFromIt(t *testing.T) {
+	tagged := []ec2types.Tag{
+		{Key: aws.String("Name"), Value: aws.String("bastion-eni")},
+		{Key: aws.String("env"), Value: aws.String("staging")},
+		{Key: aws.String("owner"), Value: aws.String("platform")},
+	}
+	interfaces := []ec2types.NetworkInterface{
+		{
+			NetworkInterfaceId: aws.String("eni-0allocated"),
+			TagSet:             tagged,
+			Association: &ec2types.NetworkInterfaceAssociation{
+				PublicIp:     aws.String("203.0.113.1"),
+				AllocationId: aws.String("eipalloc-0abc123"),
+			},
+		},
+		{
+			NetworkInterfaceId: aws.String("eni-0auto"),
+			TagSet:             tagged,
+			Association:        &ec2types.NetworkInterfaceAssociation{PublicIp: aws.String("203.0.113.2")},
+		},
+	}
+
+	got := mergeAddresses(nil, interfaces, "us-east-1", testAccount)
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2", len(got))
+	}
+	eip, auto := got[0], got[1]
+
+	if eip.Type != model.TypeEIP {
+		t.Fatalf("Type = %q, want %q", eip.Type, model.TypeEIP)
+	}
+	if len(eip.Tags) != 0 {
+		t.Errorf("Tags = %v, want none: these are the interface's tags, not the allocation's", eip.Tags)
+	}
+	// The name comes from the Name tag, so keeping it would put the interface's
+	// name on the address by another route.
+	if eip.Name != "203.0.113.1" {
+		t.Errorf("Name = %q, want the address", eip.Name)
+	}
+
+	if auto.Type != model.TypeNetworkInterface {
+		t.Fatalf("Type = %q, want %q", auto.Type, model.TypeNetworkInterface)
+	}
+	if auto.Tags["env"] != "staging" || auto.Tags["owner"] != "platform" {
+		t.Errorf("Tags = %v, want the interface's own tags on the interface's own row", auto.Tags)
+	}
+	if auto.Name != "bastion-eni" {
+		t.Errorf("Name = %q, want the interface's Name tag", auto.Name)
+	}
+}
+
 // A carrier or customer-owned IP is not a billable AWS public IPv4, and AWS
 // says so by leaving PublicIp nil rather than by any flag this tool interprets.
 func TestMergeAddressesSkipsAddressesWithoutAPublicIPv4(t *testing.T) {
