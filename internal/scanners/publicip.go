@@ -239,6 +239,19 @@ func interfaceAddressResource(eni ec2types.NetworkInterface, assoc ec2types.Netw
 	if allocationID := aws.ToString(assoc.AllocationId); allocationID != "" {
 		arn = ElasticIPARN(partition, region, accountID, allocationID)
 		resourceType = model.TypeEIP
+
+		// The interface's tags stay with the interface. They describe the thing
+		// the address is bound to, not the allocation, and the two disagree
+		// often — a bastion's interface tagged staging can hold an address the
+		// payments team tagged production. DescribeAddresses is the only call
+		// that reports an Elastic IP's own tags, and reaching this line means
+		// it did not answer, so this row has none: an absent tag reads as "not
+		// reported", where a borrowed one would read as the address's own and
+		// carry a wrong environment and owner into the summary.
+		//
+		// Dropping the name with them is the same rule. It comes from the Name
+		// tag, so keeping it would put the interface's name on the address.
+		tags, name = nil, ip
 	}
 
 	r := model.Resource{

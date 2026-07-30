@@ -112,7 +112,7 @@ func ec2InstanceResource(i ec2types.Instance, region, accountID string) model.Re
 		// and it does not cover IPv6 or a load balancer in front. A stopped
 		// instance without an Elastic IP has released its address and honestly
 		// reports false until it starts again.
-		PubliclyAccessible: aws.Bool(i.PublicIpAddress != nil),
+		PubliclyAccessible: aws.Bool(instanceHasPublicIPv4(i)),
 		// Encrypted stays nil on purpose. Encryption at rest is a property of
 		// each attached volume, not of the instance, and the volumes are their
 		// own census rows (they carry their own flag). Answering here would
@@ -145,6 +145,31 @@ func ec2InstanceResource(i ec2types.Instance, region, accountID string) model.Re
 	// lifecycle policy, neither of which DescribeInstances can see, so the key
 	// stays absent rather than claiming zero days of retention.
 	return r
+}
+
+// instanceHasPublicIPv4 reports whether AWS named a public IPv4 address
+// anywhere on this instance.
+//
+// The top-level PublicIpAddress is not enough on its own. It mirrors the
+// association on device index 0, so an instance whose *second* interface holds
+// the Elastic IP reports nil there — and since this feeds a security field
+// that is written as a hard true/false rather than left nil, reading only that
+// field would assert "not exposed" about a box reachable from the internet.
+//
+// The interface list arrives in the same DescribeInstances response: already
+// fetched, no second call, no extra IAM action. Reading it is what earns the
+// false — it is written only when the instance named no address and neither
+// did any interface AWS listed for it.
+func instanceHasPublicIPv4(i ec2types.Instance) bool {
+	if aws.ToString(i.PublicIpAddress) != "" {
+		return true
+	}
+	for _, ni := range i.NetworkInterfaces {
+		if ni.Association != nil && aws.ToString(ni.Association.PublicIp) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // attachedVolumeIDs joins the EBS volume IDs attached to an instance, sorted

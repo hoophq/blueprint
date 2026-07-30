@@ -61,6 +61,31 @@ func TestTerminalFailureCap(t *testing.T) {
 	}
 }
 
+// The end-of-life line counts two different kinds of finding and must not
+// attribute either to the wrong publisher. An RDS engine's date is the
+// community's; a Lambda runtime's is AWS's own, and AWS kept patching Python
+// 3.8 for two years after python.org stopped. Saying "upstream" states the
+// first about the second, so the line says only what is true of every row it
+// counts — support ended — and names both kinds it is counting.
+func TestTerminalEOLLineDoesNotAttributeSupportToUpstream(t *testing.T) {
+	snap := &model.Snapshot{
+		Resources: []model.Resource{
+			{ARN: "a1", Service: "rds", Region: "us-east-1", AccountID: "1", EOL: true},
+			{ARN: "a2", Service: "lambda", Region: "us-east-1", AccountID: "1", EOL: true},
+		},
+	}
+	var buf bytes.Buffer
+	Terminal(&buf, snap, nil)
+	out := buf.String()
+
+	if !strings.Contains(out, "2 on end-of-life engine or runtime versions") {
+		t.Errorf("EOL line does not name both kinds of finding it counts:\n%s", out)
+	}
+	if strings.Contains(out, "upstream") {
+		t.Errorf("EOL line claims upstream support ended, which is false for an AWS runtime:\n%s", out)
+	}
+}
+
 func TestTerminalServiceTieBreak(t *testing.T) {
 	snap := &model.Snapshot{
 		Resources: []model.Resource{
