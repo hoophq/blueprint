@@ -19,6 +19,10 @@ type Result struct {
 	Added   []model.Resource
 	Removed []model.Resource
 	Changed []ResourceDiff
+	// Cost is spend movement, computed and rendered apart from field drift.
+	// See internal/diff/cost.go for why it has to be, and why it is
+	// deliberately absent from Empty.
+	Cost CostDrift
 }
 
 // ResourceDiff is one resource present in both snapshots with drifted fields.
@@ -34,7 +38,13 @@ type FieldChange struct {
 	New   string
 }
 
-// Empty reports whether the two snapshots were identical for diff purposes.
+// Empty reports whether the estate was identical for diff purposes.
+//
+// Cost is excluded on purpose, and this is the load-bearing spot: Empty gates
+// --fail-on-change, and spend moves without the estate moving — AWS restates
+// bills for weeks and a modelled rate is remodelled continuously. Counting it
+// here would make --fail-on-change return non-zero on every run and stop
+// meaning anything. Spend movement is reported in its own section instead.
 func (r Result) Empty() bool {
 	return len(r.Added) == 0 && len(r.Removed) == 0 && len(r.Changed) == 0
 }
@@ -70,6 +80,7 @@ func Compare(old, current *model.Snapshot) Result {
 	sort.Slice(res.Added, func(i, j int) bool { return res.Added[i].ARN < res.Added[j].ARN })
 	sort.Slice(res.Removed, func(i, j int) bool { return res.Removed[i].ARN < res.Removed[j].ARN })
 	sort.Slice(res.Changed, func(i, j int) bool { return res.Changed[i].Resource.ARN < res.Changed[j].Resource.ARN })
+	res.Cost = costDrift(old, current)
 	return res
 }
 
@@ -213,9 +224,18 @@ func boolPtrStr(v *bool) string {
 // terminal; the counts in the header always cover everything.
 const maxListed = 20
 
-// Write renders the diff as a terminal section. label names the baseline
+// Write renders the diff as terminal sections. label names the baseline
 // (typically the previous census filename).
+//
+// Spend gets its own section below the estate changes, printed even when the
+// estate itself held still — a bill that moved while nothing was created or
+// destroyed is the interesting case, not a reason to stay quiet.
 func (r Result) Write(w io.Writer, label string) {
+	r.writeResources(w, label)
+	r.Cost.WriteCost(w, label)
+}
+
+func (r Result) writeResources(w io.Writer, label string) {
 	fmt.Fprintf(w, "\n━━ changes vs %s ━━\n", label)
 	if r.Empty() {
 		fmt.Fprintf(w, "  no changes\n")
