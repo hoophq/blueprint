@@ -22,7 +22,7 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 83 resources across all supported services, with realistic tag hygiene
+// 89 resources across all supported services, with realistic tag hygiene
 // gaps (~30% missing owner, ~20% missing environment) and four scan failures
 // for the honesty ledger.
 func Snapshot(version string) *model.Snapshot {
@@ -284,6 +284,30 @@ func resources() []model.Resource {
 			2, 0, d(2016, 2, 9),
 			nil), // no tags at all
 
+		// The point of scanning Lambda at all. This function costs nothing at
+		// rest, so it has never appeared in a cost report, never triggered a
+		// rightsizing recommendation, and nothing has ever prompted anyone to
+		// look at it. It has been running on a runtime AWS stopped patching in
+		// October 2024 since before the checkout rewrite — and it is wired to
+		// the internet-facing ALB two rows up.
+		lambdaFunction(acctProd, "us-east-1", "checkout-webhook", "python3.8", "x86_64",
+			512, 30, 8_388_608, false, d(2021, 11, 4),
+			tags("environment", "production", "owner", "payments")),
+		lambdaFunction(acctProd, "us-east-1", "image-resize", "nodejs22.x", "arm64",
+			1024, 60, 2_097_152, false, d(2025, 9, 12),
+			tags("environment", "production", "owner", "platform")),
+		// A container-image function: no runtime reported, so no lifecycle
+		// verdict — the base image may well be years stale, but nothing in the
+		// response says so and the census does not guess. Its zero code size is
+		// the honest one, the image being in ECR. Also the fixture's
+		// over-provisioned row: 10 GB of memory and 15 minutes of timeout, paid
+		// for by the millisecond on every invocation.
+		withMeasure(
+			lambdaFunction(acctProd, "us-east-1", "report-generator", "", "x86_64",
+				10240, 900, 0, false, d(2024, 7, 19),
+				tags("environment", "production", "owner", "data")),
+			model.MeasureEphemeralStorageMB, 10240),
+
 		// ── prod account · us-west-2 ────────────────────────────────────
 		// The guardrail on the page: DescribeVolumes failed in this region (see
 		// the ledger), so this snapshot carries the source volume ID AWS
@@ -337,6 +361,13 @@ func resources() []model.Resource {
 			1, nil, d(2022, 3, 15),
 			tags("environment", "production", "owner", "data")),
 
+		// Deprecated, untagged, and last touched in 2019 — the shape the
+		// tag-hygiene numbers and the lifecycle table describe together. Nobody
+		// listed on it, and go1.x stopped being patched in January 2024.
+		lambdaFunction(acctProd, "us-west-2", "log-shipper", "go1.x", "x86_64",
+			256, 120, 12_582_912, false, d(2019, 10, 8),
+			nil), // no tags at all
+
 		// ── prod account · sa-east-1 ────────────────────────────────────
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "orders-latam",
 			"postgres", "15.4", "db.m6g.large", 200, true, "available",
@@ -374,6 +405,14 @@ func resources() []model.Resource {
 		natGateway(acctProd, "sa-east-1", "sa-east-1a", "nat-0c3d4e5f6a7b80051",
 			"", d(2022, 5, 31),
 			tags("Name", "onprem-egress", "environment", "production", "owner", "payments-latam")),
+		// The row that shows why the lifecycle table is keyed by service. Java 8
+		// reached upstream end of public updates years ago, and this function
+		// still gets no red pill — AWS patches java8.al2 on its own calendar and
+		// has not deprecated it. Reporting the upstream date here would flag a
+		// runtime somebody is actively maintaining.
+		lambdaFunction(acctProd, "sa-east-1", "nfe-signer", "java8.al2", "x86_64",
+			1536, 30, 41_943_040, false, d(2024, 2, 21),
+			tags("environment", "production")), // no owner
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
@@ -459,6 +498,13 @@ func resources() []model.Resource {
 			"internet-facing", "staging-frontend-0d4e5f6a7b8c9075.us-east-1.elb.amazonaws.com",
 			2, ptr(1), d(2021, 6, 15),
 			tags("environment", "staging")), // no owner
+		// In the VPC, so it holds ENIs in staging's subnets, and on a runtime
+		// deprecated in June 2024. Staging is where these accumulate: the blast
+		// radius is small enough that nobody upgrades, and the function still
+		// holds the same credentials production's does.
+		lambdaFunction(acctStaging, "us-east-1", "slack-notifier", "nodejs16.x", "x86_64",
+			256, 15, 1_048_576, true, d(2022, 4, 26),
+			tags("environment", "staging", "owner", "platform")),
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
@@ -953,6 +999,55 @@ func classicLoadBalancer(account, region, name, scheme, dnsName string,
 	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
 	r.SetMeasure(model.MeasureAvailabilityZoneCount, int64(azCount))
 	r.SetMeasure(model.MeasureRegisteredInstanceCount, int64(instances))
+	return r
+}
+
+// lambdaFunction builds a Lambda function row.
+//
+// runtime doubles as the package-type discriminator, because in the API the
+// two are exclusive: a zip function reports a runtime identifier and an image
+// function reports none, its runtime being sealed inside a container blueprint
+// cannot open. Passing "" here therefore produces the row a container-image
+// function really produces — no runtime key, and so no lifecycle verdict.
+//
+// CreatedAt is nil on every row, as it is on every real one: Lambda reports
+// only when a function last changed.
+func lambdaFunction(account, region, name, runtime, arch string,
+	memoryMB, timeoutSec int, codeSize int64, inVPC bool,
+	modified time.Time, t map[string]string) model.Resource {
+	r := model.Resource{
+		ARN:       "arn:aws:lambda:" + region + ":" + account + ":function:" + name,
+		Service:   model.ServiceLambda,
+		Type:      model.TypeLambdaFunction,
+		Name:      name,
+		Status:    "Active",
+		Region:    region,
+		AccountID: account,
+		Tags:      t,
+	}
+	packageType := "Zip"
+	if runtime == "" {
+		packageType = "Image"
+	}
+	r.SetAttr(model.AttrRuntime, runtime)
+	r.SetAttr(model.AttrPackageType, packageType)
+	r.SetAttr(model.AttrArchitecture, arch)
+	// Lambda's own format, down to the four-digit offset — the fixture carries
+	// the string the API returns rather than a tidier rendering of it.
+	r.SetAttr(model.AttrLastModified, modified.Format("2006-01-02T15:04:05.000-0700"))
+	if inVPC {
+		r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+		r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+region+"a"])
+	}
+	r.SetMeasure(model.MeasureMemoryMB, int64(memoryMB))
+	r.SetMeasure(model.MeasureTimeoutSeconds, int64(timeoutSec))
+	// Stored unconditionally, including the zero an image function reports:
+	// its bytes live in ECR and none of them count against the region's code
+	// storage quota. That zero is a fact about where the code is, not a gap.
+	r.SetMeasure(model.MeasureCodeSizeBytes, codeSize)
+	// Every function gets the 512 MB AWS gives it by default; the one that
+	// asked for more says so at its own callsite.
+	r.SetMeasure(model.MeasureEphemeralStorageMB, 512)
 	return r
 }
 

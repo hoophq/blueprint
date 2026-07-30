@@ -102,6 +102,7 @@ keeps its last 30 censuses; history lives on your disk and nowhere else.
 - NAT gateways
 - Public IPv4 addresses — Elastic IPs *and* auto-assigned instance addresses
 - Load balancers (Application, Network, Gateway, and Classic)
+- Lambda functions
 
 Volumes and snapshots are rows of their own rather than fields on the
 instance. An instance names the volumes attached to it and carries none of
@@ -269,6 +270,8 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
         "elasticloadbalancing:DescribeLoadBalancers",
         "elasticloadbalancing:DescribeTargetGroups",
         "elasticloadbalancing:DescribeTags",
+        "lambda:ListFunctions",
+        "lambda:ListTags",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"

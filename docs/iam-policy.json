@@ -24,6 +24,8 @@
         "elasticloadbalancing:DescribeLoadBalancers",
         "elasticloadbalancing:DescribeTargetGroups",
         "elasticloadbalancing:DescribeTags",
+        "lambda:ListFunctions",
+        "lambda:ListTags",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
