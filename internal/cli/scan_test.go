@@ -74,10 +74,10 @@ func TestDemoScaleValidates(t *testing.T) {
 		{"scaled demo", 20000, true, ""},
 		{"scaled real scan", 20000, false, "--demo"},
 		{"negative, demo", -1, true, "at least 1"},
-		{"at the ceiling", maxDemoScale, true, ""},
+		{"at the ceiling", demo.MaxScale, true, ""},
 		// Well past what a browser can open, and far enough past it that the
 		// generator would panic allocating the slice rather than report.
-		{"over the ceiling", maxDemoScale + 1, true, "capped at"},
+		{"over the ceiling", demo.MaxScale + 1, true, "capped at"},
 		// Missing --demo is the more serious of the two mistakes and is the
 		// one reported, even though the count is also nonsense.
 		{"negative, real scan", -1, false, "--demo"},

@@ -80,6 +80,26 @@ func TestSnapshotNAtOrBelowTheStoryboardIsTheStoryboard(t *testing.T) {
 	}
 }
 
+// And the same at the other end. --demo-scale refuses a larger number outright
+// because a person typed it, but the cap belongs to the allocation rather than
+// to that flag: SnapshotN is what reserves the slice, so a second caller
+// passing a count in the billions has to hit something other than makeslice.
+//
+// Asserted on the count SnapshotN reports rather than on a built estate, since
+// building half a million rows to prove a bound exists would cost the suite
+// more than the bound is worth.
+func TestSnapshotNIsCappedAtMaxScale(t *testing.T) {
+	for _, n := range []int{MaxScale + 1, 10 * MaxScale, 1 << 40} {
+		if got := scaleTarget(n); got != MaxScale {
+			t.Errorf("SnapshotN(%d) would build %d resources, want it clamped to %d", n, got, MaxScale)
+		}
+	}
+	if got := scaleTarget(MaxScale - 1); got != MaxScale-1 {
+		t.Errorf("SnapshotN(%d) would build %d resources; the clamp is catching counts under the cap",
+			MaxScale-1, got)
+	}
+}
+
 // The generator draws from an explicit source precisely so this holds. With
 // the global source Go seeds at startup, two runs would produce two different
 // estates, every scaled scan would diff against the last as if the account had

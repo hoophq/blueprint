@@ -10,7 +10,8 @@ import (
 	"github.com/hoophq/blueprint/internal/scanners"
 )
 
-// SnapshotN returns the storyboard grown to exactly n resources.
+// SnapshotN returns the storyboard grown to exactly n resources, for any n
+// between the storyboard's own size and MaxScale. It is clamped at both ends.
 //
 // n is the total, not an addition: the storyboard renders first and the
 // generator fills whatever is left, so any n at or below the storyboard's own
@@ -25,6 +26,7 @@ import (
 // against 20,000 rows that are each half the weight of a real one would give
 // the size budget a number it can meet and the real output cannot.
 func SnapshotN(version string, n int) *model.Snapshot {
+	n = scaleTarget(n)
 	snap := Snapshot(version)
 	want := n - len(snap.Resources)
 	if want <= 0 {
@@ -55,6 +57,29 @@ func SnapshotN(version string, n int) *model.Snapshot {
 	snap.Finalize()
 	return snap
 }
+
+// MaxScale bounds the estate SnapshotN will build.
+//
+// A count in the billions asks the generator to allocate a slice it has no
+// memory for, and the failure is a runtime panic out of makeslice rather than
+// anything a reader could act on. A half-million-row report is already some
+// three hundred megabytes of HTML — past every practical limit on a file meant
+// to be opened in a browser — so stopping there costs nothing real.
+//
+// It lives beside the allocation rather than at the --demo-scale flag because
+// the flag is one caller and a bound enforced at that boundary is one the next
+// caller does not get. The flag still refuses a larger number outright, with a
+// sentence, since that path has a person on the other end who asked for
+// something specific and should be told they cannot have it. SnapshotN, with
+// no error to return and no one reading, clamps instead — the same thing it
+// already does at the low end, where anything under the storyboard's size
+// comes back as the storyboard.
+const MaxScale = 500_000
+
+// scaleTarget is how many resources SnapshotN will build for a requested n.
+// Named so the bound can be asserted without building half a million rows to
+// watch it hold.
+func scaleTarget(n int) int { return min(n, MaxScale) }
 
 // demoScaleSeed fixes the generator's stream.
 //

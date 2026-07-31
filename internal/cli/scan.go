@@ -186,22 +186,16 @@ func validateDemoScale(n int, demoMode bool) error {
 	if n < 0 {
 		return fmt.Errorf("--demo-scale must be a resource count of at least 1, got %d", n)
 	}
-	if n > maxDemoScale {
+	// The generator clamps here too, so this is not what protects it. It is
+	// what turns the clamp into a sentence: a person who typed a number is owed
+	// the news that they are not getting it, rather than a report that quietly
+	// holds half a million rows and never says why it stopped there.
+	if n > demo.MaxScale {
 		return fmt.Errorf("--demo-scale is capped at %d, got %d: past that the single-file "+
-			"report stops being a file anyone can open", maxDemoScale, n)
+			"report stops being a file anyone can open", demo.MaxScale, n)
 	}
 	return nil
 }
-
-// maxDemoScale bounds the fixture.
-//
-// The upper end is what the ceiling is for. A count in the billions asks the
-// generator to allocate a slice it has no memory for, and the failure is a
-// runtime panic out of makeslice rather than anything a reader could act on. A
-// half-million-row report is already some three hundred megabytes of HTML —
-// past every practical limit on a file meant to be opened in a browser — so
-// refusing above it costs nothing real and turns the panic into a sentence.
-const maxDemoScale = 500_000
 
 func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int, costs costFlags, metrics bool) (*model.Snapshot, error) {
 	cfg, err := awsx.Load(ctx, profile)
