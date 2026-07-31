@@ -52,6 +52,16 @@ No credentials handy? See what the output looks like with built-in fixture data:
 blueprint scan --demo
 ```
 
+The fixture is a curated estate — one honest example of every resource shape
+the report knows how to draw, including the awkward ones: a bucket with a size
+and no price, an unattached volume, a stopped instance still billing for its
+storage, a function on a retired runtime, a load balancer with no targets, and
+rows where a field is simply absent because AWS never reported it. To see how
+the report behaves on a large account, `--demo-scale N` grows it to N resources
+by generating extras that follow the same distribution. It is deterministic —
+the same N always produces the same census — and it is refused without `--demo`,
+because a real scan reports only what AWS returned.
+
 ## Usage
 
 ```sh
@@ -67,6 +77,7 @@ blueprint scan --compare last.json      # diff against a specific census JSON in
 blueprint scan --fail-on-change         # non-zero exit when the diff finds differences
 blueprint scan --no-history             # don't archive this scan or auto-diff
 blueprint scan --demo                   # render from fixture data, no AWS calls
+blueprint scan --demo --demo-scale 20000  # grow the fixture to an estate of that size
 blueprint scan --costs                  # also report last month's spend (AWS bills $0.01/request)
 blueprint scan --metrics                # also read CloudWatch metrics (AWS bills $0.01/1,000 metrics)
 ```

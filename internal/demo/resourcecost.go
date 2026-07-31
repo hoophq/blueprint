@@ -12,14 +12,14 @@ import (
 // AddResourceCosts attaches Cost Optimization Hub-style per-resource estimates
 // to the fixture, the way `--costs` would after a real scan.
 //
-// Only RDS instances get one. Cost Optimization Hub models a couple of dozen
-// resource types and databases are among them, but the fixture's DynamoDB
-// tables and ElastiCache clusters come away unpriced on purpose: partial
-// coverage is the normal state of this data, and a fixture where every row
-// carries a price would let a renderer be built that has no unpriced case to
-// handle.
+// Only RDS instances and NAT gateways get one. Cost Optimization Hub models a
+// couple of dozen resource types and both of these are among them, but the
+// fixture's DynamoDB tables and ElastiCache clusters come away unpriced on
+// purpose: partial coverage is the normal state of this data, and a fixture
+// where every row carries a price would let a renderer be built that has no
+// unpriced case to handle.
 //
-// Two shapes cycle over those instances — a plain whole-resource figure and
+// Two shapes cycle over the instances — a plain whole-resource figure and
 // one that covers storage only, so the per-resource caveat path is exercised.
 // The enricher's other caveat, for a resource younger than the window its
 // figure was modelled over, has no fixture: every resource here was created
@@ -55,34 +55,48 @@ func AddResourceCosts(snap *model.Snapshot) {
 		},
 	}
 
+	// Cloned so two fixture resources never share one backing array — a
+	// consumer that sorts or appends in place would otherwise reach across
+	// resources.
+	priced := func(amount string, caveats []string) model.ResourceCost {
+		return model.ResourceCost{
+			Amount:       amount,
+			Currency:     "USD",
+			Method:       model.CostMethodCOH,
+			Estimated:    true,
+			ObservedFrom: &from,
+			ObservedTo:   &to,
+			Caveats:      slices.Clone(caveats),
+			// No MatchKey: the hub reports ARNs, so there is no join to disclose.
+		}
+	}
+
 	n := 0
 	for i := range snap.Resources {
 		r := &snap.Resources[i]
-		size, ok := r.Measure(model.MeasureSizeBytes)
-		if r.Type != model.TypeRDSInstance || !ok {
+		size, sized := r.Measure(model.MeasureSizeBytes)
+		switch {
+		case r.Type == model.TypeRDSInstance && sized:
+			s := shapes[n%len(shapes)]
+			n++
+			r.AddCost(priced(s.monthly(size), s.caveats))
+		case r.Type == model.TypeNATGateway:
+			// Flat, and derived from nothing on the row, because that is how a
+			// gateway bills: an hourly charge for existing, the same whether it
+			// holds a public address or routes to on-premises, and the reason
+			// the census gives one a row at all. The odd cents are deliberate —
+			// every other figure in the fixture is a round dollar, and a
+			// renderer that only ever sees those is untested against the ones a
+			// real hub returns.
+			r.AddCost(priced("32.85", nil))
+		default:
 			// The fixture stands in for a completed hub read, so everything it
 			// does not price carries the reason it was not priced — the same
 			// named absence the real stage writes. A demo whose unpriced
 			// resources came away blank would hide the coverage caveat, which
 			// is the part of the cost output a reader most needs to see.
 			r.CostUnavailable = unpricedReason
-			continue
 		}
-		s := shapes[n%len(shapes)]
-		n++
-		r.AddCost(model.ResourceCost{
-			Amount:       s.monthly(size),
-			Currency:     "USD",
-			Method:       model.CostMethodCOH,
-			Estimated:    true,
-			ObservedFrom: &from,
-			ObservedTo:   &to,
-			// Cloned so two fixture resources never share one backing array —
-			// a consumer that sorts or appends in place would otherwise reach
-			// across resources.
-			Caveats: slices.Clone(s.caveats),
-			// No MatchKey: the hub reports ARNs, so there is no join to disclose.
-		})
 	}
 
 	// Re-finalize: the fixture is meant to be indistinguishable from a real
@@ -145,11 +159,20 @@ func AddResourceCostOverlay(snap *model.Snapshot) {
 		}
 	}
 
+	// The probe covers the two curated accounts and says so on the report
+	// below, so it may only price rows in them. --demo-scale generates rows in
+	// accounts the probe never named, and pricing those would make the fixture
+	// contradict its own coverage statement — a renderer built against it would
+	// learn that a figure can appear under an account the probe did not reach.
+	probed := func(accountID string) bool {
+		return accountID == acctProd || accountID == acctStaging
+	}
+
 	var rds, tables int
 	for i := range snap.Resources {
 		r := &snap.Resources[i]
 		size, ok := r.Measure(model.MeasureSizeBytes)
-		if !ok {
+		if !ok || !probed(r.AccountID) {
 			continue
 		}
 		switch r.Type {

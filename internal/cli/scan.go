@@ -38,6 +38,7 @@ func scanCmd() *cobra.Command {
 		formats      []string
 		concurrency  int
 		demoMode     bool
+		demoScale    int
 		noOpen       bool
 		comparePath  string
 		failOnChange bool
@@ -61,10 +62,19 @@ func scanCmd() *cobra.Command {
 			if err := costs.validate(); err != nil {
 				return err
 			}
+			// Same reasoning, and one case worth being blunt about: a
+			// --demo-scale passed without --demo would otherwise look like it
+			// had padded a real census, which is the one thing this tool must
+			// never appear to do.
+			if err := validateDemoScale(demoScale, demoMode); err != nil {
+				return err
+			}
 
 			var snap *model.Snapshot
 			if demoMode {
-				snap = demo.Snapshot(Version)
+				// Zero is the storyboard, by SnapshotN's own contract, so the
+				// unscaled path stays the curated fixture and stays instant.
+				snap = demo.SnapshotN(Version, demoScale)
 				if costs.enabled {
 					// The fixture's meter honestly reports zero requests and
 					// zero charge, because --demo makes no AWS calls at all.
@@ -112,6 +122,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&formats, "formats", []string{"html", "json"}, "outputs to write: html, json, csv")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max concurrent AWS API scan units")
 	cmd.Flags().BoolVar(&demoMode, "demo", false, "render outputs from built-in fixture data (no AWS calls)")
+	cmd.Flags().IntVar(&demoScale, "demo-scale", 0, "with --demo, grow the fixture to this many resources with deterministically generated extras (default: the curated fixture alone)")
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "do not open the HTML report in the browser after the scan")
 	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against instead of the automatic history baseline")
 	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when the diff (auto or --compare) finds differences")
@@ -155,6 +166,42 @@ func (c costFlags) validate() error {
 	}
 	return nil
 }
+
+// validateDemoScale rejects a --demo-scale that cannot mean what it says.
+//
+// Outside --demo it is refused rather than ignored. The flag generates
+// resources, and the one guarantee this tool makes about a real scan is that
+// every row in it came from an AWS API response; a flag that looks like it
+// could add rows to that has to fail loudly the moment it is combined with
+// one, not quietly do nothing and leave the reader to wonder which run they
+// are holding.
+func validateDemoScale(n int, demoMode bool) error {
+	if n == 0 {
+		return nil
+	}
+	if !demoMode {
+		return fmt.Errorf("--demo-scale %d needs --demo: it generates fixture resources, "+
+			"and a real scan reports only what AWS returned", n)
+	}
+	if n < 0 {
+		return fmt.Errorf("--demo-scale must be a resource count of at least 1, got %d", n)
+	}
+	if n > maxDemoScale {
+		return fmt.Errorf("--demo-scale is capped at %d, got %d: past that the single-file "+
+			"report stops being a file anyone can open", maxDemoScale, n)
+	}
+	return nil
+}
+
+// maxDemoScale bounds the fixture.
+//
+// The upper end is what the ceiling is for. A count in the billions asks the
+// generator to allocate a slice it has no memory for, and the failure is a
+// runtime panic out of makeslice rather than anything a reader could act on. A
+// half-million-row report is already some three hundred megabytes of HTML —
+// past every practical limit on a file meant to be opened in a browser — so
+// refusing above it costs nothing real and turns the panic into a sentence.
+const maxDemoScale = 500_000
 
 func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []string, org bool, roleName string, concurrency int, costs costFlags, metrics bool) (*model.Snapshot, error) {
 	cfg, err := awsx.Load(ctx, profile)

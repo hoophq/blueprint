@@ -1,6 +1,7 @@
 package demo
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -289,5 +290,141 @@ func TestSnapshotEBSAttachmentsAreConsistentWithInstances(t *testing.T) {
 					volumeID, vol.AccountID, vol.Region, instanceID, r.AccountID, r.Region)
 			}
 		}
+	}
+}
+
+// A size the service reported as zero and a size the service never reported
+// are different findings, and the fixture has to carry both or the report is
+// only ever exercised against one of them. The distinction lives in whether
+// the key is present, so reading through Measure is the only way to see it —
+// a caller that took the value alone would get 0 for both.
+func TestSnapshotDistinguishesAReportedZeroFromAnUnreportedSize(t *testing.T) {
+	snap := Snapshot("test")
+
+	var zero, absent []string
+	for _, r := range snap.Resources {
+		switch v, ok := r.Measure(model.MeasureSizeBytes); {
+		case !ok:
+			absent = append(absent, r.Name)
+		case v == 0:
+			zero = append(zero, r.Name)
+		case v < 0:
+			t.Errorf("%s: size_bytes = %d, want a size no service could report to be negative", r.Name, v)
+		}
+	}
+	if len(zero) == 0 {
+		t.Error("no resource reports a size of zero — the stored-zero path renders nothing in the demo")
+	}
+	if len(absent) == 0 {
+		t.Error("every resource reports a size — the em-dash path renders nothing in the demo")
+	}
+}
+
+// ElastiCache is three describe calls behind one service name, and they do not
+// report the same fields. Grouped Redis reports encryption and retention but
+// leaves the engine version on its member clusters, which this census skips;
+// a standalone cluster reports the version; a serverless cache reports the
+// version and neither of the other two. The fixture has to differ the same way
+// or the report gets built against a shape no scan produces.
+func TestSnapshotElastiCacheRowsCarryOnlyWhatTheirDescribeCallReports(t *testing.T) {
+	snap := Snapshot("test")
+
+	// ARN resource type per shape. The ARN is the diff's match key and the
+	// cost join's key, so a group written as a cluster matches nothing.
+	arnType := map[string]string{
+		model.TypeElastiCacheReplicationGroup: "replicationgroup",
+		model.TypeElastiCacheCacheCluster:     "cluster",
+		model.TypeElastiCacheServerlessCache:  "serverlesscache",
+	}
+
+	seen := map[string]int{}
+	for _, r := range snap.Resources {
+		if r.Service != model.ServiceElastiCache {
+			continue
+		}
+		seen[r.Type]++
+
+		want, known := arnType[r.Type]
+		if !known {
+			t.Errorf("%s: type %q is not one of the three ElastiCache shapes", r.Name, r.Type)
+			continue
+		}
+		if parts := strings.Split(r.ARN, ":"); len(parts) != 7 || parts[5] != want {
+			t.Errorf("%s: ARN = %q, want resource type %q", r.Name, r.ARN, want)
+		}
+
+		version := r.Attr(model.AttrEngineVersion)
+		_, retention := r.Measure(model.MeasureBackupRetentionDays)
+		switch r.Type {
+		case model.TypeElastiCacheReplicationGroup:
+			if version != "" {
+				t.Errorf("%s: engine_version = %q, want none — DescribeReplicationGroups does not report it", r.Name, version)
+			}
+		case model.TypeElastiCacheServerlessCache:
+			if version == "" {
+				t.Errorf("%s: engine_version is absent, want the full version DescribeServerlessCaches reports", r.Name)
+			}
+			if got := r.Attr(model.AttrInstanceClass); got != "" {
+				t.Errorf("%s: instance_class = %q, want none — a serverless cache has no node type", r.Name, got)
+			}
+			if r.Encrypted != nil {
+				t.Errorf("%s: encrypted = %v, want nil — DescribeServerlessCaches reports no at-rest flag", r.Name, *r.Encrypted)
+			}
+			if retention {
+				t.Errorf("%s: backup_retention_days is set, want absent — a serverless cache reports no retention limit", r.Name)
+			}
+		}
+	}
+
+	for typ := range arnType {
+		if seen[typ] == 0 {
+			t.Errorf("no %s in the fixture — that shape renders nothing in the demo", typ)
+		}
+	}
+}
+
+// The network-id lookups have to answer for keys the storyboard never wrote
+// down, because SnapshotN invents accounts. A miss used to return "", which
+// SetAttr drops — generated rows would have carried no VPC and no subnet, and
+// a generated load balancer's ARN would have ended in a bare slash. What is
+// written down still wins, so the storyboard's own ids never move.
+func TestSynthesizedNetworkIDsAreShapedLikeTheWrittenDownOnes(t *testing.T) {
+	if got, want := vpcID(acctProd, "us-east-1"), demoVPCs[acctProd+"/us-east-1"]; got != want {
+		t.Errorf("vpcID for a known key = %q, want the written-down %q", got, want)
+	}
+	if got, want := subnetID(acctProd, "us-east-1a"), demoSubnets[acctProd+"/us-east-1a"]; got != want {
+		t.Errorf("subnetID for a known key = %q, want the written-down %q", got, want)
+	}
+	if got, want := lbSuffix(acctProd, "us-east-1", "web"), demoLBSuffixes["web"]; got != want {
+		t.Errorf("lbSuffix for a known key = %q, want the written-down %q", got, want)
+	}
+
+	shape := map[string]*regexp.Regexp{
+		"vpcID":    regexp.MustCompile(`^vpc-[0-9a-f]{17}$`),
+		"subnetID": regexp.MustCompile(`^subnet-[0-9a-f]{17}$`),
+		"lbSuffix": regexp.MustCompile(`^[0-9a-f]{16}$`),
+	}
+	got := map[string][]string{
+		"vpcID":    {vpcID("999900001111", "eu-west-1"), vpcID("999900002222", "eu-west-1")},
+		"subnetID": {subnetID("999900001111", "eu-west-1a"), subnetID("999900001111", "eu-west-1b")},
+		"lbSuffix": {lbSuffix("999900001111", "eu-west-1", "edge"), lbSuffix("999900002222", "eu-west-1", "edge")},
+	}
+	for name, ids := range got {
+		for _, id := range ids {
+			if !shape[name].MatchString(id) {
+				t.Errorf("%s synthesized %q, which is not shaped like the id AWS would return", name, id)
+			}
+		}
+		// Distinct keys, distinct ids: two generated accounts sharing a VPC id
+		// would put resources in a network neither of them owns, and two load
+		// balancers sharing a suffix would collide on the diff's match key.
+		if ids[0] == ids[1] {
+			t.Errorf("%s returned %q for two different keys", name, ids[0])
+		}
+	}
+
+	// Stable across calls, or the same fixture would diff against itself.
+	if a, b := vpcID("999900001111", "eu-west-1"), vpcID("999900001111", "eu-west-1"); a != b {
+		t.Errorf("vpcID is not deterministic: %q then %q", a, b)
 	}
 }

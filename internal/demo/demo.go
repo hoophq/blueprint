@@ -4,6 +4,7 @@ package demo
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,9 +23,13 @@ const (
 
 // Snapshot returns fixture data with deterministic resources (GeneratedAt is
 // the wall clock) resembling a mid-size multi-account, multi-region estate:
-// 96 resources across all supported services, with realistic tag hygiene
+// 98 resources across all supported services, with realistic tag hygiene
 // gaps (~30% missing owner, ~20% missing environment) and five scan failures
 // for the honesty ledger.
+//
+// This is the storyboard: every row is here because some rendering path needs
+// it, and the tests name several of them directly. SnapshotN builds on it for
+// the scale cases rather than replacing it.
 func Snapshot(version string) *model.Snapshot {
 	now := time.Now().UTC()
 	snap := &model.Snapshot{
@@ -89,81 +94,105 @@ func resources() []model.Resource {
 	return []model.Resource{
 		// ── prod account · us-east-1 ────────────────────────────────────
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "orders-prod",
-			"postgres", "15.4", "db.r6g.xlarge", 500, true, "available",
+			"postgres", "15.4", "db.r6g.xlarge", storage(500), true, "available",
 			"orders-prod.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2019, 3, 14),
 			tags("environment", "production", "owner", "payments", "app", "orders")),
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "orders-prod-replica",
-			"postgres", "15.4", "db.r6g.xlarge", 500, false, "available",
+			"postgres", "15.4", "db.r6g.xlarge", storage(500), false, "available",
 			"orders-prod-replica.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2021, 6, 2),
 			tags("environment", "production", "owner", "payments", "app", "orders")),
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "billing-db",
-			"mysql", "8.0.35", "db.m6g.large", 200, true, "available",
+			"mysql", "8.0.35", "db.m6g.large", storage(200), true, "available",
 			"billing-db.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2020, 1, 21),
 			tags("environment", "production", "owner", "billing")),
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "legacy-crm",
-			"mysql", "5.7.44", "db.m5.large", 100, false, "available",
+			"mysql", "5.7.44", "db.m5.large", storage(100), false, "available",
 			"legacy-crm.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2017, 8, 2),
 			tags("app", "crm")), // no owner, no environment
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "auth-db",
-			"postgres", "14.11", "db.m6g.large", 100, true, "available",
+			"postgres", "14.11", "db.m6g.large", storage(100), true, "available",
 			"auth-db.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2020, 9, 10),
 			tags("environment", "production", "team", "identity")),
 		res(acctProd, "us-east-1", model.ServiceRDS, "instance", "reporting-mart",
-			"sqlserver-se", "15.00.4345.5.v1", "db.m5.xlarge", 400, false, "available",
+			"sqlserver-se", "15.00.4345.5.v1", "db.m5.xlarge", storage(400), false, "available",
 			"reporting-mart.c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2018, 11, 27),
 			tags("environment", "production", "cost-center", "finance")), // no owner
 		// Two db.r6g.2xlarge writers/readers back this cluster; the census
 		// counts the cluster only, so it carries the MultiAZ flag.
 		res(acctProd, "us-east-1", model.ServiceAurora, "cluster", "users-aurora",
-			"aurora-postgresql", "15.4", "", 0, true, "available",
+			"aurora-postgresql", "15.4", "", nil, true, "available",
 			"users-aurora.cluster-c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2021, 2, 17),
 			tags("environment", "production", "owner", "identity")),
 		res(acctProd, "us-east-1", model.ServiceAurora, "cluster", "checkout-aurora",
-			"aurora-mysql", "8.0.mysql_aurora.3.05.2", "", 0, false, "available",
+			"aurora-mysql", "8.0.mysql_aurora.3.05.2", "", nil, false, "available",
 			"checkout-aurora.cluster-c9k2hxu3qapb.us-east-1.rds.amazonaws.com", d(2023, 4, 11),
 			tags("environment", "production", "owner", "checkout")),
 		res(acctProd, "us-east-1", model.ServiceDynamoDB, "table", "sessions",
-			"dynamodb", "", "", 18, false, "active", "", d(2020, 5, 7),
+			"dynamodb", "", "PAY_PER_REQUEST", storage(18), false, "active", "", d(2020, 5, 7),
 			tags("environment", "production", "owner", "platform")),
 		res(acctProd, "us-east-1", model.ServiceDynamoDB, "table", "carts",
-			"dynamodb", "", "", 6, false, "active", "", d(2020, 5, 7),
+			"dynamodb", "", "PAY_PER_REQUEST", storage(6), false, "active", "", d(2020, 5, 7),
 			tags("environment", "production", "owner", "checkout")),
 		res(acctProd, "us-east-1", model.ServiceDynamoDB, "table", "feature-flags",
-			"dynamodb", "", "", 1, false, "active", "", d(2022, 10, 19),
+			"dynamodb", "", "PROVISIONED", storage(1), false, "active", "", d(2022, 10, 19),
 			tags("created-by", "terraform")), // no owner, no environment
 		res(acctProd, "us-east-1", model.ServiceDynamoDB, "table", "ratelimits",
-			"dynamodb", "", "", 2, false, "active", "", d(2023, 1, 9),
+			"dynamodb", "", "PAY_PER_REQUEST", storage(2), false, "active", "", d(2023, 1, 9),
 			tags("env", "production", "team", "platform")),
+		// Zero bytes, and the zero is stored rather than dropped. DynamoDB
+		// reported it — the table is either empty or younger than the roughly
+		// six-hourly refresh of that figure — and an absent key would claim the
+		// service said nothing. Provisioned, so it bills for throughput it is
+		// not using. This row's whole job is to prove the zero survives every
+		// hop to the page, including a formatter that might round it up.
+		res(acctProd, "us-east-1", model.ServiceDynamoDB, "table", "audit-trail",
+			"dynamodb", "", "PROVISIONED", storage(0), false, "active", "", d(2024, 11, 4),
+			tags("environment", "production", "owner", "compliance")),
+		// No engine version on any of the replication groups below.
+		// DescribeReplicationGroups reports the engine and not its version — the
+		// version lives on the member cache clusters, which this census skips to
+		// avoid counting a group twice. The report's lifecycle table therefore
+		// has nothing to say about grouped Redis, and that gap is real.
 		res(acctProd, "us-east-1", model.ServiceElastiCache, "cluster", "checkout-cache",
-			"redis", "7.1.0", "cache.r6g.large", 0, false, "available",
+			"redis", "", "cache.r6g.large", nil, false, "available",
 			"checkout-cache.kx3q9f.ng.0001.use1.cache.amazonaws.com", d(2021, 7, 29),
 			tags("environment", "production", "owner", "checkout")),
 		res(acctProd, "us-east-1", model.ServiceElastiCache, "cluster", "sessions-cache",
-			"redis", "7.0.7", "cache.m6g.large", 0, false, "available",
+			"redis", "", "cache.m6g.large", nil, false, "available",
 			"sessions-cache.kx3q9f.ng.0001.use1.cache.amazonaws.com", d(2020, 5, 8),
 			tags("environment", "production", "squad", "platform")),
+		// The third ElastiCache shape, and the only cache with no node type at
+		// all: serverless is sized by usage, so the report's Class column is
+		// legitimately empty here. DescribeServerlessCaches does report the
+		// engine's full version — unlike the replication groups above — and
+		// reports no encryption flag and no retention, so this row carries
+		// neither. See applyExposure, which excludes it by type.
+		res(acctProd, "us-east-1", model.ServiceElastiCache, "serverless", "ratelimits-cache",
+			"redis", "7.1.0", "", nil, false, "available",
+			"ratelimits-cache-kx3q9f.serverless.use1.cache.amazonaws.com", d(2024, 5, 20),
+			tags("environment", "production", "owner", "platform")),
 		res(acctProd, "us-east-1", model.ServiceElastiCache, "instance", "legacy-memcache",
-			"memcached", "1.6.17", "cache.t3.medium", 0, false, "available",
+			"memcached", "1.6.17", "cache.t3.medium", nil, false, "available",
 			"legacy-memcache.kx3q9f.cfg.use1.cache.amazonaws.com", d(2018, 3, 30),
 			nil), // no tags at all
 		res(acctProd, "us-east-1", model.ServiceRedshift, "cluster", "analytics-wh",
-			"redshift", "1.0.63269", "ra3.4xlarge", 3200, false, "available",
+			"redshift", "1.0.63269", "ra3.4xlarge", storage(3200), false, "available",
 			"analytics-wh.cbq7xz1t9e2m.us-east-1.redshift.amazonaws.com", d(2019, 10, 15),
 			tags("environment", "production", "owner", "data")),
 		// Serverless is sized by a number of RPUs instead of a named instance
 		// class, so it exercises the one shape whose capacity lives in the
 		// measure bag rather than the attribute bag.
 		withMeasure(res(acctProd, "us-east-1", model.ServiceRedshift, "serverless", "analytics-serverless",
-			"redshift-serverless", "", "", 0, false, "available",
+			"redshift-serverless", "", "", nil, false, "available",
 			"analytics-serverless.111111111111.us-east-1.redshift-serverless.amazonaws.com", d(2024, 2, 6),
 			tags("owner", "data")), // no environment
 			model.MeasureBaseCapacityRPU, 8),
 		res(acctProd, "us-east-1", model.ServiceDocumentDB, "cluster", "catalog-docs",
-			"docdb", "5.0.0", "db.r6g.large", 350, false, "available",
+			"docdb", "5.0.0", "db.r6g.large", storage(350), false, "available",
 			"catalog-docs.cluster-c9k2hxu3qapb.us-east-1.docdb.amazonaws.com", d(2021, 11, 23),
 			tags("environment", "production", "owner", "catalog")),
 		res(acctProd, "us-east-1", model.ServiceNeptune, "cluster", "fraud-graph",
-			"neptune", "1.3.2.0", "db.r5.xlarge", 120, false, "available",
+			"neptune", "1.3.2.0", "db.r5.xlarge", storage(120), false, "available",
 			"fraud-graph.cluster-c9k2hxu3qapb.us-east-1.neptune.amazonaws.com", d(2022, 3, 8),
 			tags("environment", "production", "owner", "risk")),
 		ec2Instance(acctProd, "us-east-1", "us-east-1a", "i-0a1b2c3d4e5f60011",
@@ -252,10 +281,10 @@ func resources() []model.Resource {
 		// separately billable public IPv4, and the gateway row records the same
 		// address as the join between the two rather than as a second charge.
 		elasticIP(acctProd, "us-east-1", "eipalloc-0a1b2c3d4e5f60061", "203.0.113.11",
-			"nat-0a1b2c3d4e5f60051", demoSubnets[acctProd+"/us-east-1a"],
+			"nat-0a1b2c3d4e5f60051", subnetID(acctProd, "us-east-1a"),
 			tags("Name", "egress-1a-eip", "environment", "production", "owner", "platform")),
 		elasticIP(acctProd, "us-east-1", "eipalloc-0a1b2c3d4e5f60062", "203.0.113.12",
-			"nat-0a1b2c3d4e5f60052", demoSubnets[acctProd+"/us-east-1b"],
+			"nat-0a1b2c3d4e5f60052", subnetID(acctProd, "us-east-1b"),
 			tags("Name", "egress-1b-eip", "environment", "production")), // no owner
 		// Allocated, attached to nothing, billing the same as the two above.
 		// Since February 2024 that is true of every public IPv4, which turned
@@ -344,29 +373,29 @@ func resources() []model.Resource {
 			tags("Name", "search-metadata-pre-upgrade", "environment", "production", "owner", "search")),
 
 		res(acctProd, "us-west-2", model.ServiceRDS, "instance", "orders-dr",
-			"postgres", "15.4", "db.r6g.xlarge", 500, true, "available",
+			"postgres", "15.4", "db.r6g.xlarge", storage(500), true, "available",
 			"orders-dr.c8m1kwv2rbqc.us-west-2.rds.amazonaws.com", d(2021, 6, 2),
 			tags("environment", "production", "owner", "payments", "app", "orders")),
 		res(acctProd, "us-west-2", model.ServiceRDS, "instance", "telemetry-tsdb",
-			"postgres", "16.2", "db.m6g.2xlarge", 1000, false, "available",
+			"postgres", "16.2", "db.m6g.2xlarge", storage(1000), false, "available",
 			"telemetry-tsdb.c8m1kwv2rbqc.us-west-2.rds.amazonaws.com", d(2023, 9, 18),
 			tags("environment", "production", "owner", "observability")),
 		res(acctProd, "us-west-2", model.ServiceAurora, "cluster", "search-metadata",
-			"aurora-postgresql", "14.9", "", 0, false, "available",
+			"aurora-postgresql", "14.9", "", nil, false, "available",
 			"search-metadata.cluster-c8m1kwv2rbqc.us-west-2.rds.amazonaws.com", d(2022, 1, 26),
 			tags("environment", "production")), // no owner
 		res(acctProd, "us-west-2", model.ServiceDynamoDB, "table", "events-firehose",
-			"dynamodb", "", "", 240, false, "active", "", d(2021, 4, 14),
+			"dynamodb", "", "PROVISIONED", storage(240), false, "active", "", d(2021, 4, 14),
 			tags("environment", "production", "owner", "data")),
 		res(acctProd, "us-west-2", model.ServiceDynamoDB, "table", "device-registry",
-			"dynamodb", "", "", 9, false, "active", "", d(2019, 12, 3),
+			"dynamodb", "", "PROVISIONED", storage(9), false, "active", "", d(2019, 12, 3),
 			tags("created-by", "console")), // no owner, no environment
 		res(acctProd, "us-west-2", model.ServiceElastiCache, "cluster", "queue-cache",
-			"redis", "6.2.14", "cache.m5.large", 0, false, "available",
+			"redis", "", "cache.m5.large", nil, false, "available",
 			"queue-cache.kx3q9f.ng.0001.usw2.cache.amazonaws.com", d(2019, 7, 22),
 			tags("environment", "production")), // no owner
 		res(acctProd, "us-west-2", model.ServiceRedshift, "cluster", "analytics-dr",
-			"redshift", "1.0.63269", "ra3.4xlarge", 3200, false, "paused",
+			"redshift", "1.0.63269", "ra3.4xlarge", storage(3200), false, "paused",
 			"analytics-dr.cbq7xz1t9e2m.us-west-2.redshift.amazonaws.com", d(2020, 10, 15),
 			tags("environment", "production", "owner", "data")),
 		// This instance names an attached volume that has no row of its own —
@@ -405,21 +434,21 @@ func resources() []model.Resource {
 
 		// ── prod account · sa-east-1 ────────────────────────────────────
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "orders-latam",
-			"postgres", "15.4", "db.m6g.large", 200, true, "available",
+			"postgres", "15.4", "db.m6g.large", storage(200), true, "available",
 			"orders-latam.c7n4jyt5sdrc.sa-east-1.rds.amazonaws.com", d(2022, 5, 31),
 			tags("environment", "production", "owner", "payments-latam")),
 		res(acctProd, "sa-east-1", model.ServiceRDS, "instance", "invoices-br",
-			"mysql", "8.0.36", "db.t3.medium", 50, false, "storage-full",
+			"mysql", "8.0.36", "db.t3.medium", storage(50), false, "storage-full",
 			"invoices-br.c7n4jyt5sdrc.sa-east-1.rds.amazonaws.com", d(2023, 2, 14),
 			tags("environment", "production")), // no owner
 		res(acctProd, "sa-east-1", model.ServiceDynamoDB, "table", "carts-latam",
-			"dynamodb", "", "", 3, false, "active", "", d(2022, 6, 9),
+			"dynamodb", "", "PAY_PER_REQUEST", storage(3), false, "active", "", d(2022, 6, 9),
 			tags("environment", "production", "owner", "checkout")),
 		res(acctProd, "sa-east-1", model.ServiceDynamoDB, "table", "nfe-receipts",
-			"dynamodb", "", "", 27, false, "active", "", d(2022, 11, 1),
+			"dynamodb", "", "PROVISIONED", storage(27), false, "active", "", d(2022, 11, 1),
 			nil), // no tags at all
 		res(acctProd, "sa-east-1", model.ServiceDocumentDB, "cluster", "catalog-docs-latam",
-			"docdb", "4.0.0", "db.r5.large", 180, false, "available",
+			"docdb", "4.0.0", "db.r5.large", storage(180), false, "available",
 			"catalog-docs-latam.cluster-c7n4jyt5sdrc.sa-east-1.docdb.amazonaws.com", d(2021, 8, 17),
 			tags("environment", "production")), // no owner
 		// Stopped, and therefore not publicly accessible: an instance without an
@@ -457,48 +486,48 @@ func resources() []model.Resource {
 
 		// ── staging account · us-east-1 ─────────────────────────────────
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "orders-staging",
-			"postgres", "15.4", "db.t4g.medium", 100, false, "available",
+			"postgres", "15.4", "db.t4g.medium", storage(100), false, "available",
 			"orders-staging.c5p8gxr9tfsd.us-east-1.rds.amazonaws.com", d(2021, 6, 15),
 			tags("environment", "staging", "owner", "payments")),
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "billing-staging",
-			"mysql", "8.0.35", "db.t3.medium", 50, false, "stopped",
+			"mysql", "8.0.35", "db.t3.medium", storage(50), false, "stopped",
 			"billing-staging.c5p8gxr9tfsd.us-east-1.rds.amazonaws.com", d(2021, 3, 4),
 			tags("environment", "staging", "owner", "billing")),
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "qa-sandbox",
-			"postgres", "13.13", "db.t3.micro", 20, false, "available",
+			"postgres", "13.13", "db.t3.micro", storage(20), false, "available",
 			"qa-sandbox.c5p8gxr9tfsd.us-east-1.rds.amazonaws.com", d(2020, 7, 8),
 			nil), // no tags at all
 		res(acctStaging, "us-east-1", model.ServiceRDS, "instance", "load-test-db",
-			"postgres", "15.4", "db.r6g.large", 200, false, "available",
+			"postgres", "15.4", "db.r6g.large", storage(200), false, "available",
 			"load-test-db.c5p8gxr9tfsd.us-east-1.rds.amazonaws.com", d(2024, 1, 30),
 			tags("stage", "staging")), // env via "stage" key, no owner
 		res(acctStaging, "us-east-1", model.ServiceAurora, "cluster", "users-aurora-staging",
-			"aurora-postgresql", "15.4", "", 0, false, "available",
+			"aurora-postgresql", "15.4", "", nil, false, "available",
 			"users-aurora-staging.cluster-c5p8gxr9tfsd.us-east-1.rds.amazonaws.com", d(2021, 9, 2),
 			tags("environment", "staging", "owner", "identity")),
 		res(acctStaging, "us-east-1", model.ServiceDynamoDB, "table", "sessions-staging",
-			"dynamodb", "", "", 2, false, "active", "", d(2020, 5, 20),
+			"dynamodb", "", "PAY_PER_REQUEST", storage(2), false, "active", "", d(2020, 5, 20),
 			tags("environment", "staging", "owner", "platform")),
 		res(acctStaging, "us-east-1", model.ServiceDynamoDB, "table", "feature-flags-staging",
-			"dynamodb", "", "", 1, false, "active", "", d(2022, 10, 19),
+			"dynamodb", "", "PROVISIONED", storage(1), false, "active", "", d(2022, 10, 19),
 			nil), // no tags at all
 		res(acctStaging, "us-east-1", model.ServiceDynamoDB, "table", "integration-test-artifacts",
-			"dynamodb", "", "", 55, false, "active", "", d(2023, 6, 27),
+			"dynamodb", "", "PROVISIONED", storage(55), false, "active", "", d(2023, 6, 27),
 			tags("environment", "staging", "owner", "qa")),
 		res(acctStaging, "us-east-1", model.ServiceElastiCache, "cluster", "checkout-cache-staging",
-			"redis", "7.1.0", "cache.t4g.small", 0, false, "available",
+			"redis", "", "cache.t4g.small", nil, false, "available",
 			"checkout-cache-staging.kx3q9f.ng.0001.use1.cache.amazonaws.com", d(2021, 8, 5),
 			tags("environment", "staging", "owner", "checkout")),
 		res(acctStaging, "us-east-1", model.ServiceRedshift, "cluster", "analytics-wh-staging",
-			"redshift", "1.0.61395", "dc2.large", 640, false, "available",
+			"redshift", "1.0.61395", "dc2.large", storage(640), false, "available",
 			"analytics-wh-staging.cbq7xz1t9e2m.us-east-1.redshift.amazonaws.com", d(2020, 12, 1),
 			tags("environment", "staging", "owner", "data")),
 		res(acctStaging, "us-east-1", model.ServiceDocumentDB, "cluster", "catalog-docs-staging",
-			"docdb", "5.0.0", "db.t3.medium", 40, false, "available",
+			"docdb", "5.0.0", "db.t3.medium", storage(40), false, "available",
 			"catalog-docs-staging.cluster-c5p8gxr9tfsd.us-east-1.docdb.amazonaws.com", d(2022, 2, 22),
 			tags("owner", "catalog")), // no environment
 		res(acctStaging, "us-east-1", model.ServiceNeptune, "cluster", "fraud-graph-staging",
-			"neptune", "1.3.2.0", "db.t3.medium", 15, false, "available",
+			"neptune", "1.3.2.0", "db.t3.medium", storage(15), false, "available",
 			"fraud-graph-staging.cluster-c5p8gxr9tfsd.us-east-1.neptune.amazonaws.com", d(2022, 4, 12),
 			tags("environment", "staging", "owner", "risk")),
 		ec2Instance(acctStaging, "us-east-1", "us-east-1a", "i-0d4e5f6a7b8c90041",
@@ -533,7 +562,7 @@ func resources() []model.Resource {
 			"203.0.113.44", d(2021, 6, 15),
 			tags("environment", "staging", "owner", "platform")),
 		elasticIP(acctStaging, "us-east-1", "eipalloc-0d4e5f6a7b8c90061", "203.0.113.44",
-			"nat-0d4e5f6a7b8c90051", demoSubnets[acctStaging+"/us-east-1a"],
+			"nat-0d4e5f6a7b8c90051", subnetID(acctStaging, "us-east-1a"),
 			tags("environment", "staging", "owner", "platform")),
 		loadBalancerV2(acctStaging, "us-east-1", "application", "staging-frontend",
 			"internet-facing", "staging-frontend-0d4e5f6a7b8c9075.us-east-1.elb.amazonaws.com",
@@ -559,15 +588,15 @@ func resources() []model.Resource {
 
 		// ── staging account · eu-west-1 ─────────────────────────────────
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "gdpr-test-db",
-			"postgres", "15.4", "db.t3.medium", 50, false, "available",
+			"postgres", "15.4", "db.t3.medium", storage(50), false, "available",
 			"gdpr-test-db.c2r6fwq8vhte.eu-west-1.rds.amazonaws.com", d(2023, 5, 16),
 			tags("environment", "staging", "owner", "compliance")),
 		res(acctStaging, "eu-west-1", model.ServiceRDS, "instance", "data-residency-poc",
-			"mariadb", "10.11.6", "db.t3.small", 20, false, "available",
+			"mariadb", "10.11.6", "db.t3.small", storage(20), false, "available",
 			"data-residency-poc.c2r6fwq8vhte.eu-west-1.rds.amazonaws.com", d(2024, 3, 7),
 			nil), // no tags at all
 		res(acctStaging, "eu-west-1", model.ServiceElastiCache, "cluster", "gdpr-cache",
-			"redis", "7.0.7", "cache.t4g.micro", 0, false, "available",
+			"redis", "", "cache.t4g.micro", nil, false, "available",
 			"gdpr-cache.kx3q9f.ng.0001.euw1.cache.amazonaws.com", d(2023, 5, 16),
 			tags("environment", "staging", "owner", "compliance")),
 	}
@@ -576,9 +605,9 @@ func resources() []model.Resource {
 // applyExposure fills exposure fields the way the real scanners report them:
 // the RDS family and Redshift always carry all three, Aurora clusters have no
 // public-accessibility flag, Redshift serverless only reports public access,
-// ElastiCache Redis reports encryption and snapshot retention, and memcached
-// and DynamoDB report nothing. A few fixtures are deliberately risky so the
-// report has exposure rows to show.
+// grouped and standalone ElastiCache Redis report encryption and snapshot
+// retention, and serverless caches, memcached and DynamoDB report nothing. A
+// few fixtures are deliberately risky so the report has exposure rows to show.
 func applyExposure(rs []model.Resource) []model.Resource {
 	public := map[string]bool{"legacy-crm": true, "data-residency-poc": true}
 	unencrypted := map[string]bool{"legacy-crm": true, "qa-sandbox": true}
@@ -603,7 +632,14 @@ func applyExposure(rs []model.Resource) []model.Resource {
 				r.SetMeasure(model.MeasureBackupRetentionDays, 1)
 			}
 		case model.ServiceElastiCache:
-			if r.Attr(model.AttrEngine) == "redis" {
+			// Memcached is excluded because it has neither at-rest encryption
+			// nor snapshots to retain, and serverless caches are excluded
+			// whatever engine they run, because DescribeServerlessCaches
+			// reports neither flag. Everything else — redis and the valkey
+			// forks of it alike — gets both, since DescribeReplicationGroups
+			// reports both for all of them. Naming redis alone would leave a
+			// valkey row silently missing two values the API does return.
+			if r.Attr(model.AttrEngine) != "memcached" && r.Type != model.TypeElastiCacheServerlessCache {
 				r.Encrypted = ptr(true)
 				r.SetMeasure(model.MeasureBackupRetentionDays, 1)
 			}
@@ -626,8 +662,16 @@ func withMeasure(r model.Resource, key string, v int64) model.Resource {
 // fixture-local discriminator (instance | cluster | table | serverless) used
 // to pick the CloudFormation type name and ARN namespace — real scanners get
 // both from the API response instead.
+//
+// class carries whatever the service calls the dimension it is sized by, which
+// for DynamoDB is not an instance class at all; see below.
+//
+// storageGB is a pointer for the same reason a scanner reads the SDK pointer
+// and never the converted value: nil is a service that reported no size, zero
+// is a service that reported zero, and deciding from the value would silently
+// turn the second into the first.
 func res(account, region, svc, shape, name, engine, version, class string,
-	storageGB int32, multiAZ bool, status, endpoint string,
+	storageGB *int32, multiAZ bool, status, endpoint string,
 	created time.Time, t map[string]string) model.Resource {
 	r := model.Resource{
 		ARN:       arnFor(svc, shape, region, account, name),
@@ -642,7 +686,15 @@ func res(account, region, svc, shape, name, engine, version, class string,
 	}
 	r.SetAttr(model.AttrEngine, engine)
 	r.SetAttr(model.AttrEngineVersion, version)
-	r.SetAttr(model.AttrInstanceClass, class)
+	// A table has no instance class, and the scanner does not invent one: it
+	// records on-demand vs provisioned under DynamoDB's own name for it. The
+	// fixture has to key it the same way or the report is exercised against a
+	// column no scan fills.
+	if svc == model.ServiceDynamoDB {
+		r.SetAttr(model.AttrBillingMode, class)
+	} else {
+		r.SetAttr(model.AttrInstanceClass, class)
+	}
 	r.SetAttr(model.AttrEndpoint, endpoint)
 	// Multi-AZ mirrors which control planes actually report it: the RDS family
 	// and provisioned Redshift/ElastiCache clusters do; DynamoDB and the
@@ -651,11 +703,17 @@ func res(account, region, svc, shape, name, engine, version, class string,
 	if reportsMultiAZ(svc, shape) {
 		r.SetBoolAttr(model.AttrMultiAZ, &multiAZ)
 	}
-	if storageGB > 0 {
-		r.SetMeasure(model.MeasureSizeBytes, int64(storageGB)<<30)
+	if storageGB != nil {
+		r.SetMeasure(model.MeasureSizeBytes, int64(*storageGB)<<30)
 	}
 	return r
 }
+
+// storage names a size the service reported, in whole gibibytes. Passing nil to
+// res() instead says the service reported none — an Aurora cluster is the case
+// the fixture carries, since its storage belongs to a shared volume that
+// DescribeDBClusters attributes to no row.
+func storage(gibibytes int32) *int32 { return ptr(gibibytes) }
 
 func reportsMultiAZ(svc, shape string) bool {
 	switch svc {
@@ -711,7 +769,17 @@ func arnFor(svc, shape, region, account, name string) string {
 	case model.ServiceDynamoDB:
 		return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", region, account, name)
 	case model.ServiceElastiCache:
-		return fmt.Sprintf("arn:aws:elasticache:%s:%s:cluster:%s", region, account, name)
+		// The three shapes have three ARN resource types, and the ARN is both
+		// the diff's match key and the cost join's key — a replication group
+		// written as a cluster would match nothing on either side of either.
+		switch shape {
+		case "cluster":
+			return fmt.Sprintf("arn:aws:elasticache:%s:%s:replicationgroup:%s", region, account, name)
+		case "serverless":
+			return fmt.Sprintf("arn:aws:elasticache:%s:%s:serverlesscache:%s", region, account, name)
+		default:
+			return fmt.Sprintf("arn:aws:elasticache:%s:%s:cluster:%s", region, account, name)
+		}
 	case model.ServiceRedshift:
 		if shape == "serverless" {
 			return fmt.Sprintf("arn:aws:redshift-serverless:%s:%s:workgroup/%s", region, account, name)
@@ -765,8 +833,8 @@ func ec2Instance(account, region, az, id, instanceType, platform, status, privat
 	// Private DNS only; the public name is an exposure signal, not an endpoint.
 	r.SetAttr(model.AttrEndpoint, privateDNS)
 	r.SetAttr(model.AttrAvailabilityZone, az)
-	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
-	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	r.SetAttr(model.AttrVPCID, vpcID(account, region))
+	r.SetAttr(model.AttrSubnetID, subnetID(account, az))
 	// Sorted, like the scanner sorts them, so the fixture cannot drift into a
 	// value shape a real scan would never produce. The attachment only: the
 	// volumes are their own rows, and summing their sizes here would count the
@@ -904,8 +972,8 @@ func natGateway(account, region, az, id, publicIP string,
 	r.SetAttr(model.AttrConnectivityType, connectivity)
 	r.SetAttr(model.AttrPublicIP, publicIP)
 	r.SetAttr(model.AttrAvailabilityZone, az)
-	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
-	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	r.SetAttr(model.AttrVPCID, vpcID(account, region))
+	r.SetAttr(model.AttrSubnetID, subnetID(account, az))
 	// Zonal, like almost every NAT gateway in existence — which is the point:
 	// the cost is per gateway, and the classic layout puts one in every AZ.
 	r.SetMeasure(model.MeasureAvailabilityZoneCount, 1)
@@ -974,8 +1042,8 @@ func autoAssignedIP(account, region, az, interfaceID, ip, instanceID string,
 	r.SetAttr(model.AttrPublicIP, ip)
 	r.SetAttr(model.AttrAssociatedWith, instanceID)
 	r.SetAttr(model.AttrAvailabilityZone, az)
-	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
-	r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+az])
+	r.SetAttr(model.AttrVPCID, vpcID(account, region))
+	r.SetAttr(model.AttrSubnetID, subnetID(account, az))
 	return r
 }
 
@@ -991,8 +1059,9 @@ func loadBalancerV2(account, region, lbType, name, scheme, dnsName string,
 	// The v2 ARN's opaque suffix is fixture data like any other ID; what matters
 	// is the shape, since it is the diff match key and the cost join key.
 	shortType := lbType[:3]
+	suffix := lbSuffix(account, region, name)
 	arn := "arn:aws:elasticloadbalancing:" + region + ":" + account +
-		":loadbalancer/" + shortType + "/" + name + "/" + demoLBSuffixes[name]
+		":loadbalancer/" + shortType + "/" + name + "/" + suffix
 	r := model.Resource{
 		ARN:                arn,
 		Service:            model.ServiceELB,
@@ -1008,13 +1077,13 @@ func loadBalancerV2(account, region, lbType, name, scheme, dnsName string,
 	r.SetAttr(model.AttrScheme, scheme)
 	r.SetAttr(model.AttrLoadBalancerType, lbType)
 	r.SetAttr(model.AttrEndpoint, dnsName)
-	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetAttr(model.AttrVPCID, vpcID(account, region))
 	r.SetMeasure(model.MeasureAvailabilityZoneCount, int64(azCount))
 	if targetGroups != nil {
 		arns := make([]string, 0, *targetGroups)
 		for i := range *targetGroups {
 			arns = append(arns, fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:targetgroup/%s-%d/%s",
-				region, account, name, i+1, demoLBSuffixes[name]))
+				region, account, name, i+1, suffix))
 		}
 		r.SetAttr(model.AttrTargetGroupARNs, strings.Join(arns, ","))
 		r.SetMeasure(model.MeasureTargetGroupCount, int64(*targetGroups))
@@ -1047,7 +1116,7 @@ func classicLoadBalancer(account, region, name, scheme, dnsName string,
 	r.SetAttr(model.AttrScheme, scheme)
 	r.SetAttr(model.AttrLoadBalancerType, "classic")
 	r.SetAttr(model.AttrEndpoint, dnsName)
-	r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
+	r.SetAttr(model.AttrVPCID, vpcID(account, region))
 	r.SetMeasure(model.MeasureAvailabilityZoneCount, int64(azCount))
 	r.SetMeasure(model.MeasureRegisteredInstanceCount, int64(instances))
 	return r
@@ -1087,8 +1156,8 @@ func lambdaFunction(account, region, name, runtime, arch string,
 	// the string the API returns rather than a tidier rendering of it.
 	r.SetAttr(model.AttrLastModified, modified.Format("2006-01-02T15:04:05.000-0700"))
 	if inVPC {
-		r.SetAttr(model.AttrVPCID, demoVPCs[account+"/"+region])
-		r.SetAttr(model.AttrSubnetID, demoSubnets[account+"/"+region+"a"])
+		r.SetAttr(model.AttrVPCID, vpcID(account, region))
+		r.SetAttr(model.AttrSubnetID, subnetID(account, region+"a"))
 	}
 	r.SetMeasure(model.MeasureMemoryMB, int64(memoryMB))
 	r.SetMeasure(model.MeasureTimeoutSeconds, int64(timeoutSec))
@@ -1161,6 +1230,14 @@ func s3Bucket(account, region, name, sse string, bucketKey *bool,
 	return r
 }
 
+// The three lookups below are total: every one has a deterministic answer for
+// a key the storyboard never wrote down. That matters because SnapshotN
+// invents accounts and names, and a map miss returns "", which SetAttr drops —
+// generated rows would come away with no VPC and no subnet, and a generated
+// load balancer's ARN would end in a bare slash. A synthesized id is not a
+// weaker fixture than a written one: both are made up, and the census only
+// requires that they be shaped like the real thing and stable across runs.
+
 // The opaque suffix AWS appends to a v2 load balancer ARN, fixed per fixture
 // load balancer so the ARNs — and therefore the diff and the cost join — are
 // stable across runs.
@@ -1191,6 +1268,56 @@ var (
 		acctStaging + "/us-east-1b": "subnet-0d4e5f6a7b8c9d002",
 	}
 )
+
+// vpcID names the VPC an account's resources occupy in one region.
+func vpcID(account, region string) string {
+	key := account + "/" + region
+	if id, ok := demoVPCs[key]; ok {
+		return id
+	}
+	return synthID("vpc-", key, 17)
+}
+
+// subnetID names the subnet in one availability zone. Callers pass the zone,
+// not the region, because two rows in the same VPC and different zones must
+// not land on the same subnet.
+func subnetID(account, az string) string {
+	key := account + "/" + az
+	if id, ok := demoSubnets[key]; ok {
+		return id
+	}
+	return synthID("subnet-", key, 17)
+}
+
+// lbSuffix returns the opaque tail of a load balancer's ARN. The written-down
+// ones are keyed by name alone, which is unique across the storyboard; the
+// synthesized ones take the account and region too, since a generator is free
+// to reuse a name in another account and the ARN has to stay unique.
+func lbSuffix(account, region, name string) string {
+	if s, ok := demoLBSuffixes[name]; ok {
+		return s
+	}
+	return synthID("", account+"/"+region+"/"+name, 16)
+}
+
+// synthID builds an AWS-shaped identifier from a key. FNV-1a is used for its
+// determinism and not for any other property: these ids are only ever compared
+// for equality, and the census needs the same key to produce the same id on
+// every run or the diff would report drift the fixture did not have.
+//
+// The width is exact in both directions. %0*x pads to a minimum and never
+// truncates, so a caller asking for nine digits would otherwise get however
+// many the hash happened to need — and an id wider than the seventeen hex
+// digits EC2 hands out is not an id anyone would recognise. Taking the low
+// digits keeps the widths AWS uses; the callers above ask for sixteen and
+// seventeen, which a 64-bit hash already fits, so only narrower ones change.
+func synthID(prefix, key string, hexDigits int) string {
+	h := fnv.New64a()
+	// Hash.Write never returns an error.
+	_, _ = h.Write([]byte(key))
+	s := fmt.Sprintf("%0*x", hexDigits, h.Sum64())
+	return prefix + s[len(s)-hexDigits:]
+}
 
 // d returns a fixed timestamp so resource timestamps are deterministic.
 func d(year, month, day int) time.Time {
