@@ -520,7 +520,7 @@ func (h *CostHub) attach(resources []model.Resource, figures map[string]figure, 
 			}
 			continue
 		}
-		r.Cost = &model.ResourceCost{
+		r.AddCost(model.ResourceCost{
 			Amount:       f.amount,
 			Currency:     f.currency,
 			Method:       model.CostMethodCOH,
@@ -528,7 +528,9 @@ func (h *CostHub) attach(resources []model.Resource, figures map[string]figure, 
 			ObservedFrom: f.from,
 			ObservedTo:   f.to,
 			Caveats:      caveats(r, f),
-		}
+			// No MatchKey: the hub reports ARNs and the match above is exact, so
+			// there is nothing about the join to disclose.
+		})
 		h.meter.Priced++
 	}
 }

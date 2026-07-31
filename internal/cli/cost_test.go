@@ -30,6 +30,13 @@ func TestCostFlagsValidate(t *testing.T) {
 		// worth reporting, not a quiet no-op.
 		{"zero budget", costFlags{metric: cost.DefaultMetric, maxRequests: 0}, "at least 1"},
 		{"negative budget", costFlags{metric: cost.DefaultMetric, maxRequests: -1}, "at least 1"},
+		// The per-resource pass takes its service list from the account rollup,
+		// so without --costs it has nothing to ask about. Refused rather than
+		// ignored: a run that answered the request with silence would look like
+		// an account where nothing has a cost.
+		{"resources without costs", costFlags{metric: cost.DefaultMetric, maxRequests: 1, resources: true},
+			"needs --costs"},
+		{"resources with costs", costFlags{metric: cost.DefaultMetric, maxRequests: 1, enabled: true, resources: true}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.flags.validate()
@@ -77,6 +84,37 @@ func TestCostFlagDefaultsAndHelp(t *testing.T) {
 	}
 	if got := cmd.Flags().Lookup("cost-max-requests").DefValue; got == "0" || got == "" {
 		t.Errorf("--cost-max-requests defaults to %q, want a real budget", got)
+	}
+
+	// The per-resource overlay bills per service rather than per run, which is
+	// a different order of spend from --costs and the only place the user is
+	// told so before opting in.
+	rf := cmd.Flags().Lookup("cost-resources")
+	if rf == nil {
+		t.Fatal("--cost-resources flag is missing")
+	}
+	if rf.DefValue != "false" {
+		t.Errorf("--cost-resources defaults to %q, want false", rf.DefValue)
+	}
+	usage = strings.ToLower(rf.Usage)
+	for _, want := range []string{"$0.01", "per service", "14 days"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("--cost-resources help does not mention %q: %q", want, rf.Usage)
+		}
+	}
+	// The console preference is not retroactive, so a user who enables it after
+	// a run cannot recover that run's data by re-running against the same days.
+	if !strings.Contains(usage, "retroactive") {
+		t.Errorf("--cost-resources help does not warn that the console opt-in is not retroactive: %q", rf.Usage)
+	}
+
+	// Rejected at the flag, before credentials are loaded.
+	optIn := scanCmd()
+	optIn.SetOut(&bytes.Buffer{})
+	optIn.SetErr(&bytes.Buffer{})
+	optIn.SetArgs([]string{"--cost-resources"})
+	if err := optIn.Execute(); err == nil || !strings.Contains(err.Error(), "needs --costs") {
+		t.Errorf("scan with --cost-resources alone returned %v, want a validation error", err)
 	}
 
 	// A bad metric is rejected without touching AWS: no credentials are

@@ -142,11 +142,14 @@ price before spending it, and why the census records what was actually spent:
   ✓ cost: 2 Cost Explorer request(s), ~$0.02 charged by AWS
 ```
 
-A normal run costs two requests ($0.02); more only if AWS paginates. Requests
-are issued one at a time against a client with retries disabled, so a logical
-call is always exactly one charge, and the run stops at
-`--cost-max-requests` rather than paginating into a surprise bill. If the cap
-truncates the results, the census says so instead of reporting a short total.
+A normal run costs two requests ($0.02); more only if AWS paginates, or if you
+add `--cost-resources`, which bills one request per service (see below).
+Requests are issued one at a time against a client with retries disabled, so a
+logical call is always exactly one charge, and the run stops at
+`--cost-max-requests` rather than paginating into a surprise bill. That cap is
+one allowance shared by every billed pass in the run, so it is a ceiling on the
+whole scan and not on each pass separately. If the cap truncates the results,
+the census says so instead of reporting a short total.
 
 Spend is partitioned into what Cost Explorer attributes to a service
 (`attributed`) and what it does not — taxes, support, credits, refunds
@@ -198,6 +201,70 @@ free and takes about a day to produce the first recommendations. Until then an
 unenrolled account returns an empty list that is indistinguishable from "no
 recommendations", so blueprint checks enrollment first and puts the answer in
 the failure ledger rather than reporting a silent absence of cost.
+
+### Per-resource billed spend
+
+`--cost-resources` asks Cost Explorer what it actually **billed** each
+individual resource over the last 14 days. It needs `--costs`, because it takes
+its list of services to ask about from the account rollup:
+
+```sh
+blueprint scan --costs --cost-resources
+```
+
+```
+  … cost-resources: asking Cost Explorer what it billed per resource over 2026-07-17 → 2026-07-30 — one billed request per service, 18 left in this run's budget
+  ✓ cost-resources: 7 service(s) probed, 52 resource(s) priced, 7 request(s), ~$0.07 charged by AWS
+```
+
+**This one bills per service, not per run.** Each service probed is one
+$0.01 request, drawn from the same `--cost-max-requests` allowance as the
+rollup — so the rollup spends first and the overlay gets whatever is left.
+Services are probed most-expensive-first, so a budget too small to cover them
+all is spent where per-resource detail is worth the most, and the ones that
+were never reached are recorded as skipped rather than as costing nothing.
+
+Two things have to be true before AWS will answer at all. The account-level
+**"resource-level data" preference** must be switched on in the Cost Explorer
+console; it takes about a day to take effect and **is not retroactive**, so
+switching it on today does not produce data for last week. And the caller needs
+`ce:GetCostAndUsageWithResources`, which is a separate IAM action from
+`ce:GetCostAndUsage`.
+
+The window is **the last 14 days**, which is as far back as this API reaches —
+so `ce` figures and the `--costs` rollup above cover different periods and are
+never added or reconciled. AWS's own documentation disagrees with itself about
+which services report resource-level data, so blueprint does not guess: it asks
+each service the rollup shows spend for and records what came back, per
+service, in the report:
+
+| outcome | means |
+| --- | --- |
+| `rows` | it answered, with per-resource figures |
+| `empty` | it answered, with nothing — no resource-level spend in the window |
+| `unsupported` | AWS refused the query for this service |
+| `denied` | permission or the console preference is missing |
+| `failed` | the request errored for some other reason |
+| `uncensused` | it has spend but no scanner covers it, so it was not asked |
+| `skipped` | the request budget ran out before reaching it — never asked, not zero |
+
+Figures carry the method `ce` and sit alongside any `coh` figure on the same
+resource, in their own columns, because they answer different questions: `ce`
+is what AWS billed over a closed fortnight, `coh` is a modelled monthly rate
+for the period ahead. Nothing in blueprint ever adds them together.
+
+The join from a Cost Explorer row to a census resource is exact — full ARN, or
+the AWS-assigned identifier at the end of one. A row matching two resources is
+refused and ledgered rather than assigned to one at random, and a row matching
+none is reported as a scanner coverage gap. Where AWS splits one resource's
+bill across two service names (an instance's hours under EC2-Compute and its
+data transfer under "EC2 - Other", say) the components are summed and the
+figure says which services it combines.
+
+Two limits are disclosed rather than hidden. Cost Explorer returns at most
+5,000 resources per service **and truncates without saying so**, so a list at
+that ceiling is flagged as possibly short. And the last fortnight is data AWS
+is still restating, so these figures are marked estimated until they settle.
 
 ## Metrics
 
@@ -285,7 +352,10 @@ blueprint needs read-only describe/list permissions. The minimal policy ([docs/i
     {
       "Sid": "BlueprintCostExplorer",
       "Effect": "Allow",
-      "Action": "ce:GetCostAndUsage",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetCostAndUsageWithResources"
+      ],
       "Resource": "*"
     },
     {
@@ -323,7 +393,7 @@ Requirements:
 - Run it with credentials from the organization's **management account** or a **delegated administrator** account, with `organizations:ListAccounts` allowed.
 - A role with the read-only policy above must exist in **every member account**, and its trust policy must allow the calling account to assume it. The default role name is `OrganizationAccountAccessRole` (created automatically for accounts made through Organizations); override with `--role-name`.
 - The caller additionally needs `organizations:ListAccounts` and `sts:AssumeRole` on the member-account roles — see [docs/iam-policy-org.json](docs/iam-policy-org.json), replacing `${RoleName}` with your actual role name.
-- With `--costs`, Cost Explorer is queried once from the calling account for the whole organization, not once per member account — so `ce:GetCostAndUsage` belongs on the caller, and the bill stays the same two requests no matter how many accounts you scan. Cost Optimization Hub works the same way: one org-wide list read with the caller's credentials, so `cost-optimization-hub:ListEnrollmentStatuses` and `cost-optimization-hub:ListRecommendations` belong on the caller too — those two actions and no others. Member accounts are only included if the organization enrolled them, and blueprint says so in the ledger when it finds they were not.
+- With `--costs`, Cost Explorer is queried once from the calling account for the whole organization, not once per member account — so `ce:GetCostAndUsage` belongs on the caller, and the bill stays the same two requests no matter how many accounts you scan. `--cost-resources` is org-wide in the same way, filtered to the accounts actually scanned, so `ce:GetCostAndUsageWithResources` belongs on the caller too and its bill scales with the number of *services* probed rather than the number of accounts. Cost Optimization Hub works the same way: one org-wide list read with the caller's credentials, so `cost-optimization-hub:ListEnrollmentStatuses` and `cost-optimization-hub:ListRecommendations` belong on the caller too — those two actions and no others. Member accounts are only included if the organization enrolled them, and blueprint says so in the ledger when it finds they were not.
 
 Accounts where the role is missing or untrusting do not abort the scan: they show up as failures in the ledger, and everything else is still scanned.
 
@@ -331,7 +401,7 @@ Accounts where the role is missing or untrusting do not abort the scan: they sho
 
 blueprint phones home to no one. No usage analytics, no crash reporting, no update checks, not even anonymous pings. The only network calls it makes are to AWS APIs, using the credentials you provide. Output files are written to your local disk and go nowhere unless you send them somewhere.
 
-Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer or Cost Optimization Hub preferences — blueprint reads your Cost Optimization Hub enrollment status but never changes it. Two of them are billed by AWS: `ce:GetCostAndUsage` behind `--costs` and `cloudwatch:GetMetricData` behind `--metrics`. Both flags are off by default, both print the rate before spending anything, and both report what was actually spent when the run ends.
+Every one of those calls is a describe/list/get — blueprint never creates, modifies, or deletes anything in your account, including your Cost Explorer or Cost Optimization Hub preferences — blueprint reads your Cost Optimization Hub enrollment status but never changes it. Three of them are billed by AWS: `ce:GetCostAndUsage` behind `--costs`, `ce:GetCostAndUsageWithResources` behind `--cost-resources`, and `cloudwatch:GetMetricData` behind `--metrics`. All three flags are off by default, each prints the rate before spending anything, and each reports what was actually spent when the run ends.
 
 ## License
 

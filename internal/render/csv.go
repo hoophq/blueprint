@@ -26,13 +26,49 @@ import (
 // they are added once for every service instead of once per service, which is
 // the growth the rule exists to prevent. They sit after "attributes" so every
 // pre-existing column keeps the index it has always had.
-var csvHeader = []string{
+//
+// There is one block of cost columns per attribution method, not one shared
+// block with a "cost_method" cell naming which source won. A resource can be
+// priced by more than one source — Cost Explorer bills a closed window, Cost
+// Optimization Hub models a monthly rate — and a single block would have to
+// pick one figure and drop the other, or join both into one cell. A joined cell
+// is worse than it looks: a spreadsheet SUM silently skips exactly the rows that
+// carry two figures, so the estate's total would be wrong in a way that shows no
+// error. Separate columns keep every figure summable and keep the two methods
+// from ever landing in the same column, which is the one arithmetic nobody
+// should be able to do by accident.
+var csvHeader = buildCSVHeader()
+
+// coreColumns are the narrow core of model.Resource, in fixed order.
+var coreColumns = []string{
 	"arn", "service", "type", "name", "status", "region", "account_id",
 	"created_at", "environment", "owner", "tags", "eol", "eol_date",
 	"publicly_accessible", "encrypted", "attributes",
-	"cost_amount", "cost_currency", "cost_method", "cost_estimated",
-	"cost_observed_from", "cost_observed_to", "cost_caveats",
-	"cost_unavailable_reason",
+}
+
+// costColumns are the per-figure cost columns, emitted once per method.
+//
+// "method" is not among them: the column name already carries it, and a cell
+// repeating it would be a second place for the two to disagree. Order here is
+// the order costCells writes, and the two are checked against each other by the
+// header/row width test rather than by eye.
+var costColumns = []string{
+	"amount", "currency", "estimated", "observed_from", "observed_to",
+	"caveats", "match_key",
+}
+
+func buildCSVHeader() []string {
+	h := make([]string, 0, len(coreColumns)+len(model.CostMethods())*len(costColumns)+1)
+	h = append(h, coreColumns...)
+	for _, m := range model.CostMethods() {
+		for _, c := range costColumns {
+			h = append(h, "cost_"+m+"_"+c)
+		}
+	}
+	// One shared column, not one per method: the reason is written by whichever
+	// source looked a resource up and could not price it, and it names its own
+	// source in the sentence.
+	return append(h, "cost_unavailable_reason")
 }
 
 // CSV writes one row per resource for spreadsheet/script consumption.
@@ -96,39 +132,53 @@ func csvRow(r model.Resource) []string {
 	return append(row, costCells(r)...)
 }
 
-// costCells renders the eight cost columns for one resource.
+// costCells renders one block of cost columns per method, then the shared
+// unavailable-reason column.
 //
-// Every cell is EMPTY when no source priced the resource — not "0", not
-// "0.00". A spreadsheet's SUM and AVERAGE skip blank cells and count zeros, so
-// a zero written where nothing was reported quietly drags an average down and
-// tells the reader a resource is free. The blank keeps the user's own
-// arithmetic honest, and cost_unavailable_reason is what stops the blank from
-// being a mystery: when a source looked and found nothing, the cell says so.
+// Every cell in a method's block is EMPTY when that method did not price the
+// resource — not "0", not "0.00". A spreadsheet's SUM and AVERAGE skip blank
+// cells and count zeros, so a zero written where nothing was reported quietly
+// drags an average down and tells the reader a resource is free. The blank keeps
+// the user's own arithmetic honest, and cost_unavailable_reason is what stops
+// the blank from being a mystery: when a source looked and found nothing, the
+// cell says so.
 //
 // A reported "0.00" is a different thing entirely and is written out as
 // "0.00" — a source saying a resource costs nothing is a real finding and
 // survives to the artifact.
+//
+// The unavailable reason is written even for a resource some other method
+// priced. With more than one source, "Cost Optimization Hub does not model this
+// resource type" stays true whether or not Cost Explorer billed it, and blanking
+// it on the strength of an unrelated figure would hide a real coverage gap
+// behind an answer to a different question.
 func costCells(r model.Resource) []string {
-	if r.Cost == nil {
-		return []string{"", "", "", "", "", "", "", guardFormula(r.CostUnavailable)}
+	methods := model.CostMethods()
+	cells := make([]string, 0, len(methods)*len(costColumns)+1)
+	for _, m := range methods {
+		c := r.CostBy(m)
+		if c == nil {
+			cells = append(cells, make([]string, len(costColumns))...)
+			continue
+		}
+		cells = append(cells,
+			// Not formula-guarded, deliberately: this column is numeric, and a
+			// negative amount is legal money — a credit or a refund. Prefixing
+			// it would turn every credit into text a spreadsheet will not sum.
+			// Amounts are validated as plain decimals at ingest, which is what
+			// makes leaving them unguarded safe here rather than hopeful.
+			c.Amount,
+			guardFormula(c.Currency),
+			strconv.FormatBool(c.Estimated),
+			timeCell(c.ObservedFrom),
+			timeCell(c.ObservedTo),
+			guardFormula(joinCaveats(c.Caveats)),
+			// The match key is an identifier AWS chose, not one this tool
+			// validated, so it is guarded like every other free-form string.
+			guardFormula(c.MatchKey),
+		)
 	}
-	c := r.Cost
-	return []string{
-		// Not formula-guarded, deliberately: this column is numeric, and a
-		// negative amount is legal money — a credit or a refund. Prefixing it
-		// would turn every credit into text a spreadsheet will not sum.
-		// Amounts are validated as plain decimals at ingest, which is what
-		// makes leaving them unguarded safe here rather than hopeful.
-		c.Amount,
-		guardFormula(c.Currency),
-		guardFormula(c.Method),
-		strconv.FormatBool(c.Estimated),
-		timeCell(c.ObservedFrom),
-		timeCell(c.ObservedTo),
-		guardFormula(joinCaveats(c.Caveats)),
-		// A priced resource has nothing unavailable to explain.
-		"",
-	}
+	return append(cells, guardFormula(r.CostUnavailable))
 }
 
 // timeCell renders an optional timestamp as RFC3339, empty when unreported.

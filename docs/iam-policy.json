@@ -39,7 +39,10 @@
     {
       "Sid": "BlueprintCostExplorer",
       "Effect": "Allow",
-      "Action": "ce:GetCostAndUsage",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetCostAndUsageWithResources"
+      ],
       "Resource": "*"
     },
     {

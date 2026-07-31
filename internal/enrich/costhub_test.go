@@ -100,6 +100,15 @@ func runHub(t *testing.T, h *CostHub, resources []model.Resource) ([]model.Resou
 	return resources, failures
 }
 
+// cohCost returns the hub's figure for a resource, or nil if it did not price
+// it. Every assertion in this file is about the hub, so it reads the one method
+// this enricher writes rather than whatever happens to be first in the list —
+// a later pass adding a Cost Explorer figure must not make these tests pass or
+// fail for a reason that has nothing to do with the hub.
+func cohCost(r model.Resource) *model.ResourceCost {
+	return r.CostBy(model.CostMethodCOH)
+}
+
 // ledgered returns the first failure whose text carries the given kind prefix.
 func ledgered(t *testing.T, failures []model.Failure, kind string) model.Failure {
 	t.Helper()
@@ -118,7 +127,7 @@ func TestRecommendationBecomesAResourceCost(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %+v", failures)
 	}
-	c := got[0].Cost
+	c := cohCost(got[0])
 	if c == nil {
 		t.Fatal("the priced resource came away with no cost")
 	}
@@ -134,8 +143,8 @@ func TestRecommendationBecomesAResourceCost(t *testing.T) {
 	if !c.Estimated {
 		t.Error("a modelled monthly rate must be marked estimated")
 	}
-	if got[1].Cost != nil {
-		t.Errorf("the unpriced resource must stay unpriced, got %+v", got[1].Cost)
+	if cohCost(got[1]) != nil {
+		t.Errorf("the unpriced resource must stay unpriced, got %+v", cohCost(got[1]))
 	}
 }
 
@@ -154,7 +163,7 @@ func TestUnenrolledAccountIsLedgeredRatherThanSilentlyEmpty(t *testing.T) {
 	if len(f.lists) != 0 {
 		t.Errorf("recommendations were read despite the account not being enrolled: %d calls", len(f.lists))
 	}
-	if got[0].Cost != nil {
+	if cohCost(got[0]) != nil {
 		t.Error("an unenrolled account must produce no costs")
 	}
 }
@@ -184,7 +193,7 @@ func TestEnrollmentCheckFollowsPagination(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %+v", failures)
 	}
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("an account enrolled on the second page must still be priced")
 	}
 }
@@ -201,7 +210,7 @@ func TestMemberAccountsExcludedIsReportedForAMultiAccountCensus(t *testing.T) {
 	got, failures := runHub(t, newHub(f), resources)
 	ledgered(t, failures, "coh_member_accounts_excluded")
 	// The run continues: the caller's own resources are still priced.
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("the enrolled account's resource must still be priced")
 	}
 }
@@ -266,7 +275,7 @@ func TestPaginationReadsEveryPage(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %+v", failures)
 	}
-	if got[0].Cost == nil || got[1].Cost == nil {
+	if cohCost(got[0]) == nil || cohCost(got[1]) == nil {
 		t.Fatal("a resource priced on the second page was not attached")
 	}
 	if m := h.Meter(); m.Recommendations != 2 || m.Priced != 2 {
@@ -290,7 +299,7 @@ func TestAFailedPageKeepsWhatWasAlreadyRead(t *testing.T) {
 	ledgered(t, failures, "coh_failed")
 	// Unlike a Cost Explorer rollup, a short read here is fewer priced
 	// resources rather than a wrong total, so the first page survives.
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("the page that did arrive was discarded")
 	}
 }
@@ -302,8 +311,8 @@ func TestConflictingAmountsForOneARNAreDropped(t *testing.T) {
 	f := &fakeCOH{listFn: recs(a, b)}
 	got, failures := runHub(t, newHub(f), census())
 	ledgered(t, failures, "coh_conflicting_amounts")
-	if got[0].Cost != nil {
-		t.Errorf("one of two disagreeing figures was published anyway: %+v", got[0].Cost)
+	if cohCost(got[0]) != nil {
+		t.Errorf("one of two disagreeing figures was published anyway: %+v", cohCost(got[0]))
 	}
 }
 
@@ -321,8 +330,8 @@ func TestConflictLaterInTheListSuppressesTheEarlierFigure(t *testing.T) {
 	}}
 	got, failures := runHub(t, newHub(f), census())
 	ledgered(t, failures, "coh_conflicting_amounts")
-	if got[0].Cost != nil {
-		t.Errorf("a figure contradicted on a later page was still published: %+v", got[0].Cost)
+	if cohCost(got[0]) != nil {
+		t.Errorf("a figure contradicted on a later page was still published: %+v", cohCost(got[0]))
 	}
 }
 
@@ -332,27 +341,27 @@ func TestIdenticalDuplicateRowsAreNotAConflict(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("two rows that agree are not a conflict: %+v", failures)
 	}
-	if got[0].Cost == nil || got[0].Cost.Amount != "10.00" {
-		t.Errorf("cost = %+v, want 10.00", got[0].Cost)
+	if cohCost(got[0]) == nil || cohCost(got[0]).Amount != "10.00" {
+		t.Errorf("cost = %+v, want 10.00", cohCost(got[0]))
 	}
 }
 
 func TestAZeroCostIsARealFigureAndSurvives(t *testing.T) {
 	f := &fakeCOH{listFn: recs(priced(dbARN, 0))}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Fatal("a resource modelled at zero dollars was dropped as if unreported")
 	}
-	if got[0].Cost.Amount != "0.00" {
-		t.Errorf("amount = %q, want 0.00", got[0].Cost.Amount)
+	if cohCost(got[0]).Amount != "0.00" {
+		t.Errorf("amount = %q, want 0.00", cohCost(got[0]).Amount)
 	}
 }
 
 func TestNegativeZeroDoesNotRenderAsMinusZero(t *testing.T) {
 	f := &fakeCOH{listFn: recs(priced(dbARN, math.Copysign(0, -1)))}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost == nil || got[0].Cost.Amount != "0.00" {
-		t.Errorf("cost = %+v, want 0.00", got[0].Cost)
+	if cohCost(got[0]) == nil || cohCost(got[0]).Amount != "0.00" {
+		t.Errorf("cost = %+v, want 0.00", cohCost(got[0]))
 	}
 }
 
@@ -361,8 +370,8 @@ func TestAnAbsentCostIsNotAZero(t *testing.T) {
 	rec.EstimatedMonthlyCost = nil
 	f := &fakeCOH{listFn: recs(rec)}
 	got, failures := runHub(t, newHub(f), census())
-	if got[0].Cost != nil {
-		t.Errorf("a recommendation with no cost produced one anyway: %+v", got[0].Cost)
+	if cohCost(got[0]) != nil {
+		t.Errorf("a recommendation with no cost produced one anyway: %+v", cohCost(got[0]))
 	}
 	if len(failures) != 0 {
 		t.Errorf("a recommendation that simply carries no cost is not a failure: %+v", failures)
@@ -374,8 +383,8 @@ func TestNonFiniteCostIsDroppedAndLedgered(t *testing.T) {
 		f := &fakeCOH{listFn: recs(priced(dbARN, v))}
 		got, failures := runHub(t, newHub(f), census())
 		ledgered(t, failures, "coh_unusable_amount")
-		if got[0].Cost != nil {
-			t.Errorf("%v was published as a price: %+v", v, got[0].Cost)
+		if cohCost(got[0]) != nil {
+			t.Errorf("%v was published as a price: %+v", v, cohCost(got[0]))
 		}
 	}
 }
@@ -388,16 +397,16 @@ func TestAmountKeepsEveryDigitTheFloatActuallyHas(t *testing.T) {
 	tenth, fifth := 0.1, 0.2
 	f := &fakeCOH{listFn: recs(priced(dbARN, tenth+fifth))}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost == nil || got[0].Cost.Amount != "0.30000000000000004" {
-		t.Errorf("cost = %+v, want 0.30000000000000004", got[0].Cost)
+	if cohCost(got[0]) == nil || cohCost(got[0]).Amount != "0.30000000000000004" {
+		t.Errorf("cost = %+v, want 0.30000000000000004", cohCost(got[0]))
 	}
 }
 
 func TestALargeAmountIsNotWrittenInExponentNotation(t *testing.T) {
 	f := &fakeCOH{listFn: recs(priced(dbARN, 1.25e7))}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost == nil || got[0].Cost.Amount != "12500000.00" {
-		t.Errorf("cost = %+v, want 12500000.00", got[0].Cost)
+	if cohCost(got[0]) == nil || cohCost(got[0]).Amount != "12500000.00" {
+		t.Errorf("cost = %+v, want 12500000.00", cohCost(got[0]))
 	}
 }
 
@@ -406,18 +415,18 @@ func TestAMissingCurrencyIsNotAssumedToBeDollars(t *testing.T) {
 	rec.CurrencyCode = nil
 	f := &fakeCOH{listFn: recs(rec)}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Fatal("an amount without a currency is still an amount")
 	}
-	if got[0].Cost.Currency != "" {
-		t.Errorf("currency = %q, want empty — never a default", got[0].Cost.Currency)
+	if cohCost(got[0]).Currency != "" {
+		t.Errorf("currency = %q, want empty — never a default", cohCost(got[0]).Currency)
 	}
 }
 
 func TestObservedWindowComesFromTheRefreshTimeAndLookback(t *testing.T) {
 	f := &fakeCOH{listFn: recs(priced(dbARN, 10))}
 	got, _ := runHub(t, newHub(f), census())
-	c := got[0].Cost
+	c := cohCost(got[0])
 	if c.ObservedTo == nil || !c.ObservedTo.Equal(scanTime) {
 		t.Errorf("observed_to = %v, want %v", c.ObservedTo, scanTime)
 	}
@@ -432,7 +441,7 @@ func TestAnUnplaceableWindowIsLeftNilRatherThanGuessed(t *testing.T) {
 	rec.RecommendationLookbackPeriodInDays = nil
 	f := &fakeCOH{listFn: recs(rec)}
 	got, _ := runHub(t, newHub(f), census())
-	c := got[0].Cost
+	c := cohCost(got[0])
 	if c.ObservedFrom != nil {
 		t.Errorf("observed_from = %v, want nil when no lookback was reported", c.ObservedFrom)
 	}
@@ -443,8 +452,8 @@ func TestAnUnplaceableWindowIsLeftNilRatherThanGuessed(t *testing.T) {
 	rec.LastRefreshTimestamp = nil
 	f = &fakeCOH{listFn: recs(rec)}
 	got, _ = runHub(t, newHub(f), census())
-	if got[0].Cost.ObservedTo != nil {
-		t.Errorf("observed_to = %v, want nil when no refresh time was reported", got[0].Cost.ObservedTo)
+	if cohCost(got[0]).ObservedTo != nil {
+		t.Errorf("observed_to = %v, want nil when no refresh time was reported", cohCost(got[0]).ObservedTo)
 	}
 }
 
@@ -453,7 +462,7 @@ func TestPartialScopeIsDisclosedAsACaveat(t *testing.T) {
 	rec.CurrentResourceType = aws.String("RdsDbInstanceStorage")
 	f := &fakeCOH{listFn: recs(rec)}
 	got, _ := runHub(t, newHub(f), census())
-	c := got[0].Cost
+	c := cohCost(got[0])
 	if len(c.Caveats) != 1 || !strings.Contains(c.Caveats[0], "storage") {
 		t.Errorf("caveats = %v, want one naming the partial scope", c.Caveats)
 	}
@@ -462,8 +471,8 @@ func TestPartialScopeIsDisclosedAsACaveat(t *testing.T) {
 func TestAWholeResourceFigureCarriesNoCaveats(t *testing.T) {
 	f := &fakeCOH{listFn: recs(priced(dbARN, 10))}
 	got, _ := runHub(t, newHub(f), census())
-	if len(got[0].Cost.Caveats) != 0 {
-		t.Errorf("caveats = %v, want none — blanket disclosures belong in docs", got[0].Cost.Caveats)
+	if len(cohCost(got[0]).Caveats) != 0 {
+		t.Errorf("caveats = %v, want none — blanket disclosures belong in docs", cohCost(got[0]).Caveats)
 	}
 }
 
@@ -473,7 +482,7 @@ func TestAResourceYoungerThanTheWindowIsFlaggedAsExtrapolated(t *testing.T) {
 	resources[0].CreatedAt = &born
 	f := &fakeCOH{listFn: recs(priced(dbARN, 10))}
 	got, _ := runHub(t, newHub(f), resources)
-	c := got[0].Cost
+	c := cohCost(got[0])
 	if len(c.Caveats) != 1 || !strings.Contains(c.Caveats[0], "extrapolates") {
 		t.Errorf("caveats = %v, want one naming the extrapolation", c.Caveats)
 	}
@@ -485,8 +494,8 @@ func TestAResourceOlderThanTheWindowIsNotFlagged(t *testing.T) {
 	resources[0].CreatedAt = &born
 	f := &fakeCOH{listFn: recs(priced(dbARN, 10))}
 	got, _ := runHub(t, newHub(f), resources)
-	if len(got[0].Cost.Caveats) != 0 {
-		t.Errorf("caveats = %v, want none", got[0].Cost.Caveats)
+	if len(cohCost(got[0]).Caveats) != 0 {
+		t.Errorf("caveats = %v, want none", cohCost(got[0]).Caveats)
 	}
 }
 
@@ -494,7 +503,7 @@ func TestARNMatchingIsExact(t *testing.T) {
 	rec := priced(strings.ToUpper(dbARN), 10)
 	f := &fakeCOH{listFn: recs(rec)}
 	got, _ := runHub(t, newHub(f), census())
-	if got[0].Cost != nil {
+	if cohCost(got[0]) != nil {
 		t.Error("a case-folded ARN matched; a figure on the wrong resource is worse than none")
 	}
 }
@@ -632,7 +641,7 @@ func TestAnActiveRowForAnotherAccountDoesNotConfirmTheScannedOne(t *testing.T) {
 	if len(f.lists) != 0 {
 		t.Errorf("recommendations were read for an account the list said is not enrolled: %d calls", len(f.lists))
 	}
-	if got[0].Cost != nil {
+	if cohCost(got[0]) != nil {
 		t.Error("an account the list reported inactive must produce no costs")
 	}
 }
@@ -652,7 +661,7 @@ func TestAnUnmentionedScannedAccountIsNotTreatedAsUnenrolled(t *testing.T) {
 	if len(f.lists) == 0 {
 		t.Error("an unmentioned account must still be read for recommendations, not written off")
 	}
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("a figure AWS actually returned was dropped on an unproven enrollment guess")
 	}
 }
@@ -671,10 +680,10 @@ func TestAnUnenrolledAccountAlongsideAnEnrolledOneIsNamedNotSuppressed(t *testin
 	resources[1].AccountID = unscannedAccount
 	got, failures := runHub(t, newHub(f), resources)
 	ledgered(t, failures, "coh_account_not_enrolled")
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("the enrolled account's resource must still be priced")
 	}
-	if got[1].Cost != nil {
+	if cohCost(got[1]) != nil {
 		t.Error("the unenrolled account's resource must not be priced")
 	}
 }
@@ -713,7 +722,7 @@ func TestACompletedReadNamesTheAbsenceOnUnpricedResources(t *testing.T) {
 	if got[0].CostUnavailable != "" {
 		t.Errorf("a priced resource carries an absence reason: %q", got[0].CostUnavailable)
 	}
-	if got[1].Cost != nil {
+	if cohCost(got[1]) != nil {
 		t.Fatal("the unpriced resource was given a cost")
 	}
 	if got[1].CostUnavailable == "" {
@@ -740,12 +749,12 @@ func TestATruncatedReadDoesNotClaimTheHubHasNothing(t *testing.T) {
 	ledgered(t, failures, "coh_failed")
 
 	// The page that arrived still prices what it named.
-	if got[0].Cost == nil {
+	if cohCost(got[0]) == nil {
 		t.Error("the page that did arrive was discarded")
 	}
 	// The one it did not reach stays a plain unknown: no cost, and no reason
 	// either, because nothing looked all the way for it.
-	if got[1].Cost != nil {
+	if cohCost(got[1]) != nil {
 		t.Error("a resource on an unread page was given a cost")
 	}
 	if got[1].CostUnavailable != "" {

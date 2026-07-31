@@ -30,15 +30,36 @@ func usd(amount string) *model.ResourceCost {
 
 // costRes builds a resource whose ARN is derived from its name, so tests can
 // name the resources they care about and still get stable match keys.
-func costRes(name string, c *model.ResourceCost) model.Resource {
-	return model.Resource{
+//
+// The figure stays a pointer in the signature even though the resource carries
+// a list: nil is how these tests spell "nobody priced this", and it is a case
+// most of them need.
+func costRes(name string, cs ...*model.ResourceCost) model.Resource {
+	r := model.Resource{
 		ARN:       "arn:aws:rds:us-east-1:111111111111:db:" + name,
 		Name:      name,
 		Service:   model.ServiceRDS,
 		Type:      model.TypeRDSInstance,
 		Region:    "us-east-1",
 		AccountID: "111111111111",
-		Cost:      c,
+	}
+	for _, c := range cs {
+		if c != nil {
+			r.AddCost(*c)
+		}
+	}
+	return r
+}
+
+// ce is the other figure a resource can carry: what Cost Explorer billed over a
+// closed window, as opposed to what the hub models it will cost. Tests use it to
+// put two figures on one resource, which is the case every consumer of this
+// package has to get right.
+func ce(amount string) *model.ResourceCost {
+	return &model.ResourceCost{
+		Amount: amount, Currency: "USD",
+		Method: model.CostMethodCE, Estimated: false,
+		ObservedFrom: &jun1, ObservedTo: &jul1,
 	}
 }
 
@@ -217,8 +238,8 @@ func TestCostDriftAddedAndRemoved(t *testing.T) {
 	if n.Net != "-250.00" {
 		t.Errorf("Net = %q, want %q", n.Net, "-250.00")
 	}
-	if n.Methods == nil || n.Methods[0] != model.CostMethodCOH {
-		t.Errorf("Methods = %v, want the attribution method disclosed", n.Methods)
+	if n.Method != model.CostMethodCOH {
+		t.Errorf("Method = %q, want the attribution method disclosed", n.Method)
 	}
 	if d.Priced != 2 {
 		t.Errorf("Priced = %d, want 2", d.Priced)
@@ -231,10 +252,6 @@ func TestCostDriftAddedAndRemoved(t *testing.T) {
 func TestCostDriftRefusesIncomparableFigures(t *testing.T) {
 	eur := usd("100.00")
 	eur.Currency = "EUR"
-	// COH is the only attribution method today; the check has to hold for the
-	// next one, which is the whole reason it is not hard-coded to one value.
-	viaCE := usd("100.00")
-	viaCE.Method = "ce"
 	actual := usd("100.00")
 	actual.Estimated = false
 	shortWindow := usd("100.00")
@@ -250,7 +267,6 @@ func TestCostDriftRefusesIncomparableFigures(t *testing.T) {
 		wantNew    string
 	}{
 		{"currency", eur, "currency changed (USD → EUR)", "100.00 EUR"},
-		{"method", viaCE, "attribution method changed (coh → ce)", "100.00 USD"},
 		{"basis", actual, "basis changed (modelled → billed)", "100.00 USD"},
 		{"window length", shortWindow, "observation window changed (30d → 7d)", "100.00 USD"},
 		{"window vanished", noWindow, "observation window changed (30d → not reported)", "100.00 USD"},
@@ -274,10 +290,65 @@ func TestCostDriftRefusesIncomparableFigures(t *testing.T) {
 			if len(d.Net) != 0 {
 				t.Errorf("Net = %+v, want nothing: an incomparable pair must not reach the arithmetic", d.Net)
 			}
-			if d.Priced != 0 {
-				t.Errorf("Priced = %d, want 0: nothing fed the net", d.Priced)
+			// Priced counts coverage, not participation in the arithmetic. The
+			// resource carries a figure on both sides; that the two cannot be
+			// subtracted is what Basis says, and saying it twice by also calling
+			// the resource unpriced would understate coverage.
+			if d.Priced != 1 || d.Unpriced != 0 {
+				t.Errorf("Priced/Unpriced = %d/%d, want 1/0: the resource is priced, the pair is not comparable", d.Priced, d.Unpriced)
 			}
 		})
+	}
+}
+
+// A resource that changed attribution method is not a resource whose price
+// moved. Figures are matched on (ARN, method), so the old method loses coverage
+// and the new one gains it — two honest statements about two different
+// questions, rather than one subtraction spanning both.
+func TestCostDriftReportsAMethodChangeAsCoverage(t *testing.T) {
+	d := drift("orders", usd("100.00"), ce("100.00"))
+
+	if len(d.Basis) != 0 {
+		t.Errorf("Basis = %+v, want nothing: the two figures were never a pair to refuse", d.Basis)
+	}
+	if len(d.Moved) != 0 {
+		t.Errorf("Moved = %+v, want nothing: no method's figure moved", d.Moved)
+	}
+	if len(d.Coverage) != 2 {
+		t.Fatalf("Coverage = %+v, want the hub's figure lost and Cost Explorer's gained", d.Coverage)
+	}
+	// Sorted by ARN then method, and both share an ARN, so "ce" comes first.
+	if got := d.Coverage[0]; got.Method != model.CostMethodCE || !got.Gained {
+		t.Errorf("Coverage[0] = %+v, want ce gained", got)
+	}
+	if got := d.Coverage[1]; got.Method != model.CostMethodCOH || got.Gained {
+		t.Errorf("Coverage[1] = %+v, want coh lost", got)
+	}
+	if len(d.Net) != 0 {
+		t.Errorf("Net = %+v, want nothing: coverage moving between methods is not spend moving", d.Net)
+	}
+}
+
+// The case the multi-figure model exists for: one resource priced by both
+// sources, each moving independently. Neither total may absorb the other.
+func TestCostDriftNetsEachMethodSeparately(t *testing.T) {
+	old := costCensus(costRes("orders", usd("100.00"), ce("40.00")))
+	current := costCensus(costRes("orders", usd("150.00"), ce("30.00")))
+	d := costDrift(old, current)
+
+	if len(d.Net) != 2 {
+		t.Fatalf("Net = %+v, want one entry per method", d.Net)
+	}
+	// nets sorts by method, then currency.
+	if n := d.Net[0]; n.Method != model.CostMethodCE || n.Net != "-10.00" {
+		t.Errorf("Net[0] = %+v, want ce at -10.00", n)
+	}
+	if n := d.Net[1]; n.Method != model.CostMethodCOH || n.Net != "50.00" {
+		t.Errorf("Net[1] = %+v, want coh at 50.00", n)
+	}
+	// One resource, two figures. The net counts figures; this counts resources.
+	if d.Priced != 1 {
+		t.Errorf("Priced = %d, want 1: two figures on one resource is one resource", d.Priced)
 	}
 }
 

@@ -70,6 +70,9 @@ func scanCmd() *cobra.Command {
 					// zero charge, because --demo makes no AWS calls at all.
 					snap.Cost = demo.CostReport()
 					demo.AddResourceCosts(snap)
+					if costs.resources {
+						demo.AddResourceCostOverlay(snap)
+					}
 				}
 				if metrics {
 					demo.AddMetrics(snap)
@@ -116,6 +119,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer, plus free per-resource estimates from Cost Optimization Hub (AWS BILLS $0.01 per Cost Explorer request; off by default)")
 	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
 	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
+	cmd.Flags().BoolVar(&costs.resources, "cost-resources", false, "with --costs, also ask Cost Explorer what it billed per resource over the last 14 days (AWS BILLS $0.01 per service probed, from the same --cost-max-requests budget; requires the account-level \"resource-level data\" preference in the Cost Explorer console, which is not retroactive)")
 	cmd.Flags().BoolVar(&metrics, "metrics", false, "also read CloudWatch utilization metrics for scanned resources (AWS BILLS $"+enrich.ChargeUSD(1000)+" per 1,000 metrics requested; off by default)")
 	return cmd
 }
@@ -125,6 +129,12 @@ type costFlags struct {
 	enabled     bool
 	metric      string
 	maxRequests int
+	// resources turns on the per-resource Cost Explorer overlay. It is separate
+	// from enabled, unlike the free Cost Optimization Hub stage that rides along
+	// with it, because it spends money per service on data AWS's own docs cannot
+	// agree that it will return. A user who asked what their account cost has
+	// not thereby asked to pay for that.
+	resources bool
 }
 
 // validate rejects bad cost flags before the scan starts. --cost-max-requests
@@ -136,6 +146,12 @@ func (c costFlags) validate() error {
 	}
 	if c.maxRequests < 1 {
 		return fmt.Errorf("--cost-max-requests must be at least 1, got %d", c.maxRequests)
+	}
+	// Rejected rather than quietly ignored: --cost-resources on its own reads
+	// like a request for per-resource cost, and a run that answered it with
+	// silence would look like an account where nothing has a cost.
+	if c.resources && !c.enabled {
+		return fmt.Errorf("--cost-resources needs --costs: the per-resource pass takes its service list from the account rollup")
 	}
 	return nil
 }
@@ -253,32 +269,101 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	return snap, nil
 }
 
-// collectCosts runs the Cost Explorer phase and attaches the report to snap.
+// collectCosts runs the Cost Explorer phases and attaches their reports to snap.
 //
 // It prints what it is about to spend before spending it and what it actually
 // spent afterwards. The flag is opt-in, but "opt-in" is not a licence to spend
 // the user's money quietly.
+//
+// Both paid passes share one budget, created here, and the order they are
+// handed it is the policy — see cost.Budget. --cost-max-requests is a ceiling
+// on the run, not on each pass, so the printed estimate is the run's worst case
+// whether one pass spends it or two.
 func collectCosts(ctx context.Context, cmd *cobra.Command, cfg aws.Config, account string, snap *model.Snapshot, flags costFlags) []model.Failure {
 	window := cost.LastFullMonth(time.Now())
 	fmt.Fprintf(cmd.OutOrStdout(), "  … cost: querying Cost Explorer for %s across %d account(s) — AWS bills $0.01 per request, up to %s\n",
 		window.Label, len(snap.Accounts), cost.ChargeUSD(flags.maxRequests))
 
-	report, failures := cost.Collect(ctx, cost.Client(cfg), cost.Options{
+	budget := cost.NewBudget(flags.maxRequests)
+	client := cost.Client(cfg)
+	report, failures := cost.Collect(ctx, client, cost.Options{
 		Accounts:      snap.Accounts,
 		CallerAccount: account,
 		Metric:        flags.metric,
 		Window:        window,
-		MaxRequests:   flags.maxRequests,
+		Budget:        budget,
 	})
 	snap.Cost = report
 	if report != nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost: %d Cost Explorer request(s), ~$%s charged by AWS\n",
 			report.Meter.Requests, report.Meter.EstimatedChargeUSD)
 	}
+	if flags.resources {
+		failures = append(failures, collectResourceCosts(ctx, cmd, client, account, snap, flags, budget)...)
+	}
 	for _, f := range failures {
 		fmt.Fprintf(cmd.ErrOrStderr(), "  ! %s/%s: %s\n", f.AccountID, f.Service, f.Error)
 	}
 	return failures
+}
+
+// collectResourceCosts runs the per-resource overlay against whatever is left of
+// the run's budget.
+//
+// It runs even when the rollup published nothing: CollectResources decides for
+// itself whether it has what it needs, and says so in the ledger rather than
+// being skipped silently here. The one thing this function will not do is spend
+// on a budget the rollup already exhausted — that is reported as a skip against
+// every service, which is the honest shape of "never asked".
+func collectResourceCosts(ctx context.Context, cmd *cobra.Command, api cost.ResourceAPI, account string, snap *model.Snapshot, flags costFlags, budget *cost.Budget) []model.Failure {
+	window := cost.ResourceWindow(time.Now())
+	fmt.Fprintf(cmd.OutOrStdout(), "  … cost-resources: asking Cost Explorer what it billed per resource over %s — one billed request per service, %d left in this run's budget\n",
+		window.Label, budget.Remaining())
+
+	report, failures := cost.CollectResources(ctx, api, snap.Resources, cost.ResourceOptions{
+		Accounts:      snap.Accounts,
+		CallerAccount: account,
+		Metric:        flags.metric,
+		Window:        window,
+		Budget:        budget,
+		Rollup:        snap.Cost,
+	})
+	snap.ResourceCost = report
+	if report != nil {
+		// Probed and priced are printed together for the same reason the hub
+		// stage prints its pair: either number alone is unreadable. "8 services
+		// probed, 0 resources priced" is the answer this whole pass exists to
+		// surface, and it is invisible if only one of the two is shown.
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost-resources: %d service(s) probed, %d resource(s) priced, %d request(s), ~$%s charged by AWS\n",
+			probed(report), pricedBy(snap.Resources, model.CostMethodCE),
+			report.Meter.Requests, report.Meter.EstimatedChargeUSD)
+	}
+	return failures
+}
+
+// probed counts the services actually asked, as opposed to the services
+// considered — the report lists both, and only the first cost anything.
+func probed(report *model.ResourceCostReport) int {
+	n := 0
+	for _, p := range report.Probes {
+		switch p.Outcome {
+		case model.ProbeSkipped, model.ProbeUncensused:
+		default:
+			n++
+		}
+	}
+	return n
+}
+
+// pricedBy counts resources carrying a figure from one method.
+func pricedBy(resources []model.Resource, method string) int {
+	n := 0
+	for i := range resources {
+		if resources[i].CostBy(method) != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // compareAgainst diffs the fresh snapshot against a previous census JSON and
