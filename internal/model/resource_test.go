@@ -222,6 +222,81 @@ func TestSortTieBreaksOnARN(t *testing.T) {
 	}
 }
 
+// The end-of-life verdict is the one derivation that depends on when it runs,
+// so the clock has to be something a caller can supply. Without the seam a
+// fixture's census is a function of the day it is built on: rows gain eol and
+// eol_date as dates roll past, and a test that never mentioned time changes
+// what it sees. This pins the seam itself — that FinalizeAt judges against the
+// instant it is handed, and re-judges rather than accumulating, so a snapshot
+// finalized once can be finalized again against a different clock.
+//
+// This is the test that holds the seam open. Both instants below are in the
+// past, so a FinalizeAt that ignored its argument and read the wall clock
+// would flag the resource in the "before" cases and fail here — which is the
+// regression that matters, because it would turn every pinned fixture in the
+// tree back into a wall-clock one while leaving those tests green.
+func TestFinalizeAtJudgesEOLAgainstTheClockItIsGiven(t *testing.T) {
+	// postgres 13 is dated 2025-11-13 in the table.
+	pg13 := func() *Snapshot {
+		r := Resource{Service: ServiceRDS, ARN: "arn:aws:rds:us-east-1:1:db:reporting"}
+		r.SetAttr(AttrEngine, "postgres")
+		r.SetAttr(AttrEngineVersion, "13.13")
+		return &Snapshot{Resources: []Resource{r}}
+	}
+	before := time.Date(2025, 11, 12, 0, 0, 0, 0, time.UTC)
+	after := time.Date(2025, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	s := pg13()
+	s.FinalizeAt(before)
+	if s.Resources[0].EOL || s.Resources[0].EOLDate != "" {
+		t.Errorf("finalized a day before the date: EOL = (%v, %q), want (false, \"\")",
+			s.Resources[0].EOL, s.Resources[0].EOLDate)
+	}
+
+	// Same snapshot, later clock: the verdict has to follow the clock rather
+	// than stick from the first call.
+	s.FinalizeAt(after)
+	if !s.Resources[0].EOL || s.Resources[0].EOLDate != "2025-11-13" {
+		t.Errorf("re-finalized a day after the date: EOL = (%v, %q), want (true, 2025-11-13)",
+			s.Resources[0].EOL, s.Resources[0].EOLDate)
+	}
+
+	// And back, because a fixture pinned to a past instant is exactly this
+	// move: the demo package finalizes against the wall clock and the test
+	// re-finalizes against its own. A derivation that only ever added fields
+	// would leave the wall clock's verdict in place and the pin would be a
+	// no-op that looked like it worked.
+	s.FinalizeAt(before)
+	if s.Resources[0].EOL || s.Resources[0].EOLDate != "" {
+		t.Errorf("re-finalized back before the date: EOL = (%v, %q), want (false, \"\") — "+
+			"the verdict must be re-derived, not accumulated",
+			s.Resources[0].EOL, s.Resources[0].EOLDate)
+	}
+}
+
+// Finalize is FinalizeAt against the current instant. This checks only that
+// the two agree — that Finalize delegates rather than deriving differently —
+// and it deliberately claims no more than that: both calls read the same wall
+// clock, so a FinalizeAt that ignored its argument would pass here. The test
+// above is what catches that.
+func TestFinalizeMatchesFinalizeAtNow(t *testing.T) {
+	mk := func() *Snapshot {
+		r := Resource{Service: ServiceRDS, ARN: "arn:aws:rds:us-east-1:1:db:legacy"}
+		r.SetAttr(AttrEngine, "mysql")
+		r.SetAttr(AttrEngineVersion, "5.7.44")
+		return &Snapshot{Resources: []Resource{r}}
+	}
+	wall, pinned := mk(), mk()
+	wall.Finalize()
+	pinned.FinalizeAt(time.Now().UTC())
+	if wall.Resources[0].EOL != pinned.Resources[0].EOL ||
+		wall.Resources[0].EOLDate != pinned.Resources[0].EOLDate {
+		t.Errorf("Finalize = (%v, %q), FinalizeAt(now) = (%v, %q); they must agree",
+			wall.Resources[0].EOL, wall.Resources[0].EOLDate,
+			pinned.Resources[0].EOL, pinned.Resources[0].EOLDate)
+	}
+}
+
 func TestFinalizeSortsScopeLists(t *testing.T) {
 	s := &Snapshot{
 		Accounts: []string{"222222222222", "111111111111"},

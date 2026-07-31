@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hoophq/blueprint/internal/demo"
 	"github.com/hoophq/blueprint/internal/model"
 )
 
@@ -72,7 +71,7 @@ func splitPairs(t *testing.T, cell string) map[string]string {
 }
 
 func TestCSVDemoSnapshot(t *testing.T) {
-	snap := demo.Snapshot("test")
+	snap := demoSnapshot("test")
 	records := renderAndParse(t, snap)
 
 	if got, want := len(records), len(snap.Resources)+1; got != want {
@@ -556,7 +555,7 @@ func TestCSVCarriesBothMethodsOnOneRow(t *testing.T) {
 }
 
 func TestCSVAtomicWrite(t *testing.T) {
-	snap := demo.Snapshot("test")
+	snap := demoSnapshot("test")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.csv")
 	if err := CSV(snap, path); err != nil {
