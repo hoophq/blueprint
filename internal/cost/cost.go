@@ -162,8 +162,24 @@ type Options struct {
 	// Window is the billing period to report.
 	Window model.CostWindow
 	// MaxRequests caps billed requests for this run. Zero means
-	// DefaultMaxRequests.
+	// DefaultMaxRequests. Ignored when Budget is set.
 	MaxRequests int
+	// Budget is the run-wide request allowance, shared with any other paid pass
+	// in the same run. Nil means this pass is the only spender and one is
+	// created from MaxRequests.
+	Budget *Budget
+}
+
+// budget resolves the allowance this collection spends against.
+func (o Options) budget() *Budget {
+	if o.Budget != nil {
+		return o.Budget
+	}
+	max := o.MaxRequests
+	if max <= 0 {
+		max = DefaultMaxRequests
+	}
+	return NewBudget(max)
 }
 
 // LastFullMonth returns the most recent complete calendar month in UTC.
@@ -198,11 +214,17 @@ var (
 	errBreakdownMismatch = errors.New("cost explorer's service and record type breakdowns do not reconcile")
 )
 
-// meter counts billed requests and enforces the budget. Requests are issued
-// sequentially, which is what makes the cap exact — a concurrent fan-out
-// could overshoot it before the last goroutine checked.
+// meter counts one pass's billed requests against the run's shared budget.
+// Requests are issued sequentially, which is what makes the cap exact — a
+// concurrent fan-out could overshoot it before the last goroutine checked.
+//
+// The count is per-pass while the ceiling is per-run, because they answer
+// different questions: the artifact's meter says what this pass charged for,
+// and the budget says what the run has left. Reporting the run's total as this
+// pass's charge would bill the rollup for the overlay's requests.
 type meter struct {
-	n, max int
+	budget *Budget
+	n      int
 	// blocked records that the budget actually stopped a request. Spending
 	// the last permitted request and finishing is a complete run, so this is
 	// deliberately not "n == max": that would label a successful collection
@@ -211,12 +233,21 @@ type meter struct {
 }
 
 func (m *meter) take() bool {
-	if m.n >= m.max {
+	if !m.budget.take() {
 		m.blocked = true
 		return false
 	}
 	m.n++
 	return true
+}
+
+// report renders what this pass spent, for the artifact.
+func (m *meter) report() model.CostMeter {
+	return model.CostMeter{
+		Requests:           m.n,
+		EstimatedChargeUSD: ChargeUSD(m.n),
+		Capped:             m.blocked,
+	}
 }
 
 // row is one (dimension value, account, currency) amount from a response.
@@ -251,12 +282,7 @@ func Collect(ctx context.Context, api API, opts Options) (*model.CostReport, []m
 		return nil, []model.Failure{ledger(opts, "ce_invalid_metric",
 			fmt.Sprintf("unknown cost metric %q; valid values are %s", opts.Metric, strings.Join(Metrics(), ", ")))}
 	}
-	maxRequests := opts.MaxRequests
-	if maxRequests <= 0 {
-		maxRequests = DefaultMaxRequests
-	}
-
-	m := &meter{max: maxRequests}
+	m := &meter{budget: opts.budget()}
 	report := &model.CostReport{
 		Window:   opts.Window,
 		Metric:   metric,
@@ -319,11 +345,7 @@ func Collect(ctx context.Context, api API, opts Options) (*model.CostReport, []m
 					"month is billed — they will not reconcile to the invoice yet", opts.Window.Label)))
 		}
 	}
-	report.Meter = model.CostMeter{
-		Requests:           m.n,
-		EstimatedChargeUSD: ChargeUSD(m.n),
-		Capped:             m.blocked,
-	}
+	report.Meter = m.report()
 	report.Sort()
 
 	if m.n == 0 {
@@ -626,9 +648,15 @@ func named(m map[string][]amount) []model.NamedAmount {
 // because Cost Explorer is global; the terminal roll-up already renders
 // region-less units without a dangling separator.
 func ledger(opts Options, kind, msg string) model.Failure {
+	return ledgerEntry(opts.CallerAccount, Service, kind, msg)
+}
+
+// ledgerEntry is the shared shape both paid passes record under, differing
+// only in which ledger service they answer to.
+func ledgerEntry(account, service, kind, msg string) model.Failure {
 	return model.Failure{
-		AccountID: opts.CallerAccount,
-		Service:   Service,
+		AccountID: account,
+		Service:   service,
 		Error:     kind + ": " + msg,
 		Time:      time.Now().UTC(),
 	}

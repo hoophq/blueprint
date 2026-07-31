@@ -71,19 +71,22 @@ func TestCompareIgnoresCost(t *testing.T) {
 // changed is a cost question (ATR-175), not a "did this database change" one.
 func TestCompareIgnoresPerResourceCost(t *testing.T) {
 	snap := func(cost *model.ResourceCost) *model.Snapshot {
+		r := model.Resource{
+			ARN:       "arn:aws:rds:us-east-1:111111111111:db:orders",
+			Name:      "orders",
+			Service:   model.ServiceRDS,
+			Type:      model.TypeRDSInstance,
+			Region:    "us-east-1",
+			AccountID: "111111111111",
+		}
+		if cost != nil {
+			r.AddCost(*cost)
+		}
 		s := &model.Snapshot{
-			Schema:   model.SchemaVersion,
-			Accounts: []string{"111111111111"},
-			Regions:  []string{"us-east-1"},
-			Resources: []model.Resource{{
-				ARN:       "arn:aws:rds:us-east-1:111111111111:db:orders",
-				Name:      "orders",
-				Service:   model.ServiceRDS,
-				Type:      model.TypeRDSInstance,
-				Region:    "us-east-1",
-				AccountID: "111111111111",
-				Cost:      cost,
-			}},
+			Schema:    model.SchemaVersion,
+			Accounts:  []string{"111111111111"},
+			Regions:   []string{"us-east-1"},
+			Resources: []model.Resource{r},
 		}
 		s.Finalize()
 		return s

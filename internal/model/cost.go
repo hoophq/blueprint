@@ -144,26 +144,50 @@ type NamedAmount struct {
 // produces a number that means nothing — so the source is never dropped, and a
 // reader can always tell which question a figure answers.
 const (
+	// CostMethodCE is Cost Explorer's GetCostAndUsageWithResources: what AWS
+	// actually billed for one resource over a closed window in the recent past.
+	CostMethodCE = "ce"
 	// CostMethodCOH is Cost Optimization Hub's estimatedMonthlyCost for a
 	// resource's current configuration.
 	CostMethodCOH = "coh"
 )
 
+// CostMethods lists every attribution method, in a fixed order.
+//
+// It exists because the CSV header is generated from it: the column set is
+// closed, and "closed" has to mean the same set of columns in the same order on
+// every run, not whichever methods happened to report on this one. Ordering is
+// alphabetical rather than by preference so adding a method has one obvious
+// answer instead of an argument.
+func CostMethods() []string {
+	return []string{CostMethodCE, CostMethodCOH}
+}
+
 // ResourceCost is what one resource costs, according to one source.
 //
-// It hangs off Resource as a pointer and is set only when a source actually
-// reported a figure for that resource. Nil means nobody reported a cost for
-// it — never that the resource is free — the same rule the attribute bag's
-// absent keys carry. Nothing here is ever derived by dividing a group total
-// across the resources in it: a per-resource number that was never reported
-// per resource is exactly the fabricated value the honesty guardrails forbid.
-// That is why CostReport (account-level rollups) and this type stay separate
-// and are never reconciled against each other.
+// Resource carries a slice of these, one per source that reported on it, and an
+// entry exists only when a source actually reported a figure. An absent method
+// means nobody reported a cost for it under that method — never that the
+// resource is free — the same rule the attribute bag's absent keys carry.
+// Nothing here is ever derived by dividing a group total across the resources
+// in it: a per-resource number that was never reported per resource is exactly
+// the fabricated value the honesty guardrails forbid. That is why CostReport
+// (account-level rollups) and this type stay separate and are never reconciled
+// against each other.
+//
+// Two figures for one resource are two answers to two different questions, not
+// a disagreement to be resolved. Cost Explorer says what a resource was billed
+// over a window that has closed; Cost Optimization Hub says what its current
+// configuration is modelled to cost going forward. Keeping both is the point —
+// picking a winner would discard the one the reader happened to want, and
+// summing them would double-count. Consumers group by Method and never add
+// across it.
 type ResourceCost struct {
 	// Amount is a decimal string, for the same reason every other amount in
 	// this package is: binary floating point cannot hold a decimal amount
 	// exactly. A stored "0.00" is a real reported figure and must survive to
-	// the renderers — the absence of a cost is a nil *ResourceCost, not a zero.
+	// the renderers — the absence of a cost is a missing entry in Resource.Costs,
+	// not a zero.
 	Amount string `json:"amount"`
 	// Currency is the unit the source reported ("USD").
 	//
@@ -195,6 +219,17 @@ type ResourceCost struct {
 	// statements true of every figure from a method belong in that method's
 	// documentation, not repeated on every row of the artifact.
 	Caveats []string `json:"caveats,omitempty"`
+	// MatchKey is the identifier the source used to name this resource, when it
+	// is not the ARN. Empty means the source keyed on the ARN itself and there
+	// was nothing to reconcile.
+	//
+	// It exists because Cost Explorer's RESOURCE_ID is service-dependent — an
+	// instance ID for EC2, a bucket name for S3, a full ARN for others — so
+	// attaching its figures to the census means matching on something other than
+	// a shared key. Recording what was matched turns that join from a claim into
+	// something the reader can check: if the wrong resource was priced, the
+	// evidence is in the artifact rather than in this tool's source.
+	MatchKey string `json:"match_key,omitempty"`
 }
 
 // CostMeter records what the cost lookup itself cost.
@@ -248,5 +283,121 @@ func sortNamedAmounts(n []NamedAmount) {
 			return n[i].Name < n[j].Name
 		}
 		return n[i].Amount < n[j].Amount
+	})
+}
+
+// Outcomes of one resource-level Cost Explorer probe, used in
+// ServiceProbe.Outcome.
+//
+// The set is finer-grained than success/failure because the interesting answers
+// are in between. AWS's own documentation contradicts itself about which
+// services report resource-level cost at all — the API reference restricts it
+// to EC2-Compute, the console guide offers a per-service picker — so which
+// services answer is not something this tool can know in advance. It asks, and
+// records what came back. The distinctions below are the ones that change what
+// a reader should conclude.
+const (
+	// ProbeRows means the service answered with per-resource rows.
+	ProbeRows = "rows"
+	// ProbeEmpty means the service accepted the query and returned nothing.
+	//
+	// It is deliberately not called "unsupported". An empty answer is
+	// indistinguishable from a service that reports nothing because there was no
+	// usage in the window, or because resource-level data was switched on too
+	// recently to cover it — that preference is not retroactive. Naming this
+	// "unsupported" would publish a claim about AWS that the evidence does not
+	// support.
+	ProbeEmpty = "empty"
+	// ProbeUnsupported means AWS rejected the query for this service
+	// specifically, which is the only positive evidence of non-support there is.
+	ProbeUnsupported = "unsupported"
+	// ProbeDenied means the caller lacks the permission or the account-level
+	// opt-in. Nothing is known about the service either way.
+	ProbeDenied = "denied"
+	// ProbeFailed means the request errored for some other reason.
+	ProbeFailed = "failed"
+	// ProbeSkipped means the probe was never issued — the request budget ran out
+	// first. A skipped service is not a service without spend.
+	ProbeSkipped = "skipped"
+	// ProbeUncensused means the probe was not issued because no scanner covers
+	// this service, so its per-resource figures would have no resource to attach
+	// to. The spend is real and is in the rollup; it is the census that does not
+	// reach it. Recording the service by name is the point — it is a coverage
+	// gap the reader can act on.
+	ProbeUncensused = "uncensused"
+)
+
+// ResourceCostReport records what the resource-level Cost Explorer pass asked
+// and what came back, per service.
+//
+// It exists as its own artifact section rather than only as a set of
+// ResourceCost entries because the negatives carry the information. A service
+// that returned no rows, a service AWS rejected, and a service never asked
+// about because the budget ran out all leave the same trace on the census —
+// resources with no Cost Explorer figure — and they mean entirely different
+// things. Without this the reader cannot tell "this resource cost nothing" from
+// "this tool never found out", which is the distinction the honesty guardrails
+// exist to preserve.
+//
+// A nil *ResourceCostReport means the pass did not run.
+type ResourceCostReport struct {
+	// Window is the period the figures cover. Cost Explorer's resource-level
+	// data reaches back roughly 14 days, so this is never the same window as the
+	// rollup's closed month and the two must not be compared.
+	Window CostWindow `json:"window"`
+	// Metric is the Cost Explorer metric name, matching the rollup's.
+	Metric string `json:"metric"`
+	// Accounts are the account IDs the pass covered, as in CostReport.
+	Accounts []string `json:"accounts"`
+	// Probes is one entry per service considered, sorted by service name —
+	// including the ones that produced nothing, which is most of the point.
+	Probes []ServiceProbe `json:"probes"`
+	// Estimated is AWS's own flag on the returned data. A window this recent is
+	// normally still estimated; the figures move as AWS restates them.
+	//
+	// nil means no service returned rows, so there is nothing for the flag to
+	// describe. It lives here rather than on each ResourceCost because
+	// ResourceCost.Estimated answers a different question — whether the figure
+	// is modelled rather than billed — and a billed-but-not-yet-final amount is
+	// not a modelled one.
+	Estimated *bool `json:"estimated,omitempty"`
+	// Meter records what this pass cost the user, separately from the rollup's.
+	Meter CostMeter `json:"meter"`
+}
+
+// ServiceProbe is the result of asking Cost Explorer for one service's
+// resource-level costs.
+type ServiceProbe struct {
+	// Service is Cost Explorer's own SERVICE dimension value ("Amazon Elastic
+	// Compute Cloud - Compute"), stored verbatim as the filter that was sent.
+	// These names do not match the census's service keys, and the value here is
+	// the one AWS reported rather than one this tool composed.
+	Service string `json:"service"`
+	// Outcome is one of the Probe* constants.
+	Outcome string `json:"outcome"`
+	// Detail carries the API's own message for the rejected and failed outcomes.
+	Detail string `json:"detail,omitempty"`
+	// Rows is how many resource groups the service reported.
+	Rows int `json:"rows"`
+	// Matched is how many of those rows were joined to a census resource. Rows
+	// above Matched is spend on things this census does not cover — a scanner
+	// gap, not an error.
+	Matched int `json:"matched"`
+	// Truncated is true when the row count reached Cost Explorer's per-request
+	// group ceiling, so the service's real total may be higher than Rows.
+	//
+	// The API truncates at that ceiling without erroring, which would otherwise
+	// make an under-count look like a complete answer.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// Sort orders the report so the JSON artifact is byte-for-byte stable.
+func (c *ResourceCostReport) Sort() {
+	if c == nil {
+		return
+	}
+	sort.Strings(c.Accounts)
+	sort.Slice(c.Probes, func(i, j int) bool {
+		return c.Probes[i].Service < c.Probes[j].Service
 	})
 }

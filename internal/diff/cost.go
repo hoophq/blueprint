@@ -46,6 +46,14 @@ const (
 // --fail-on-change. Cost moves on its own — see the note at the top of this
 // file — so gating an exit code on it would gate it on AWS's billing pipeline
 // rather than on the estate.
+//
+// Every comparison in here is made *within* one attribution method. A resource
+// can carry a billed Cost Explorer figure and a modelled Cost Optimization Hub
+// rate at the same time, and the two are not two readings of one quantity:
+// subtracting last scan's modelled rate from this scan's billed window, or
+// summing the two into one net, produces a number that answers no question. So
+// figures are matched on (ARN, method) rather than ARN, and every total the
+// section prints belongs to exactly one method.
 type CostDrift struct {
 	// Billed compares the account-level rollups. Nil when neither census
 	// collected one, so there is nothing to say either way.
@@ -61,13 +69,24 @@ type CostDrift struct {
 	// different currency, method, basis, or observation window. Reported as
 	// the basis change they are, never as a delta.
 	Basis []CostBasisChange
-	// Net is the estate-level number, one entry per currency that saw any
-	// movement at all.
+	// Net is the estate-level number, one entry per method and currency that saw
+	// any movement at all.
 	Net []CostNet
 	// Priced and Unpriced count the resources this pass considered: how many
-	// carried a figure that fed the net, and how many carried none on either
-	// side. Without the second number a net reads as if it covered the whole
-	// estate when it may cover a tenth of it.
+	// carried a figure on at least one side under at least one method, and how
+	// many carried none at all. Without the second number a net reads as if it
+	// covered the whole estate when it may cover a tenth of it.
+	//
+	// Both count *resources*, while everything above counts figures. A resource
+	// priced by two sources is one resource, and counting it twice here would
+	// inflate the coverage denominator the notes are built from — reporting
+	// better coverage than the scan actually achieved. They partition the diff:
+	// every resource on either side lands in exactly one of the two, so
+	// Priced+Unpriced is the resource total and nothing else needs adding to it.
+	//
+	// Priced is coverage, not participation in the arithmetic. A resource whose
+	// two figures were refused as incomparable is still a priced resource; that
+	// the pair could not be subtracted is what Basis says.
 	Priced   int
 	Unpriced int
 	// Notes are disclosures that qualify the numbers above.
@@ -77,6 +96,9 @@ type CostDrift struct {
 // CostChange is one resource whose cost moved by enough to be worth printing.
 type CostChange struct {
 	Resource model.Resource // the current state
+	// Method is the attribution method both figures came from. Movement is only
+	// ever computed within one method, so there is one name here, not two.
+	Method   string
 	Currency string
 	Old      string
 	New      string
@@ -87,9 +109,12 @@ type CostChange struct {
 	Percent string
 }
 
-// CostCoverage is a resource that gained or lost a cost figure.
+// CostCoverage is a resource that gained or lost a cost figure under one
+// method. A resource can appear twice — one source starting to price it while
+// another stops is two coverage changes, not one.
 type CostCoverage struct {
 	Resource model.Resource
+	Method   string
 	Gained   bool
 	// Amount and Currency are the figure that appeared, or the one that went
 	// away.
@@ -101,16 +126,22 @@ type CostCoverage struct {
 	Reason string
 }
 
-// CostBasisChange is a resource whose two figures answer different questions.
+// CostBasisChange is a resource whose two figures under one method answer
+// different questions.
 type CostBasisChange struct {
 	Resource model.Resource
+	Method   string
 	// Reason names what changed, e.g. "currency changed (USD → EUR)".
 	Reason   string
 	Old, New string
 }
 
-// CostNet is the net spend change for one currency.
+// CostNet is the net spend change for one method and currency.
 type CostNet struct {
+	// Method is the attribution method these totals came from. It is part of the
+	// grouping, not a label on it: a billed 14-day window and a modelled monthly
+	// rate summed into one figure would be arithmetic across two questions.
+	Method string
 	// Currency is empty when the source reported amounts without naming one.
 	// Those are never pooled with a named currency.
 	Currency string
@@ -160,12 +191,19 @@ func (d CostDrift) Empty() bool {
 		len(d.Basis) == 0 && len(d.Net) == 0
 }
 
-// netAcc accumulates one currency's four running totals. Net is kept as its
-// own sum rather than derived at the end so it is never out of step with the
-// three parts that feed it.
+// netKey groups the running totals. Method is part of the key rather than a
+// label recorded alongside it, so no arithmetic can cross a method boundary
+// even by accident.
+type netKey struct {
+	method   string
+	currency string
+}
+
+// netAcc accumulates one method and currency's four running totals. Net is kept
+// as its own sum rather than derived at the end so it is never out of step with
+// the three parts that feed it.
 type netAcc struct {
 	added, removed, changed, net cost.Sum
-	methods                      map[string]bool
 	// moved records whether any single figure that fed these totals was
 	// non-zero. It is what decides whether the currency is printed, because
 	// the totals cannot: a currency where one resource rose $500 and another
@@ -203,19 +241,26 @@ func (a *netAcc) change(mv cost.Move) {
 }
 
 // costDrift compares spend across two censuses, matching resources by ARN —
-// the same key the resource diff matches on.
+// the same key the resource diff matches on — and figures by (ARN, method).
 func costDrift(old, current *model.Snapshot) CostDrift {
 	var d CostDrift
-	prev := make(map[string]*model.ResourceCost, len(old.Resources))
+	prev := make(map[string][]model.ResourceCost, len(old.Resources))
+	prevSeen := make(map[string]bool, len(old.Resources))
 	for i := range old.Resources {
-		prev[old.Resources[i].ARN] = old.Resources[i].Cost
+		// Presence is recorded separately from the figures: a resource that was
+		// in the baseline carrying no price at all is still a resource the
+		// current census can be compared against, and reading presence off the
+		// figures map would turn it into one that was never there.
+		prevSeen[old.Resources[i].ARN] = true
+		prev[old.Resources[i].ARN] = old.Resources[i].Costs
 	}
-	accs := map[string]*netAcc{}
-	acc := func(currency string) *netAcc {
-		a := accs[currency]
+	accs := map[netKey]*netAcc{}
+	acc := func(method, currency string) *netAcc {
+		k := netKey{method: method, currency: currency}
+		a := accs[k]
 		if a == nil {
-			a = &netAcc{methods: map[string]bool{}}
-			accs[currency] = a
+			a = &netAcc{}
+			accs[k] = a
 		}
 		return a
 	}
@@ -224,45 +269,56 @@ func costDrift(old, current *model.Snapshot) CostDrift {
 	seen := make(map[string]bool, len(current.Resources))
 	for _, r := range current.Resources {
 		seen[r.ARN] = true
-		o, matched := prev[r.ARN]
-		if !matched {
+		if !prevSeen[r.ARN] {
 			churn++
-			if r.Cost == nil {
+			if !r.Priced() {
 				d.Unpriced++
 				continue
 			}
 			d.Priced++
-			a := acc(r.Cost.Currency)
-			a.add(r.Cost.Amount)
-			a.methods[r.Cost.Method] = true
-			flag(r.Cost, &estimated, &billed)
+			for _, c := range r.Costs {
+				a := acc(c.Method, c.Currency)
+				a.add(c.Amount)
+				flag(c, &estimated, &billed)
+			}
 			continue
 		}
-		switch {
-		case o == nil && r.Cost == nil:
+		olds := prev[r.ARN]
+		methods := unionMethods(olds, r.Costs)
+		if len(methods) == 0 {
 			d.Unpriced++
-		case o == nil:
-			// Seeing a price for the first time is coverage, not spending.
-			// Adding it to the net would report the tool's own improvement as
-			// the estate getting more expensive.
-			//
-			// It is still flagged: a coverage line prints the amount, and an
-			// amount printed without saying whether it is a modelled rate or a
-			// bill is the thing the note below exists to prevent.
-			flag(r.Cost, &estimated, &billed)
-			d.Coverage = append(d.Coverage, CostCoverage{
-				Resource: r, Gained: true,
-				Amount: r.Cost.Amount, Currency: r.Cost.Currency,
-			})
-		case r.Cost == nil:
-			flag(o, &estimated, &billed)
-			d.Coverage = append(d.Coverage, CostCoverage{
-				Resource: r,
-				Amount:   o.Amount, Currency: o.Currency,
-				Reason: r.CostUnavailable,
-			})
-		default:
-			d.compare(r, o, acc, &estimated, &billed)
+			continue
+		}
+		// Counted once for the resource, whatever the per-method outcome below:
+		// Priced is a coverage statistic over resources, and the same resource
+		// arriving under two methods is still one resource that carries a price.
+		d.Priced++
+		for _, m := range methods {
+			o, n := findCost(olds, m), findCost(r.Costs, m)
+			switch {
+			case o == nil:
+				// Seeing a price for the first time is coverage, not spending.
+				// Adding it to the net would report the tool's own improvement as
+				// the estate getting more expensive.
+				//
+				// It is still flagged: a coverage line prints the amount, and an
+				// amount printed without saying whether it is a modelled rate or a
+				// bill is the thing the note below exists to prevent.
+				flag(*n, &estimated, &billed)
+				d.Coverage = append(d.Coverage, CostCoverage{
+					Resource: r, Method: m, Gained: true,
+					Amount: n.Amount, Currency: n.Currency,
+				})
+			case n == nil:
+				flag(*o, &estimated, &billed)
+				d.Coverage = append(d.Coverage, CostCoverage{
+					Resource: r, Method: m,
+					Amount: o.Amount, Currency: o.Currency,
+					Reason: r.CostUnavailable,
+				})
+			default:
+				d.compare(r, m, o, n, acc, &estimated, &billed)
+			}
 		}
 	}
 	for _, r := range old.Resources {
@@ -270,65 +326,112 @@ func costDrift(old, current *model.Snapshot) CostDrift {
 			continue
 		}
 		churn++
-		if r.Cost == nil {
+		if !r.Priced() {
 			d.Unpriced++
 			continue
 		}
 		d.Priced++
-		a := acc(r.Cost.Currency)
-		a.remove(r.Cost.Amount)
-		a.methods[r.Cost.Method] = true
-		flag(r.Cost, &estimated, &billed)
+		for _, c := range r.Costs {
+			a := acc(c.Method, c.Currency)
+			a.remove(c.Amount)
+			flag(c, &estimated, &billed)
+		}
 	}
 
 	d.Billed = billedChange(old.Cost, current.Cost)
 	d.Net = nets(accs)
 	d.Notes = notes(d, estimated, billed, churn)
-	sort.Slice(d.Moved, func(i, j int) bool { return d.Moved[i].Resource.ARN < d.Moved[j].Resource.ARN })
-	sort.Slice(d.Coverage, func(i, j int) bool { return d.Coverage[i].Resource.ARN < d.Coverage[j].Resource.ARN })
-	sort.Slice(d.Basis, func(i, j int) bool { return d.Basis[i].Resource.ARN < d.Basis[j].Resource.ARN })
+	// ARN then method: with more than one figure per resource, ARN alone is no
+	// longer a total order, and an unstable order across runs would show up as
+	// diff churn in whatever consumes the JSON.
+	sort.Slice(d.Moved, func(i, j int) bool {
+		return lessByResourceMethod(d.Moved[i].Resource.ARN, d.Moved[i].Method, d.Moved[j].Resource.ARN, d.Moved[j].Method)
+	})
+	sort.Slice(d.Coverage, func(i, j int) bool {
+		return lessByResourceMethod(d.Coverage[i].Resource.ARN, d.Coverage[i].Method, d.Coverage[j].Resource.ARN, d.Coverage[j].Method)
+	})
+	sort.Slice(d.Basis, func(i, j int) bool {
+		return lessByResourceMethod(d.Basis[i].Resource.ARN, d.Basis[i].Method, d.Basis[j].Resource.ARN, d.Basis[j].Method)
+	})
 	return d
 }
 
-// compare handles one resource priced in both censuses.
-func (d *CostDrift) compare(r model.Resource, o *model.ResourceCost, acc func(string) *netAcc, estimated, billed *bool) {
-	if reason := incomparable(o, r.Cost); reason != "" {
+func lessByResourceMethod(arnA, methodA, arnB, methodB string) bool {
+	if arnA != arnB {
+		return arnA < arnB
+	}
+	return methodA < methodB
+}
+
+// findCost returns the figure one method reported, or nil.
+func findCost(costs []model.ResourceCost, method string) *model.ResourceCost {
+	for i := range costs {
+		if costs[i].Method == method {
+			return &costs[i]
+		}
+	}
+	return nil
+}
+
+// unionMethods lists every method that priced a resource on either side, sorted.
+//
+// It reads the methods off the figures rather than off model.CostMethods()
+// because a baseline written by an older build can carry a method this one no
+// longer emits. Walking the known list would drop that figure silently, which
+// would read as spend that never existed rather than as the coverage change it
+// is.
+func unionMethods(old, current []model.ResourceCost) []string {
+	seen := make(map[string]bool, len(old)+len(current))
+	var out []string
+	for _, cs := range [][]model.ResourceCost{old, current} {
+		for _, c := range cs {
+			if seen[c.Method] {
+				continue
+			}
+			seen[c.Method] = true
+			out = append(out, c.Method)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// compare handles one method's figure present in both censuses.
+func (d *CostDrift) compare(r model.Resource, method string, o, n *model.ResourceCost, acc func(string, string) *netAcc, estimated, billed *bool) {
+	if reason := incomparable(o, n); reason != "" {
 		d.Basis = append(d.Basis, CostBasisChange{
-			Resource: r, Reason: reason,
-			Old: money(o.Amount, o.Currency), New: money(r.Cost.Amount, r.Cost.Currency),
+			Resource: r, Method: method, Reason: reason,
+			Old: money(o.Amount, o.Currency), New: money(n.Amount, n.Currency),
 		})
 		return
 	}
-	mv, ok := cost.Movement(o.Amount, r.Cost.Amount)
+	mv, ok := cost.Movement(o.Amount, n.Amount)
 	if !ok {
 		// A figure that is not a number cannot be subtracted or believed. It is
 		// reported as a basis change rather than skipped, so an amount AWS sent
 		// in a form this tool does not accept is visible instead of silently
 		// dropping out of the net.
 		d.Basis = append(d.Basis, CostBasisChange{
-			Resource: r, Reason: "amount is not a decimal number",
-			Old: money(o.Amount, o.Currency), New: money(r.Cost.Amount, r.Cost.Currency),
+			Resource: r, Method: method, Reason: "amount is not a decimal number",
+			Old: money(o.Amount, o.Currency), New: money(n.Amount, n.Currency),
 		})
 		return
 	}
-	d.Priced++
-	a := acc(r.Cost.Currency)
-	a.change(mv)
-	a.methods[r.Cost.Method] = true
-	flag(r.Cost, estimated, billed)
+	acc(method, n.Currency).change(mv)
+	flag(*n, estimated, billed)
 	if !mv.AtLeast(materialAbsolute) || !mv.AtLeastPercent(materialPercent) {
 		return
 	}
 	d.Moved = append(d.Moved, CostChange{
-		Resource: r, Currency: r.Cost.Currency,
-		Old: o.Amount, New: r.Cost.Amount,
+		Resource: r, Method: method, Currency: n.Currency,
+		Old: o.Amount, New: n.Amount,
 		Delta: mv.Delta(), Percent: mv.Percent(),
 	})
 }
 
 // flag records whether a figure was modelled or billed, so the section can say
 // which kind of number the reader is looking at.
-func flag(c *model.ResourceCost, estimated, billed *bool) {
+func flag(c model.ResourceCost, estimated, billed *bool) {
 	if c.Estimated {
 		*estimated = true
 		return
@@ -336,19 +439,21 @@ func flag(c *model.ResourceCost, estimated, billed *bool) {
 	*billed = true
 }
 
-// incomparable names why two figures for the same resource cannot be
+// incomparable names why two figures for the same resource and method cannot be
 // subtracted, or returns "" when they can.
 //
 // Every check here is a refusal to guess. Two amounts in different currencies,
-// from different sources, or describing different lengths of usage are not the
-// same question asked twice, and subtracting them would produce a number that
-// looks like drift and means nothing.
+// or describing different lengths of usage, are not the same question asked
+// twice, and subtracting them would produce a number that looks like drift and
+// means nothing.
+//
+// The method is not checked, because it cannot differ: figures are matched on
+// (ARN, method), so a method change shows up as one method losing coverage and
+// another gaining it — two honest coverage lines rather than one subtraction
+// across two questions.
 func incomparable(o, n *model.ResourceCost) string {
 	if o.Currency != n.Currency {
 		return fmt.Sprintf("currency changed (%s → %s)", currency(o.Currency), currency(n.Currency))
-	}
-	if o.Method != n.Method {
-		return fmt.Sprintf("attribution method changed (%s → %s)", orDash(o.Method), orDash(n.Method))
 	}
 	if o.Estimated != n.Estimated {
 		return fmt.Sprintf("basis changed (%s → %s)", basis(o.Estimated), basis(n.Estimated))
@@ -404,36 +509,34 @@ func money(amount, cur string) string {
 	return amount + " " + currency(cur)
 }
 
-// nets turns the per-currency accumulators into sorted output, dropping any
-// currency where not one figure moved so a steady estate prints nothing rather
-// than a page of zeroes.
+// nets turns the per-method, per-currency accumulators into sorted output,
+// dropping any group where not one figure moved so a steady estate prints
+// nothing rather than a page of zeroes.
 //
 // The test is per-figure rather than on the totals, because a total of zero is
 // two different situations: nothing happened, or a lot happened and it
 // cancelled. Only the first is silence.
-func nets(accs map[string]*netAcc) []CostNet {
+func nets(accs map[netKey]*netAcc) []CostNet {
 	var out []CostNet
-	for cur, a := range accs {
+	for k, a := range accs {
 		if !a.moved {
 			continue
 		}
-		methods := make([]string, 0, len(a.methods))
-		for m := range a.methods {
-			if m != "" {
-				methods = append(methods, m)
-			}
-		}
-		sort.Strings(methods)
 		out = append(out, CostNet{
-			Currency: cur,
+			Method:   k.method,
+			Currency: k.currency,
 			Added:    a.added.String(),
 			Removed:  a.removed.String(),
 			Changed:  a.changed.String(),
 			Net:      a.net.String(),
-			Methods:  methods,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Currency < out[j].Currency })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Method != out[j].Method {
+			return out[i].Method < out[j].Method
+		}
+		return out[i].Currency < out[j].Currency
+	})
 	return out
 }
 
@@ -454,7 +557,11 @@ func notes(d CostDrift, estimated, billed bool, churn int) []string {
 		out = append(out, "reserved-instance and savings-plan discounts float across an account: adding or removing a covered resource changes what other, untouched resources are modelled to cost")
 	}
 	if len(d.Moved) > 0 || len(d.Net) > 0 {
-		if total := d.Priced + d.Unpriced + len(d.Coverage) + len(d.Basis); d.Unpriced > 0 {
+		// Priced and Unpriced partition the resources, so the denominator is
+		// their sum. Coverage and Basis are counts of *figures* and adding them
+		// here would inflate the total — and understate the share of the estate
+		// the reader is being told is uncovered.
+		if total := d.Priced + d.Unpriced; d.Unpriced > 0 {
 			out = append(out, fmt.Sprintf("%d of the %d resources in this diff carry no cost figure at all, so the net covers the rest", d.Unpriced, total))
 		}
 	}
@@ -555,16 +662,16 @@ func (d CostDrift) WriteCost(w io.Writer, label string) {
 	for _, n := range d.Net {
 		fmt.Fprintf(w, "  net %s %s  ·  %s new  ·  %s removed  ·  %s on existing%s\n",
 			plus(n.Net), currency(n.Currency),
-			plus(n.Added), "−"+n.Removed, plus(n.Changed), methodSuffix(n.Methods))
+			plus(n.Added), "−"+n.Removed, plus(n.Changed), methodSuffix(n.Method))
 	}
 	for i, c := range d.Moved {
 		if i == maxListed {
 			fmt.Fprintf(w, "  ~ … and %d more moved\n", len(d.Moved)-maxListed)
 			break
 		}
-		fmt.Fprintf(w, "  ~ %s (%s, %s): %s → %s  (%s%s)\n",
+		fmt.Fprintf(w, "  ~ %s (%s, %s): %s → %s  (%s%s)%s\n",
 			c.Resource.Name, c.Resource.Service, c.Resource.Region,
-			c.Old, c.New, plus(c.Delta), percentSuffix(c.Percent))
+			c.Old, c.New, plus(c.Delta), percentSuffix(c.Percent), methodSuffix(c.Method))
 	}
 	for i, c := range d.Coverage {
 		if i == maxListed {
@@ -572,21 +679,23 @@ func (d CostDrift) WriteCost(w io.Writer, label string) {
 			break
 		}
 		if c.Gained {
-			fmt.Fprintf(w, "  · %s (%s, %s): now priced at %s — new visibility, not new spend\n",
-				c.Resource.Name, c.Resource.Service, c.Resource.Region, money(c.Amount, c.Currency))
+			fmt.Fprintf(w, "  · %s (%s, %s): now priced at %s — new visibility, not new spend%s\n",
+				c.Resource.Name, c.Resource.Service, c.Resource.Region,
+				money(c.Amount, c.Currency), methodSuffix(c.Method))
 			continue
 		}
-		fmt.Fprintf(w, "  · %s (%s, %s): no longer priced, was %s%s\n",
+		fmt.Fprintf(w, "  · %s (%s, %s): no longer priced, was %s%s%s\n",
 			c.Resource.Name, c.Resource.Service, c.Resource.Region,
-			money(c.Amount, c.Currency), reasonSuffix(c.Reason))
+			money(c.Amount, c.Currency), reasonSuffix(c.Reason), methodSuffix(c.Method))
 	}
 	for i, c := range d.Basis {
 		if i == maxListed {
 			fmt.Fprintf(w, "  ! … and %d more not compared\n", len(d.Basis)-maxListed)
 			break
 		}
-		fmt.Fprintf(w, "  ! %s (%s, %s): not compared — %s (%s → %s)\n",
-			c.Resource.Name, c.Resource.Service, c.Resource.Region, c.Reason, c.Old, c.New)
+		fmt.Fprintf(w, "  ! %s (%s, %s): not compared — %s (%s → %s)%s\n",
+			c.Resource.Name, c.Resource.Service, c.Resource.Region, c.Reason, c.Old, c.New,
+			methodSuffix(c.Method))
 	}
 	if d.Billed != nil {
 		writeBilled(w, d.Billed)
@@ -616,11 +725,16 @@ func writeBilled(w io.Writer, b *BilledChange) {
 	}
 }
 
-func methodSuffix(methods []string) string {
-	if len(methods) == 0 {
+// methodSuffix labels a line with the method its figures came from.
+//
+// Every printed line now belongs to exactly one method, so this names it rather
+// than confessing that several were added together — the arithmetic that
+// confession existed to disclose is no longer possible.
+func methodSuffix(method string) string {
+	if method == "" {
 		return ""
 	}
-	return "  [" + strings.Join(methods, "+") + "]"
+	return "  [" + method + "]"
 }
 
 func percentSuffix(pct string) string {

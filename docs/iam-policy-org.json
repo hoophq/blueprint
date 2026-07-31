@@ -21,7 +21,19 @@
     {
       "Sid": "BlueprintCostExplorer",
       "Effect": "Allow",
-      "Action": "ce:GetCostAndUsage",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetCostAndUsageWithResources"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BlueprintCostOptimizationHub",
+      "Effect": "Allow",
+      "Action": [
+        "cost-optimization-hub:ListEnrollmentStatuses",
+        "cost-optimization-hub:ListRecommendations"
+      ],
       "Resource": "*"
     },
     {

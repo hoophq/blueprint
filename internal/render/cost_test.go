@@ -131,10 +131,27 @@ func priced(name, amount, currency, method string, estimated bool) model.Resourc
 		ARN: "arn:aws:rds:us-east-1:1:db:" + name, Name: name,
 		Service: "rds", Region: "us-east-1", Type: model.TypeRDSInstance,
 	}
-	r.Cost = &model.ResourceCost{
+	r.AddCost(model.ResourceCost{
 		Amount: amount, Currency: currency, Method: method, Estimated: estimated,
-	}
+	})
 	return r
+}
+
+// figures runs the renderer's own split, so the ranking tests hand groupSpenders
+// exactly what costSection hands it rather than a hand-built slice that could
+// drift from it.
+func figures(rs ...model.Resource) []pricedFigure {
+	f, _, _ := splitPriced(rs)
+	return f
+}
+
+// names lists a group's resources in ranked order.
+func names(g spenderGroup) []string {
+	out := make([]string, 0, len(g.figures))
+	for _, f := range g.figures {
+		out = append(out, f.res.Name)
+	}
+	return out
 }
 
 // Two figures from different sources, or in different currencies, answer
@@ -142,19 +159,19 @@ func priced(name, amount, currency, method string, estimated bool) model.Resourc
 // the terminal from putting a modelled monthly rate above a billed total and
 // calling one bigger than the other.
 func TestGroupSpendersSeparatesMethodAndCurrency(t *testing.T) {
-	groups := groupSpenders([]model.Resource{
+	groups := groupSpenders(figures(
 		priced("a", "10.00", "USD", model.CostMethodCOH, true),
 		priced("b", "9999.00", "EUR", model.CostMethodCOH, true),
-		priced("c", "20.00", "USD", "ce", false),
-	})
+		priced("c", "20.00", "USD", model.CostMethodCE, false),
+	))
 	if len(groups) != 3 {
 		t.Fatalf("got %d groups, want one per (method, currency): %v", len(groups), groups)
 	}
 	var labels []string
 	for _, g := range groups {
 		labels = append(labels, g.label)
-		if len(g.resources) != 1 {
-			t.Errorf("group %q holds %d resources, want 1", g.label, len(g.resources))
+		if len(g.figures) != 1 {
+			t.Errorf("group %q holds %d figures, want 1", g.label, len(g.figures))
 		}
 	}
 	want := []string{"ce, USD", "coh, estimated, EUR", "coh, estimated, USD"}
@@ -169,19 +186,16 @@ func TestGroupSpendersSeparatesMethodAndCurrency(t *testing.T) {
 // and less than it as money, and the string answer is the one a reader would
 // notice and disbelieve.
 func TestGroupSpendersRanksNumerically(t *testing.T) {
-	groups := groupSpenders([]model.Resource{
+	groups := groupSpenders(figures(
 		priced("small", "9.00", "USD", model.CostMethodCOH, true),
 		priced("large", "100.00", "USD", model.CostMethodCOH, true),
 		priced("zero", "0.00", "USD", model.CostMethodCOH, true),
 		priced("credit", "-5.00", "USD", model.CostMethodCOH, true),
-	})
+	))
 	if len(groups) != 1 {
 		t.Fatalf("got %d groups, want 1: %v", len(groups), groups)
 	}
-	var order []string
-	for _, r := range groups[0].resources {
-		order = append(order, r.Name)
-	}
+	order := names(groups[0])
 	want := []string{"large", "small", "zero", "credit"}
 	for i, w := range want {
 		if order[i] != w {
@@ -197,11 +211,8 @@ func TestGroupSpendersTieBreaksOnARN(t *testing.T) {
 		{same("ccc"), same("aaa"), same("bbb")},
 		{same("bbb"), same("ccc"), same("aaa")},
 	} {
-		groups := groupSpenders(in)
-		var order []string
-		for _, r := range groups[0].resources {
-			order = append(order, r.Name)
-		}
+		groups := groupSpenders(figures(in...))
+		order := names(groups[0])
 		if strings.Join(order, ",") != "aaa,bbb,ccc" {
 			t.Errorf("input order leaked into the ranking: %v", order)
 		}
@@ -211,10 +222,10 @@ func TestGroupSpendersTieBreaksOnARN(t *testing.T) {
 // The "estimated" label is a claim about every figure under it. A group
 // holding one billed figure has not earned it.
 func TestEstimatedLabelIsUnanimous(t *testing.T) {
-	mixed := []model.Resource{
+	mixed := figures(
 		priced("a", "1.00", "USD", model.CostMethodCOH, true),
 		priced("b", "2.00", "USD", model.CostMethodCOH, false),
-	}
+	)
 	if estimatedGroup(mixed) {
 		t.Error("a group with one billed figure is labelled estimated")
 	}
@@ -375,7 +386,7 @@ func TestReportSectionSilentWithoutCurrencies(t *testing.T) {
 // it prices a component (storage, say) rather than a whole resource.
 func qualified(name, amount string, caveats ...string) model.Resource {
 	r := priced(name, amount, "USD", model.CostMethodCOH, true)
-	r.Cost.Caveats = caveats
+	r.CostBy(model.CostMethodCOH).Caveats = caveats
 	return r
 }
 
@@ -384,10 +395,10 @@ func qualified(name, amount string, caveats ...string) model.Resource {
 // does not support. This is the same reason method and currency split a
 // ranking, on a third axis, and it must split it the same way.
 func TestGroupSpendersSeparatesQualifiedFigures(t *testing.T) {
-	groups := groupSpenders([]model.Resource{
+	groups := groupSpenders(figures(
 		qualified("storage-only", "2000.00", "covers storage only"),
 		priced("whole", "1620.00", "USD", model.CostMethodCOH, true),
-	})
+	))
 	if len(groups) != 2 {
 		t.Fatalf("got %d groups, want the qualified figure separated: %v", len(groups), groups)
 	}
@@ -397,15 +408,15 @@ func TestGroupSpendersSeparatesQualifiedFigures(t *testing.T) {
 	if !groups[1].qualified {
 		t.Fatalf("second group not marked qualified: %v", groups[1])
 	}
-	if n := groups[0].resources[0].Name; n != "whole" {
+	if n := groups[0].figures[0].res.Name; n != "whole" {
 		t.Errorf("unqualified group holds %q, want the whole-resource figure", n)
 	}
-	if n := groups[1].resources[0].Name; n != "storage-only" {
+	if n := groups[1].figures[0].res.Name; n != "storage-only" {
 		t.Errorf("qualified group holds %q, want the storage-only figure", n)
 	}
 	// The bug this replaces: 2000.00 storage-only printed above 1620.00
 	// whole-resource, as if the first resource cost more than the second.
-	if len(groups[0].resources) != 1 || len(groups[1].resources) != 1 {
+	if len(groups[0].figures) != 1 || len(groups[1].figures) != 1 {
 		t.Errorf("figures ranked together: %v", groups)
 	}
 }
@@ -437,11 +448,11 @@ func TestQualifiedFiguresNeverPrintAsBareSpend(t *testing.T) {
 // dates, and collapsing two different sentences would be the renderer deciding
 // they mean the same thing.
 func TestDistinctCaveatsDedupesExactRepeatsOnly(t *testing.T) {
-	got := distinctCaveats([]model.Resource{
+	got := distinctCaveats(figures(
 		qualified("a", "3.00", "covers storage only", "created 2026-07-01, after the period began"),
 		qualified("b", "2.00", "covers storage only", "created 2026-07-14, after the period began"),
 		qualified("c", "1.00", "covers storage only"),
-	})
+	))
 	want := []string{
 		"covers storage only",
 		"created 2026-07-01, after the period began",
@@ -486,5 +497,117 @@ func TestUnqualifiedFiguresPrintNoCaveatLine(t *testing.T) {
 	})
 	if out := buf.String(); strings.Contains(out, "ⓘ") {
 		t.Errorf("caveat marker printed for a figure with no caveats:\n%s", out)
+	}
+}
+
+// probes wraps a probe list in the smallest report that renders.
+func probes(ps ...model.ServiceProbe) *model.ResourceCostReport {
+	return &model.ResourceCostReport{
+		Window: model.CostWindow{Start: "2026-07-17", End: "2026-07-31", Label: "last 14 days"},
+		Metric: "AmortizedCost", Probes: ps,
+	}
+}
+
+// Every outcome says something different, because the difference between them
+// is the whole finding of this pass. Two outcomes sharing a sentence would let a
+// reader conclude a service does not report per-resource cost when it merely had
+// no usage, or when the tool never asked.
+//
+// ProbeDenied and ProbeSkipped are here rather than in the demo fixture: both
+// are run-wide conditions — a missing permission or opt-in denies every service,
+// an exhausted budget skips every service after the one that spent the last
+// request — so a fixture pairing either with a successful probe would contradict
+// itself. They are still lines a user will see, so they are pinned here.
+func TestProbeLinesAreDistinguishable(t *testing.T) {
+	all := []model.ServiceProbe{
+		{Service: "Amazon Relational Database Service", Outcome: model.ProbeRows, Rows: 4, Matched: 3},
+		{Service: "Amazon ElastiCache", Outcome: model.ProbeEmpty},
+		{Service: "Amazon Redshift", Outcome: model.ProbeUnsupported,
+			Detail: "resource-level data is not available for this service"},
+		{Service: "Amazon DynamoDB", Outcome: model.ProbeDenied,
+			Detail: "AccessDeniedException: not authorized"},
+		{Service: "Amazon Neptune", Outcome: model.ProbeSkipped},
+		{Service: "AWS Key Management Service", Outcome: model.ProbeUncensused},
+	}
+	var buf bytes.Buffer
+	probeSection(&buf, probes(all...))
+	out := buf.String()
+
+	for _, want := range []string{
+		"── per-resource cost probes ── last 14 days  ·  AmortizedCost",
+		"Amazon Relational Database Service: rows — 4 row(s), 3 matched to census resources",
+		// "empty" is the outcome most likely to be misread as proof a service
+		// reports nothing, so its line spends a clause saying it is not that.
+		"Amazon ElastiCache: empty — accepted the query and returned no rows, " +
+			"which is not the same as reporting no resource-level cost",
+		"Amazon Redshift: unsupported — AWS rejected the query for this service: " +
+			"resource-level data is not available for this service",
+		"Amazon DynamoDB: denied — permission or account opt-in missing: " +
+			"AccessDeniedException: not authorized",
+		"Amazon Neptune: skipped — never asked, request budget exhausted",
+		"AWS Key Management Service: uncensused — never asked, no scanner in this run covers it",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	// A probe nobody paid for must not print a charge. Zero requests is the
+	// demo run and the all-skipped run alike, and "$0.00 charged" invites the
+	// reading that AWS was asked and billed nothing.
+	if strings.Contains(out, "AWS charged") {
+		t.Errorf("charge line printed for an unmetered report:\n%s", out)
+	}
+}
+
+// Silent truncation is an under-count with no error attached: AWS caps the query
+// at a fixed number of groups and returns exactly that many, so the figures are
+// each correct while the total is short by an unknown amount. Nothing else in
+// the output would give it away.
+func TestProbeSectionWarnsOnTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	probeSection(&buf, probes(model.ServiceProbe{
+		Service: "Amazon Relational Database Service",
+		Outcome: model.ProbeRows, Rows: 5000, Matched: 4100, Truncated: true,
+	}))
+	out := buf.String()
+	if !strings.Contains(out, "under-counted by an unknown amount") {
+		t.Errorf("truncation not disclosed:\n%s", out)
+	}
+	// The count is still reported. A truncated answer is a partial one, not a
+	// void one, and dropping the rows would discard real spend.
+	if !strings.Contains(out, "5000 row(s), 4100 matched") {
+		t.Errorf("truncated probe dropped its counts:\n%s", out)
+	}
+}
+
+// The budget is a run-wide ceiling, so "skipped" lines and the cap notice are
+// two halves of one statement: which services went unasked, and why.
+func TestProbeSectionReportsTheBudgetCap(t *testing.T) {
+	rep := probes(
+		model.ServiceProbe{Service: "Amazon Relational Database Service", Outcome: model.ProbeRows, Rows: 2, Matched: 2},
+		model.ServiceProbe{Service: "Amazon DynamoDB", Outcome: model.ProbeSkipped},
+	)
+	rep.Meter = model.CostMeter{Requests: 1, EstimatedChargeUSD: "0.01", Capped: true}
+	var buf bytes.Buffer
+	probeSection(&buf, rep)
+	out := buf.String()
+	if !strings.Contains(out, "ⓘ 1 Cost Explorer resource request(s) — AWS charged $0.01") {
+		t.Errorf("spend not reported:\n%s", out)
+	}
+	if !strings.Contains(out, "⚠ request budget reached") {
+		t.Errorf("budget cap not disclosed:\n%s", out)
+	}
+}
+
+// A report with no probes is a pass that never ran. Printing its heading over
+// nothing would say Cost Explorer was asked and had nothing to say.
+func TestProbeSectionSilentWithoutProbes(t *testing.T) {
+	for _, rep := range []*model.ResourceCostReport{nil, probes()} {
+		var buf bytes.Buffer
+		probeSection(&buf, rep)
+		if out := buf.String(); out != "" {
+			t.Errorf("printed a probe block with no probes:\n%s", out)
+		}
 	}
 }

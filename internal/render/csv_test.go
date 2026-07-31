@@ -83,14 +83,21 @@ func TestCSVDemoSnapshot(t *testing.T) {
 	// Everything service-specific rides in the attributes cell, so this header
 	// must not grow when a new scanner lands — that stability is the contract
 	// downstream scripts depend on. Cost is not service-specific: it is one
-	// block of columns for every service rather than one per service, and it
-	// sits last so every column above keeps the index it has always had.
+	// block of columns per attribution source for every service rather than one
+	// per service, and it sits last so every column above keeps the index it has
+	// always had. The header is spelled out literally rather than rebuilt from
+	// model.CostMethods() — a generated expectation would rename these columns
+	// in lockstep with the code and never notice the contract had broken.
 	wantHeader := []string{
 		"arn", "service", "type", "name", "status", "region", "account_id",
 		"created_at", "environment", "owner", "tags", "eol", "eol_date",
 		"publicly_accessible", "encrypted", "attributes",
-		"cost_amount", "cost_currency", "cost_method", "cost_estimated",
-		"cost_observed_from", "cost_observed_to", "cost_caveats",
+		"cost_ce_amount", "cost_ce_currency", "cost_ce_estimated",
+		"cost_ce_observed_from", "cost_ce_observed_to", "cost_ce_caveats",
+		"cost_ce_match_key",
+		"cost_coh_amount", "cost_coh_currency", "cost_coh_estimated",
+		"cost_coh_observed_from", "cost_coh_observed_to", "cost_coh_caveats",
+		"cost_coh_match_key",
 		"cost_unavailable_reason",
 	}
 	if len(records[0]) != len(wantHeader) {
@@ -323,10 +330,10 @@ func TestCSVTimeCellsAreGuarded(t *testing.T) {
 		AccountID: "111111111111",
 		CreatedAt: &odd,
 	}
-	hostile.Cost = &model.ResourceCost{
+	hostile.AddCost(model.ResourceCost{
 		Amount: "1.00", Currency: "USD", Method: model.CostMethodCOH,
 		ObservedFrom: &odd, ObservedTo: &ordinary,
-	}
+	})
 
 	records := renderAndParse(t, &model.Snapshot{Resources: []model.Resource{hostile}})
 	c := col(t, records[0])
@@ -334,8 +341,8 @@ func TestCSVTimeCellsAreGuarded(t *testing.T) {
 
 	for _, tc := range []struct{ column, want string }{
 		{"created_at", "'-0001-03-04T05:06:07Z"},
-		{"cost_observed_from", "'-0001-03-04T05:06:07Z"},
-		{"cost_observed_to", "2026-03-04T05:06:07Z"},
+		{"cost_coh_observed_from", "'-0001-03-04T05:06:07Z"},
+		{"cost_coh_observed_to", "2026-03-04T05:06:07Z"},
 	} {
 		if got := row[c[tc.column]]; got != tc.want {
 			t.Errorf("%s = %q, want %q", tc.column, got, tc.want)
@@ -389,22 +396,22 @@ func TestCSVCostCells(t *testing.T) {
 	to := from.AddDate(0, 0, 14)
 
 	full := base("full")
-	full.Cost = &model.ResourceCost{
+	full.AddCost(model.ResourceCost{
 		Amount: "1620.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true,
 		ObservedFrom: &from, ObservedTo: &to,
 		// A caveat holding both structural characters proves the cell stays
 		// splittable: neither may forge a separator.
 		Caveats: []string{"covers storage only; not compute", "modelled from usage=recent"},
-	}
+	})
 
 	// A source that priced this resource at nothing. Zero is a finding.
 	zero := base("zero")
-	zero.Cost = &model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCOH}
+	zero.AddCost(model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCOH})
 
 	// A credit: negative money, and the reason the amount column is exempt
 	// from the formula guard.
 	credit := base("credit")
-	credit.Cost = &model.ResourceCost{Amount: "-450.00", Currency: "USD", Method: "ce"}
+	credit.AddCost(model.ResourceCost{Amount: "-450.00", Currency: "USD", Method: model.CostMethodCE})
 
 	// Looked at, nothing found — blank figures with the reason beside them.
 	named := base("named")
@@ -424,24 +431,34 @@ func TestCSVCostCells(t *testing.T) {
 
 	got := rows["full"]
 	for name, want := range map[string]string{
-		"cost_amount":        "1620.00",
-		"cost_currency":      "USD",
-		"cost_method":        model.CostMethodCOH,
-		"cost_estimated":     "true",
-		"cost_observed_from": "2026-06-15T12:00:00Z",
-		"cost_observed_to":   "2026-06-29T12:00:00Z",
+		"cost_coh_amount":        "1620.00",
+		"cost_coh_currency":      "USD",
+		"cost_coh_estimated":     "true",
+		"cost_coh_observed_from": "2026-06-15T12:00:00Z",
+		"cost_coh_observed_to":   "2026-06-29T12:00:00Z",
 		// ';' inside a caveat is encoded so the joined cell stays splittable
 		// on the literal ';'. '=' is encoded by the same replacer.
-		"cost_caveats":            "covers storage only%3B not compute;modelled from usage%3Drecent",
+		"cost_coh_caveats":        "covers storage only%3B not compute;modelled from usage%3Drecent",
 		"cost_unavailable_reason": "",
+		// The hub priced this resource; Cost Explorer did not. The other
+		// method's block is blank rather than a copy — a source that never
+		// reported a figure must not appear to have reported one.
+		"cost_ce_amount":   "",
+		"cost_ce_currency": "",
 	} {
 		if got[c[name]] != want {
 			t.Errorf("full.%s = %q, want %q", name, got[c[name]], want)
 		}
 	}
+	// "estimated" is a claim about a figure, so the blank block cannot carry
+	// it either: "false" here would read as "Cost Explorer billed this and the
+	// number is exact", about a bill that was never fetched.
+	if got := got[c["cost_ce_estimated"]]; got != "" {
+		t.Errorf("unpriced method block carries cost_ce_estimated = %q, want empty", got)
+	}
 
 	// A reported zero renders as the figure the source gave, never as a blank.
-	if got := rows["zero"][c["cost_amount"]]; got != "0.00" {
+	if got := rows["zero"][c["cost_coh_amount"]]; got != "0.00" {
 		t.Errorf("reported zero amount = %q, want %q", got, "0.00")
 	}
 	// ...and it is priced, so it has no absence to explain.
@@ -450,24 +467,31 @@ func TestCSVCostCells(t *testing.T) {
 	}
 	// Estimated is written out even when false: "this is a real bill" is a
 	// claim worth making explicitly rather than by omission.
-	if got := rows["zero"][c["cost_estimated"]]; got != "false" {
-		t.Errorf("cost_estimated = %q, want %q", got, "false")
+	if got := rows["zero"][c["cost_coh_estimated"]]; got != "false" {
+		t.Errorf("cost_coh_estimated = %q, want %q", got, "false")
 	}
 
 	// The amount column is deliberately not formula-guarded — a leading quote
 	// would turn every credit into text a spreadsheet will not sum.
-	if got := rows["credit"][c["cost_amount"]]; got != "-450.00" {
+	if got := rows["credit"][c["cost_ce_amount"]]; got != "-450.00" {
 		t.Errorf("credit amount = %q, want an unguarded %q", got, "-450.00")
 	}
+	// A Cost Explorer figure lands in the Cost Explorer block and nowhere else.
+	// The two blocks are what keep a billed total and a modelled rate out of one
+	// spreadsheet column, so a figure crossing over is the failure this layout
+	// exists to prevent.
+	if got := rows["credit"][c["cost_coh_amount"]]; got != "" {
+		t.Errorf("Cost Explorer figure leaked into the hub column: %q", got)
+	}
 
-	// Looked and found nothing: seven blanks and a reason.
+	// Looked and found nothing: every figure cell of every method blank, and a
+	// reason.
 	namedRow := rows["named"]
-	for _, name := range []string{
-		"cost_amount", "cost_currency", "cost_method", "cost_estimated",
-		"cost_observed_from", "cost_observed_to", "cost_caveats",
-	} {
-		if got := namedRow[c[name]]; got != "" {
-			t.Errorf("unpriced %s = %q, want empty", name, got)
+	for _, m := range model.CostMethods() {
+		for _, name := range costColumns {
+			if got := namedRow[c["cost_"+m+"_"+name]]; got != "" {
+				t.Errorf("unpriced cost_%s_%s = %q, want empty", m, name, got)
+			}
 		}
 	}
 	if got := namedRow[c["cost_unavailable_reason"]]; got == "" {
@@ -478,6 +502,56 @@ func TestCSVCostCells(t *testing.T) {
 	// coverage gap to report.
 	if got := rows["untouched"][c["cost_unavailable_reason"]]; got != "" {
 		t.Errorf("un-queried resource carries a reason: %q", got)
+	}
+}
+
+// The case the per-method blocks exist for: one resource billed by Cost
+// Explorer over a closed window and modelled by Cost Optimization Hub for the
+// month ahead. Both figures reach the row, in their own columns, and the hub's
+// coverage gap on a different question is still stated beside them.
+func TestCSVCarriesBothMethodsOnOneRow(t *testing.T) {
+	from := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 0, 14)
+
+	r := model.Resource{
+		ARN: "arn:aws:dynamodb:us-east-1:210987654321:table/orders", Name: "orders",
+		Service: model.ServiceDynamoDB, Type: model.TypeDynamoDBTable,
+		Region: "us-east-1", AccountID: "210987654321",
+	}
+	r.AddCost(model.ResourceCost{
+		Amount: "12.34", Currency: "USD", Method: model.CostMethodCE,
+		ObservedFrom: &from, ObservedTo: &to,
+		// Cost Explorer's RESOURCE_ID is service-dependent, so the value the
+		// join matched on is recorded verbatim rather than assumed to be an ARN.
+		MatchKey: "orders",
+	})
+	r.AddCost(model.ResourceCost{
+		Amount: "40.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true,
+	})
+	r.CostUnavailable = "no Cost Optimization Hub recommendation for this resource"
+
+	records := renderAndParse(t, &model.Snapshot{Resources: []model.Resource{r}})
+	c := col(t, records[0])
+	row := records[1]
+
+	for name, want := range map[string]string{
+		"cost_ce_amount":         "12.34",
+		"cost_ce_estimated":      "false",
+		"cost_ce_observed_from":  "2026-07-17T00:00:00Z",
+		"cost_ce_observed_to":    "2026-07-31T00:00:00Z",
+		"cost_ce_match_key":      "orders",
+		"cost_coh_amount":        "40.00",
+		"cost_coh_estimated":     "true",
+		"cost_coh_match_key":     "",
+		"cost_coh_observed_from": "",
+		// A figure from one source does not answer for another. The hub still
+		// does not model this table, and blanking the reason because Cost
+		// Explorer billed it would hide that gap behind an unrelated answer.
+		"cost_unavailable_reason": "no Cost Optimization Hub recommendation for this resource",
+	} {
+		if got := row[c[name]]; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 }
 

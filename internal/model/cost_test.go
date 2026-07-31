@@ -100,7 +100,7 @@ func TestResourceCostAbsentRatherThanNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	for _, key := range []string{"cost", "cost_unavailable"} {
+	for _, key := range []string{"costs", "cost_unavailable"} {
 		if strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("unpriced resource carries a %q key: %s", key, data)
 		}
@@ -120,8 +120,8 @@ func TestResourceCostUnavailableIsWrittenWhenNamed(t *testing.T) {
 	if !strings.Contains(string(data), `"cost_unavailable":"no Cost Optimization Hub`) {
 		t.Errorf("named absence missing from JSON: %s", data)
 	}
-	if strings.Contains(string(data), `"cost"`) {
-		t.Errorf("unpriced resource carries a cost object: %s", data)
+	if strings.Contains(string(data), `"costs"`) {
+		t.Errorf("unpriced resource carries a cost list: %s", data)
 	}
 }
 
@@ -130,7 +130,7 @@ func TestResourceCostUnavailableIsWrittenWhenNamed(t *testing.T) {
 // which zero it is.
 func TestResourceCostZeroSurvivesMarshalling(t *testing.T) {
 	r := Resource{ARN: "arn:aws:rds:us-east-1:1:db:x"}
-	r.Cost = &ResourceCost{Amount: "0.00", Currency: "USD", Method: CostMethodCOH}
+	r.AddCost(ResourceCost{Amount: "0.00", Currency: "USD", Method: CostMethodCOH})
 	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -156,10 +156,10 @@ func TestResourceCostCaveatsKeepSourceOrder(t *testing.T) {
 	var first string
 	for range 2 {
 		r := Resource{ARN: "arn:aws:rds:us-east-1:1:db:x"}
-		r.Cost = &ResourceCost{
+		r.AddCost(ResourceCost{
 			Amount: "1.00", Currency: "USD", Method: CostMethodCOH, Estimated: true,
 			ObservedFrom: &from, ObservedTo: &to, Caveats: caveats,
-		}
+		})
 		data, err := json.Marshal(r)
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)

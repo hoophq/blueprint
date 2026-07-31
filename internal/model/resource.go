@@ -423,18 +423,18 @@ type Resource struct {
 	// resource type.
 	PubliclyAccessible *bool `json:"publicly_accessible,omitempty"`
 	Encrypted          *bool `json:"encrypted,omitempty"`
-	// Cost is what a cost source reported this resource costs, present only
-	// when one actually reported a figure for it. Nil means no source priced
-	// it — never that the resource is free. It is a pointer to a typed struct
-	// rather than a bag key because an amount is meaningless without the
+	// Costs is what each cost source reported this resource costs, one entry per
+	// source that reported a figure, sorted by method. Empty means no source
+	// priced it — never that the resource is free. Entries are typed structs
+	// rather than bag keys because an amount is meaningless without the
 	// currency, method, and window that qualify it, and those must travel
 	// together or not at all. See ResourceCost.
 	//
-	// Adding it does not bump SchemaVersion, on the same reasoning as
-	// Snapshot.Cost: it changes no existing field's representation, and the
-	// diff does not read it, so it cannot fabricate drift across the boundary
-	// the version guards. An older baseline simply has no costs to compare.
-	Cost *ResourceCost `json:"cost,omitempty"`
+	// It is a slice rather than one slot because the sources answer different
+	// questions and a resource can legitimately have both a billed figure and a
+	// modelled one. Keeping both means neither renderer nor reader has to guess
+	// which the other wanted; nothing ever sums across methods.
+	Costs []ResourceCost `json:"costs,omitempty"`
 	// CostUnavailable names why no source priced this resource, when a source
 	// looked and came back empty. It is the absence made explicit: a blank cost
 	// cell with a reason beside it cannot be misread as zero spend, which a
@@ -443,6 +443,13 @@ type Resource struct {
 	// statement from "looked and found nothing" and must not be collapsed into
 	// it. Only a source that actually queried for this resource may set it, and
 	// only to something that source can support; render never invents one.
+	//
+	// Only Cost Optimization Hub writes it. Cost Explorer's resource-level pass
+	// deliberately does not: an absent row there is indistinguishable from a
+	// service that reports no resource-level data, a resource with no usage in
+	// the window, and an opt-in switched on too late to cover it. Naming one of
+	// those would be a guess, so the per-service outcomes go to
+	// Snapshot.ResourceCost instead, where the ambiguity survives intact.
 	CostUnavailable string `json:"cost_unavailable,omitempty"`
 
 	Attributes map[string]string `json:"attributes,omitempty"`
@@ -564,6 +571,55 @@ func (r *Resource) Exposed() bool {
 	return false
 }
 
+// AddCost records what one source reported this resource costs.
+//
+// A second figure from the same method replaces the first rather than joining
+// it. Two figures under one method would make CostBy ambiguous and would let a
+// caller that iterates Costs count the same spend twice, which is the failure
+// mode the slice exists to avoid. Sources are expected to report a resource
+// once; this makes a repeat a correction instead of a duplicate.
+func (r *Resource) AddCost(c ResourceCost) {
+	for i := range r.Costs {
+		if r.Costs[i].Method == c.Method {
+			r.Costs[i] = c
+			return
+		}
+	}
+	r.Costs = append(r.Costs, c)
+}
+
+// CostBy returns the figure reported under method, or nil when that source did
+// not price this resource. Nil is never "free" — see ResourceCost.
+//
+// The pointer aliases the slice element, so a caller may read through it but
+// must not hold it across an AddCost.
+func (r *Resource) CostBy(method string) *ResourceCost {
+	for i := range r.Costs {
+		if r.Costs[i].Method == method {
+			return &r.Costs[i]
+		}
+	}
+	return nil
+}
+
+// Priced reports whether any source put a figure on this resource.
+func (r *Resource) Priced() bool { return len(r.Costs) > 0 }
+
+// SortCosts orders a resource's figures by method so the JSON artifact is
+// byte-for-byte stable regardless of which source ran first.
+//
+// Finalize calls it for the sources that run inside the scan. It is exported
+// for the ones that run after — the billed Cost Explorer passes are sequenced
+// last, for the same reason CostReport.Sort exists — so they can restore the
+// ordering Finalize established rather than leaving the artifact dependent on
+// which method happened to report.
+func (r *Resource) SortCosts() {
+	if len(r.Costs) < 2 {
+		return
+	}
+	sort.Slice(r.Costs, func(i, j int) bool { return r.Costs[i].Method < r.Costs[j].Method })
+}
+
 // Failure records a scan unit the tool could NOT see, so coverage claims
 // stay honest ("could not scan X: AccessDenied").
 type Failure struct {
@@ -592,9 +648,15 @@ type Failure struct {
 // Snapshots produced before versioning carry an implicit 0. Diffing across
 // schema versions is refused: field representation changes (schema 2 moved
 // engine/class/storage into the attribute bag and replaced kind with a
-// CloudFormation type name) would otherwise surface as fabricated resource
-// drift on every row.
-const SchemaVersion = 2
+// CloudFormation type name; schema 3 replaced a resource's single "cost" object
+// with a "costs" list, one entry per source) would otherwise surface as
+// fabricated resource drift on every row.
+//
+// Schema 3 is why every existing --compare baseline and history bucket is
+// incomparable for one run. Reading a schema-2 "cost" object as an empty
+// schema-3 list would report every priced resource as having lost its price —
+// spend drift that never happened.
+const SchemaVersion = 3
 
 // Snapshot is the complete result of one scan run — the unit all renderers
 // consume and the JSON artifact written to disk.
@@ -618,6 +680,16 @@ type Snapshot struct {
 	// existing field's representation, and the diff does not read it, so it
 	// cannot fabricate drift across the boundary that the version guards.
 	Cost *CostReport `json:"cost,omitempty"`
+	// ResourceCost records the resource-level Cost Explorer pass: which services
+	// were asked for per-resource spend and what each one answered. Present only
+	// when the scan was run with --cost-resources. Nil means the pass did not
+	// run — never that no service reports resource-level cost.
+	//
+	// It is separate from Cost because the two answer different questions over
+	// different windows from different APIs, at different prices. Merging them
+	// would invite summing a closed month's rollup against a fortnight of
+	// per-resource actuals.
+	ResourceCost *ResourceCostReport `json:"resource_cost,omitempty"`
 }
 
 // Summary holds the sprawl numbers shown in the terminal and report header.
@@ -699,6 +771,7 @@ func (s *Snapshot) Finalize() {
 	for i := range s.Resources {
 		s.Resources[i].DeriveEnvOwner()
 		s.Resources[i].DeriveEOL(now)
+		s.Resources[i].SortCosts()
 	}
 	s.Sort()
 	s.SortFailures()
