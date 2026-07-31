@@ -97,7 +97,10 @@ func TestCostFlagDefaultsAndHelp(t *testing.T) {
 		t.Errorf("--cost-resources defaults to %q, want false", rf.DefValue)
 	}
 	usage = strings.ToLower(rf.Usage)
-	for _, want := range []string{"$0.01", "per service", "14 days"} {
+	// "per request" as well as "per service": the pass paginates, so the billed
+	// unit is the request and a service can cost several. Naming only the service
+	// would understate the bill for exactly the estates large enough to paginate.
+	for _, want := range []string{"$0.01", "per request", "per service", "14 days"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("--cost-resources help does not mention %q: %q", want, rf.Usage)
 		}

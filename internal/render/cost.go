@@ -191,7 +191,7 @@ func probeSection(w io.Writer, rep *model.ResourceCostReport) {
 		head = append(head, "AWS still marks this data estimated")
 	}
 	fmt.Fprintf(w, "\n  ── per-resource cost probes ── %s\n", strings.Join(head, "  ·  "))
-	fmt.Fprintf(w, "    asked Cost Explorer for resource-level cost, one request per service\n")
+	fmt.Fprintf(w, "    asked Cost Explorer for resource-level cost, at least one request per service\n")
 
 	for _, p := range rep.Probes {
 		fmt.Fprintf(w, "    - %s: %s\n", p.Service, probeLine(p))

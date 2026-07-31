@@ -119,7 +119,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer, plus free per-resource estimates from Cost Optimization Hub (AWS BILLS $0.01 per Cost Explorer request; off by default)")
 	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
 	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
-	cmd.Flags().BoolVar(&costs.resources, "cost-resources", false, "with --costs, also ask Cost Explorer what it billed per resource over the last 14 days (AWS BILLS $0.01 per service probed, from the same --cost-max-requests budget; requires the account-level \"resource-level data\" preference in the Cost Explorer console, which is not retroactive)")
+	cmd.Flags().BoolVar(&costs.resources, "cost-resources", false, "with --costs, also ask Cost Explorer what it billed per resource over the last 14 days (AWS BILLS $0.01 per request — at least one per service probed, more if a service's answer paginates — from the same --cost-max-requests budget; requires the account-level \"resource-level data\" preference in the Cost Explorer console, which is not retroactive)")
 	cmd.Flags().BoolVar(&metrics, "metrics", false, "also read CloudWatch utilization metrics for scanned resources (AWS BILLS $"+enrich.ChargeUSD(1000)+" per 1,000 metrics requested; off by default)")
 	return cmd
 }
@@ -317,7 +317,11 @@ func collectCosts(ctx context.Context, cmd *cobra.Command, cfg aws.Config, accou
 // every service, which is the honest shape of "never asked".
 func collectResourceCosts(ctx context.Context, cmd *cobra.Command, api cost.ResourceAPI, account string, snap *model.Snapshot, flags costFlags, budget *cost.Budget) []model.Failure {
 	window := cost.ResourceWindow(time.Now())
-	fmt.Fprintf(cmd.OutOrStdout(), "  … cost-resources: asking Cost Explorer what it billed per resource over %s — one billed request per service, %d left in this run's budget\n",
+	// "At least one" rather than "one": fetchResources takes from the budget per
+	// page, so a service whose answer paginates costs more than the service count
+	// suggests. Stating the request as the billed unit is also what makes the
+	// remaining budget below readable — that number counts requests, not services.
+	fmt.Fprintf(cmd.OutOrStdout(), "  … cost-resources: asking Cost Explorer what it billed per resource over %s — at least one billed request per service, more if a service's answer paginates, %d left in this run's budget\n",
 		window.Label, budget.Remaining())
 
 	report, failures := cost.CollectResources(ctx, api, snap.Resources, cost.ResourceOptions{

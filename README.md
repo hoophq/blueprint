@@ -143,7 +143,8 @@ price before spending it, and why the census records what was actually spent:
 ```
 
 A normal run costs two requests ($0.02); more only if AWS paginates, or if you
-add `--cost-resources`, which bills one request per service (see below).
+add `--cost-resources`, which bills at least one request per service (see
+below).
 Requests are issued one at a time against a client with retries disabled, so a
 logical call is always exactly one charge, and the run stops at
 `--cost-max-requests` rather than paginating into a surprise bill. That cap is
@@ -213,13 +214,14 @@ blueprint scan --costs --cost-resources
 ```
 
 ```
-  … cost-resources: asking Cost Explorer what it billed per resource over 2026-07-17 → 2026-07-30 — one billed request per service, 18 left in this run's budget
+  … cost-resources: asking Cost Explorer what it billed per resource over 2026-07-17 → 2026-07-30 — at least one billed request per service, more if a service's answer paginates, 18 left in this run's budget
   ✓ cost-resources: 7 service(s) probed, 52 resource(s) priced, 7 request(s), ~$0.07 charged by AWS
 ```
 
-**This one bills per service, not per run.** Each service probed is one
-$0.01 request, drawn from the same `--cost-max-requests` allowance as the
-rollup — so the rollup spends first and the overlay gets whatever is left.
+**This one bills per service, not per run.** Each service probed is at least
+one $0.01 request — a service whose answer paginates costs one per page —
+drawn from the same `--cost-max-requests` allowance as the rollup, so the
+rollup spends first and the overlay gets whatever is left.
 Services are probed most-expensive-first, so a budget too small to cover them
 all is spent where per-resource detail is worth the most, and the ones that
 were never reached are recorded as skipped rather than as costing nothing.
