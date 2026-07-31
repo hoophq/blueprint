@@ -16,6 +16,17 @@ import (
 // to the storyboard does not fail a test that was never about the count.
 func storyboardSize() int { return len(Snapshot("test").Resources) }
 
+// testScale is what the tests here generate when they need "more rows than the
+// storyboard, spread over several accounts". Nothing in this file is about a
+// particular size — the allocator, the peer joins, the ledger and the ARN
+// namespace behave the same at three thousand rows as at twenty thousand — so
+// the number is set to the smallest one that still exercises all of them.
+//
+// Twenty thousand belongs to exactly one test, internal/render's size budget,
+// which is the only place the count is the point. Generating it here as well
+// would mean CI paying for the estate three times over to learn nothing new.
+const testScale = 3000
+
 // The makers have to partition the storyboard, not merely overlap it. A shape
 // with no maker is one the generator cannot produce, so a scaled estate would
 // quietly stop containing it and any budget measured on that estate would be
@@ -45,7 +56,7 @@ func TestEveryStoryboardRowHasExactlyOneMaker(t *testing.T) {
 
 func TestSnapshotNReturnsExactlyTheRequestedTotal(t *testing.T) {
 	base := storyboardSize()
-	for _, n := range []int{base + 1, base + 7, 500, 1000, 4321, 20000} {
+	for _, n := range []int{base + 1, base + 7, 500, 1000, 4321} {
 		if got := len(SnapshotN("test", n).Resources); got != n {
 			t.Errorf("SnapshotN(%d): %d resources, want %d", n, got, n)
 		}
@@ -126,7 +137,7 @@ func TestSnapshotNResourcesAreUniquelyIdentified(t *testing.T) {
 // Declaring one that holds nothing would be the opposite error: an account the
 // report says was scanned and shows empty.
 func TestSnapshotNDeclaresExactlyTheAccountsItFills(t *testing.T) {
-	snap := SnapshotN("test", 20000)
+	snap := SnapshotN("test", testScale)
 	declared := make(map[string]bool, len(snap.Accounts))
 	for _, a := range snap.Accounts {
 		if declared[a] {
@@ -135,8 +146,8 @@ func TestSnapshotNDeclaresExactlyTheAccountsItFills(t *testing.T) {
 		declared[a] = true
 	}
 	if len(declared) <= 2 {
-		t.Errorf("20,000 resources in %d accounts; a scaled estate has to spread over accounts "+
-			"or the per-account rollups render one bar", len(declared))
+		t.Errorf("%d resources in %d accounts; a scaled estate has to spread over accounts "+
+			"or the per-account rollups render one bar", testScale, len(declared))
 	}
 	held := make(map[string]bool, len(declared))
 	for _, r := range snap.Resources {
@@ -308,7 +319,7 @@ func TestAllocateSplitsExactly(t *testing.T) {
 // are the same properties demo_test.go asserts on the fixture, re-run over a
 // scaled estate because every one of them is a rule about the generator too.
 func TestScaledSnapshotHoldsTheSameInvariantsAsTheStoryboard(t *testing.T) {
-	snap := SnapshotN("test", 3000)
+	snap := SnapshotN("test", testScale)
 	regions := make(map[string]bool, len(snap.Regions))
 	for _, r := range snap.Regions {
 		regions[r] = true
@@ -361,7 +372,7 @@ func compareResources(a, b model.Resource) int {
 // survive scaling. An estate where every row is fully tagged renders those
 // metrics as a pair of full bars and proves nothing.
 func TestScaledEstateKeepsTheStoryboardsTagGaps(t *testing.T) {
-	snap := SnapshotN("test", 3000)
+	snap := SnapshotN("test", testScale)
 	var noEnv, noOwner, untagged int
 	for _, r := range snap.Resources {
 		if r.Environment == "" {
@@ -393,7 +404,7 @@ func TestScaledEstateKeepsTheStoryboardsTagGaps(t *testing.T) {
 // and a generator is a new place for it to reappear.
 func TestScaledEstateCarriesBothReportedZerosAndUnreportedSizes(t *testing.T) {
 	var zero, absent int
-	for _, r := range SnapshotN("test", 3000).Resources {
+	for _, r := range SnapshotN("test", testScale).Resources {
 		switch v, ok := r.Measure(model.MeasureSizeBytes); {
 		case !ok:
 			absent++
@@ -417,7 +428,7 @@ func TestScaledEstateCarriesBothReportedZerosAndUnreportedSizes(t *testing.T) {
 // over and small enough to keep `go test ./...` quick.
 func generatedResources(t *testing.T) []model.Resource {
 	t.Helper()
-	snap := SnapshotN("test", 3000)
+	snap := SnapshotN("test", testScale)
 	hand := make(map[string]bool, len(Snapshot("test").Resources))
 	for _, r := range Snapshot("test").Resources {
 		hand[r.ARN] = true
@@ -528,7 +539,7 @@ func TestGeneratedReferencesStayWithinTheirScope(t *testing.T) {
 // per-row coin toss for the value, a per-unit entry for the ledger — is how
 // they come apart.
 func TestGeneratedWithheldValuesAreExplainedByTheLedger(t *testing.T) {
-	snap := SnapshotN("test", 3000)
+	snap := SnapshotN("test", testScale)
 	hand := make(map[string]bool)
 	for _, r := range Snapshot("test").Resources {
 		hand[r.ARN] = true
