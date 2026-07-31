@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/hoophq/blueprint/internal/demo"
 )
 
 // budgetResources is the estate the size budget is measured against. Large
@@ -23,6 +21,13 @@ const budgetResources = 20_000
 // tight enough that losing the encoding — a row's keys repeated where they
 // were shared, a measure serialised as text — shows up as a failure rather
 // than as a report that quietly takes a second longer to open.
+//
+// The 586 is a worst case, not a reading of the estate as it stands today:
+// the census below is finalized at budgetClock, past every date in the
+// lifecycle table, so every row that can ever carry eol and eol_date already
+// does. What the ceiling has to survive is the heaviest census this fixture
+// can produce, and the calendar must not be what decides how close to it a
+// given CI run lands.
 //
 // ATR-186 replaces the encoder with a columnar, compressed one. This number is
 // what it ratchets down: it is a pre-186 ceiling, not a target, and the point
@@ -42,7 +47,7 @@ const budgetTotalBytes = 16 << 20
 // curated storyboard, so `go test ./...` stays fast; the fifty-thousand-row
 // case is BenchmarkHTMLAtScale below, which CI does not run.
 func TestHTMLStaysWithinItsSizeBudgetAtScale(t *testing.T) {
-	snap := demo.SnapshotN("budget-test", budgetResources)
+	snap := demoSnapshotN("budget-test", budgetResources)
 	if got := len(snap.Resources); got != budgetResources {
 		t.Fatalf("fixture produced %d resources, want %d; the budget below is calibrated to that count",
 			got, budgetResources)
@@ -79,7 +84,7 @@ func TestHTMLStaysWithinItsSizeBudgetAtScale(t *testing.T) {
 // The reported bytes/resource is the number to watch; the wall clock is a
 // secondary reading, since a report is written once and read many times.
 func BenchmarkHTMLAtScale(b *testing.B) {
-	snap := demo.SnapshotN("benchmark", 50_000)
+	snap := demoSnapshotN("benchmark", 50_000)
 	dir := b.TempDir()
 	var size int64
 

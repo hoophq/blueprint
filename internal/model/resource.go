@@ -761,13 +761,40 @@ func (s *Snapshot) Summarize() Summary {
 	return sum
 }
 
-// Finalize prepares a snapshot for output: derives tag-based fields on every
-// resource and sorts Resources, Regions, and Accounts. Regions and Accounts
-// are collected from map/API iteration upstream, so sorting here is what
-// makes JSON artifacts byte-for-byte deterministic. The attribute bags need
-// no sorting — encoding/json emits map keys in sorted order.
-func (s *Snapshot) Finalize() {
-	now := time.Now()
+// Finalize prepares a snapshot for output, judging end-of-life against the
+// current UTC instant. This is what a scan wants: the census reports what is
+// out of support today.
+//
+// UTC rather than local time because the lifecycle table holds calendar dates
+// and DeriveEOL parses them as UTC midnight. Against a local clock the instant
+// a date starts flagging would move with the scanner's timezone, so two people
+// either side of UTC could scan the same estate on the same day and disagree
+// about whether an engine had expired. Every other clock read in this binary
+// is already UTC; this one was the exception.
+func (s *Snapshot) Finalize() { s.FinalizeAt(time.Now().UTC()) }
+
+// FinalizeAt is Finalize against a caller-supplied instant: it derives
+// tag-based fields on every resource, judges end-of-life as of now, and sorts
+// Resources, Regions, and Accounts. Regions and Accounts are collected from
+// map/API iteration upstream, so sorting here is what makes JSON artifacts
+// byte-for-byte deterministic. The attribute bags need no sorting —
+// encoding/json emits map keys in sorted order.
+//
+// The clock is a parameter because otherwise the census a fixture produces is
+// a function of the day it is built on: DeriveEOL flags a resource only once
+// its date has passed, so rows gain eol and eol_date as the calendar rolls
+// forward and a test that never mentioned time still changes what it sees.
+// The demo fixture has a row waiting to do exactly that — auth-db runs
+// postgres 14, which the table dates 2026-11-12 — so tests that measure or
+// assert census content finalize at a pinned instant instead.
+//
+// Every derivation here is idempotent and none of them read prior output:
+// DeriveEOL clears its two fields before matching, DeriveEnvOwner recomputes
+// from tags, and the sorts are total orders. So calling this on an
+// already-finalized snapshot re-derives it cleanly, which is both how
+// enrichment re-runs the derivations after adding measures and how a test
+// re-judges a fixture the demo package has already finalized.
+func (s *Snapshot) FinalizeAt(now time.Time) {
 	for i := range s.Resources {
 		s.Resources[i].DeriveEnvOwner()
 		s.Resources[i].DeriveEOL(now)

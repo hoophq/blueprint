@@ -8,14 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hoophq/blueprint/internal/demo"
 	"github.com/hoophq/blueprint/internal/model"
 )
 
 // renderDemo renders the demo snapshot to a temp file and returns the HTML.
 func renderDemo(t *testing.T) string {
 	t.Helper()
-	snap := demo.Snapshot("test")
+	snap := demoSnapshot("test")
 	path := filepath.Join(t.TempDir(), "report.html")
 	if err := HTML(snap, path); err != nil {
 		t.Fatalf("HTML() error: %v", err)
@@ -28,7 +27,7 @@ func renderDemo(t *testing.T) string {
 }
 
 func TestHTMLReportSelfContained(t *testing.T) {
-	snap := demo.Snapshot("test")
+	snap := demoSnapshot("test")
 	path := filepath.Join(t.TempDir(), "report.html")
 	if err := HTML(snap, path); err != nil {
 		t.Fatalf("HTML() error: %v", err)
