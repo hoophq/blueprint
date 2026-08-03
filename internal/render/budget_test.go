@@ -14,33 +14,45 @@ const budgetResources = 20_000
 
 // budgetBytesPerResource caps that marginal cost.
 //
-// The report today embeds the census as one JSON array of objects, every row
-// repeating every key it has. That is the naive encoding, it measured 586
-// bytes per resource when this test was written, and the ceiling is set just
-// above it: loose enough that a scanner adding an attribute does not fail CI,
-// tight enough that losing the encoding — a row's keys repeated where they
-// were shared, a measure serialised as text — shows up as a failure rather
-// than as a report that quietly takes a second longer to open.
+// The report embeds the census as parallel columns with the repetitive ones
+// dictionary-encoded, gzipped and base64'd into the page. That measures 58
+// bytes per resource, and the ceiling is set above it: loose enough that a
+// scanner adding an attribute does not fail CI, tight enough that losing the
+// encoding shows up as a failure rather than as a report that quietly takes a
+// second longer to open.
 //
-// The 586 is a worst case, not a reading of the estate as it stands today:
-// the census below is finalized at budgetClock, past every date in the
+// The band this number sits in is narrow, and knowing where its edges are is
+// what makes a failure readable. Measured on this fixture — the same page each
+// time, with only the data block's encoding varied, so the rows compare
+// against each other and not against some other build's page:
+//
+//	 58 B/resource  what ships — columnar, dictionary-encoded, gzipped
+//	 78 B/resource  transposition lost, gzip kept: rows back to objects
+//	397 B/resource  gzip lost, transposition kept
+//	588 B/resource  both lost — the pre-ATR-186 encoding, one JSON array
+//	                of objects with every row repeating every key it has
+//
+// So a breach in the low hundreds means compression stopped happening, and one
+// just past the ceiling means the columns did. The second is the tighter call,
+// which is why the ceiling sits below 78 rather than at a rounder, safer
+// number: the shape assertions in payload_test.go would also catch a census
+// that stopped being columnar, but they would not catch one that stayed
+// columnar and got heavy.
+//
+// The measurement is a worst case, not a reading of the estate as it stands
+// today: the census below is finalized at budgetClock, past every date in the
 // lifecycle table, so every row that can ever carry eol and eol_date already
 // does. What the ceiling has to survive is the heaviest census this fixture
 // can produce, and the calendar must not be what decides how close to it a
 // given CI run lands.
-//
-// ATR-186 replaces the encoder with a columnar, compressed one. This number is
-// what it ratchets down: it is a pre-186 ceiling, not a target, and the point
-// of pinning it now is that the improvement has something to be measured
-// against.
-const budgetBytesPerResource = 700
+const budgetBytesPerResource = 70
 
 // budgetTotalBytes is a second, absolute ceiling. It cannot fire at the
 // current row count — twenty thousand rows at the per-resource ceiling is
-// fourteen megabytes — so the ratio above is the live assertion today. It is
-// here for the day someone raises budgetResources: a single-file report is
-// something a reader opens in a browser and mails to a colleague, and past
-// this size it stops being either.
+// under a megabyte and a half — so the ratio above is the live assertion
+// today. It is here for the day someone raises budgetResources: a single-file
+// report is something a reader opens in a browser and mails to a colleague,
+// and past this size it stops being either.
 const budgetTotalBytes = 16 << 20
 
 // The one scale test in CI. Everything else in this package renders the
