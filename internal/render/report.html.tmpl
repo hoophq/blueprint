@@ -1634,9 +1634,16 @@
     render();
   }
 
+  // The noun is "issue" and not "caveat" because caveat already names something
+  // else on this page: a cost record's own caveats field, counted as
+  // COST.caveated and rendered as the † lower-bound line below the table. Two
+  // different counts of the same-named thing, a banner apart, is a misreading
+  // waiting to happen — and the smaller one looks like a correction of the
+  // larger. This number is exactly what coverageIssues returned, so the title
+  // names that.
   function coverageTitle(n) {
     if (!COST.active) return "No resource-level cost data — spend cannot be ranked, attributed, or broken down";
-    return "Partial cost coverage — " + plural(n, "caveat") + " on the figures below";
+    return "Partial cost coverage — " + plural(n, "issue") + " affecting the figures below";
   }
 
   // coverageIssues is everything standing between this page and a complete

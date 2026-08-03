@@ -1496,3 +1496,60 @@ func TestReportMissingFigureReasonsAccountForEveryUnpricedResource(t *testing.T)
 		}
 	}
 }
+
+// "Caveat" is taken. A cost record carries its own caveats field — the
+// qualifiers AWS attached to an amount — and the report counts those into
+// COST.caveated and prints them as the † line under the table: "3 figures
+// below are lower bounds". The coverage banner counts something else entirely:
+// every entry coverageIssues returned, which mixes a missing rollup, an
+// estimated one, a reconciliation that does not add up, unpriced resources,
+// their reasons, off-currency figures, unreadable amounts, and each probe that
+// came back without rows.
+//
+// Naming both "caveat" puts two different counts of one word on a single page,
+// a banner apart, where the smaller reads as a correction of the larger. So the
+// banner title may not use the word at all, and the † line may not stop using
+// it: the noun has to point at exactly one of the two counts, and it is the one
+// that comes from the data rather than from this page's own bookkeeping.
+func TestReportCoverageTitleDoesNotBorrowTheWordForCostRecordCaveats(t *testing.T) {
+	cases := []struct {
+		name   string
+		active bool
+		n      int
+	}{
+		{name: "one issue", active: true, n: 1},
+		{name: "several issues", active: true, n: 8},
+		// The count is still passed when nothing priced, and the branch that
+		// ignores it must not reintroduce the word by another route.
+		{name: "nothing priced", active: false, n: 3},
+	}
+
+	for _, c := range cases {
+		script := jsFunc(t, "plural") + "\n" + jsFunc(t, "coverageTitle") + "\n" +
+			"var COST = { active: " + strconv.FormatBool(c.active) + " };\n" +
+			"console.log(JSON.stringify(coverageTitle(" + strconv.Itoa(c.n) + ")));"
+		var got string
+		evalJSON(t, script, &got)
+		if got == "" {
+			t.Errorf("%s: the banner gets no title at all", c.name)
+			continue
+		}
+		if strings.Contains(strings.ToLower(got), "caveat") {
+			t.Errorf("%s: banner title says %q — the word belongs to the † count, "+
+				"which is a different number on the same page", c.name, got)
+		}
+		// Not using the word is only half of it: the title still has to say how
+		// many of them there are, or the banner stops carrying the count.
+		if c.active && !strings.Contains(got, strconv.Itoa(c.n)) {
+			t.Errorf("%s: banner title %q dropped the count", c.name, got)
+		}
+	}
+
+	// The other half of the split. If the † line stops calling them caveats, the
+	// word is free again and this whole test decays into a style preference —
+	// so the pin is on both sides of it.
+	if !strings.Contains(reportTemplate, `plural(COST.caveated, "figure")`) {
+		t.Error("the † lower-bound line no longer counts a cost record's caveats; " +
+			"the banner title gave up the word for it")
+	}
+}
