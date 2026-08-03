@@ -53,7 +53,13 @@ func SnapshotN(version string, n int) *model.Snapshot {
 	// resources as new. Finalize sorts these; it does not derive them.
 	snap.Accounts = append(snap.Accounts, g.accounts...)
 	snap.Failures = append(snap.Failures, g.ledger(rows, snap.GeneratedAt)...)
-	snap.Resources = append(snap.Resources, applyExposure(rows)...)
+
+	// Exposure is dealt after the makers have run rather than inside them, so
+	// that no draw already in the stream moves: every other generated value is
+	// the one it was before the estate started carrying risk. The census is read
+	// off snap.Resources while it still holds the storyboard alone.
+	census := exposureCensus(snap.Resources)
+	snap.Resources = append(snap.Resources, drawExposure(g, census, rows)...)
 	snap.Finalize()
 	return snap
 }
@@ -467,6 +473,92 @@ func allocate(weights []int, total int) []int {
 		spent[best] = true
 	}
 	return out
+}
+
+// exposureShapes names the services whose exposure the storyboard owns, and so
+// the ones a generated row is dealt rather than builds for itself.
+//
+// The services absent from it are not an oversight. An EC2 instance's public
+// flag, an S3 bucket's encryption, a load balancer's scheme are drawn in the
+// maker because each has to agree with something else that maker drew: the
+// address on the interface, the ledger entry recording that GetBucketEncryption
+// was refused, the scheme attribute the report renders beside it. Dealing those
+// here would cut a row's risk loose from the row, and for S3 it would fill in
+// exactly the value the census has just finished saying it could not see.
+//
+// TestExposureShapesNamesEveryServiceApplyExposureFills is what keeps this from
+// drifting away from applyExposure's own switch.
+var exposureShapes = map[string]bool{
+	model.ServiceRDS:         true,
+	model.ServiceAurora:      true,
+	model.ServiceDocumentDB:  true,
+	model.ServiceNeptune:     true,
+	model.ServiceRedshift:    true,
+	model.ServiceElastiCache: true,
+}
+
+// exposureCensus counts the storyboard's own exposure per shape, the way
+// makerWeights counts its rows.
+//
+// The storyboard owns the risk distribution, and a generator dealing its own
+// would be inventing one rather than counting one. So a generated database row
+// is handed the exposure of some real storyboard row of its shape, and the
+// estate's risk grows with n because the storyboard's ratio is what it grows
+// along. Before this, it did not: applyExposure names four fixture rows and no
+// generated row is ever called legacy-crm, so a twenty-thousand-row estate held
+// the same three databases with backups switched off as a ninety-eight-row one,
+// and the report's exposure panels were never exercised at volume.
+//
+// The whole triple travels together rather than as three flags drawn apart.
+// legacy-crm is publicly reachable and unencrypted and keeping no backups, all
+// three at once, which is what an estate's worst row actually looks like; three
+// independent draws would reproduce every marginal exactly and scatter that
+// row's risk over three ordinary ones. Which of the two the real world does is
+// not something the storyboard says, so this copies instead of assuming.
+//
+// Service and type is a stand-in for what applyExposure actually discriminates
+// on, which for ElastiCache is the engine as well: a cache cluster reports
+// neither flag because it is memcached, not because of its type. The two agree
+// today because the storyboard's only cache cluster is memcached and so are the
+// generator's, while replication groups report both fields whether they run
+// redis or valkey and serverless caches report neither whatever they run. Both
+// halves are held — TestEveryStoryboardShapeReportsExposureUniformly on the
+// storyboard, TestDealtExposureReportsTheFieldsApplyExposureWould on the
+// generated rows, which is the half that would otherwise let a redis cache
+// cluster be dealt the memcached row's silence.
+func exposureCensus(storyboard []model.Resource) map[string][]exposure {
+	census := make(map[string][]exposure)
+	for i := range storyboard {
+		r := &storyboard[i]
+		if !exposureShapes[r.Service] {
+			continue
+		}
+		key := r.Service + "|" + r.Type
+		census[key] = append(census[key], exposureOf(r))
+	}
+	return census
+}
+
+// drawExposure deals each generated row an exposure taken from the census of
+// its own shape. A shape the storyboard shows as wholly clean stays wholly
+// clean at every n, for the same reason allocate will not fund a weight of
+// zero: every entry it can draw is a clean one.
+//
+// Those clean shapes are drawn from rather than skipped. A memcached cluster's
+// census entry is three absences and applying it writes nothing, so the draw
+// shows up nowhere in the output and only in the stream — which is why it
+// stays. Pruning the empty entries would read as a no-op and would move every
+// value drawn after them. The missing-shape branch is defensive: makerWeights
+// takes its shapes from the storyboard, so every generated shape has an entry
+// to find.
+func drawExposure(g *gen, census map[string][]exposure, rows []model.Resource) []model.Resource {
+	for i := range rows {
+		r := &rows[i]
+		if drawn, ok := census[r.Service+"|"+r.Type]; ok {
+			pick(g, drawn).applyTo(r)
+		}
+	}
+	return rows
 }
 
 // makers covers every service and type the storyboard has. Order is fixed:

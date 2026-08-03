@@ -648,6 +648,52 @@ func applyExposure(rs []model.Resource) []model.Resource {
 	return rs
 }
 
+// exposure is the triple the report reads as risk, held as one value so that
+// absence travels with it: a nil flag or an absent retention is a service that
+// reported nothing, and it has to stay tellable from a false or a zero, which
+// are findings. Lifting a row's exposure out and stamping it onto another is
+// what lets the scale generator deal a distribution it counted rather than one
+// it invented; see exposureCensus in scale.go.
+type exposure struct {
+	publiclyAccessible *bool
+	encrypted          *bool
+	backupRetention    *int64
+}
+
+// exposureOf reads a row's exposure. The retention goes through Measure() for
+// its second return rather than for its value: zero days is backups switched
+// off and no key at all is a service with no retention to report, and reading
+// the value alone would collapse the first into the second on the way past.
+func exposureOf(r *model.Resource) exposure {
+	e := exposure{publiclyAccessible: r.PubliclyAccessible, encrypted: r.Encrypted}
+	if days, ok := r.Measure(model.MeasureBackupRetentionDays); ok {
+		e.backupRetention = ptr(days)
+	}
+	return e
+}
+
+// applyTo stamps an exposure onto a row, setting only the fields it carries. A
+// nil field leaves the row's own alone instead of clearing it: the generator
+// only deals exposure to shapes whose makers report none, but a pass that
+// could silently blank a reported value is a worse thing to keep around than
+// one that cannot.
+//
+// The pointers are copied rather than shared. An exposure read out of the
+// census points into the storyboard row it came from, and thousands of
+// generated rows aliasing one curated row's flag is the kind of hazard that
+// stays invisible until something writes through it.
+func (e exposure) applyTo(r *model.Resource) {
+	if e.publiclyAccessible != nil {
+		r.PubliclyAccessible = ptr(*e.publiclyAccessible)
+	}
+	if e.encrypted != nil {
+		r.Encrypted = ptr(*e.encrypted)
+	}
+	if e.backupRetention != nil {
+		r.SetMeasure(model.MeasureBackupRetentionDays, *e.backupRetention)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
 
 // withMeasure attaches a measure res() has no parameter for. res() covers the

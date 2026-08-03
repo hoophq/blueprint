@@ -2,9 +2,12 @@ package demo
 
 import (
 	"encoding/json"
+	"maps"
+	"math"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -437,6 +440,305 @@ func TestScaledEstateCarriesBothReportedZerosAndUnreportedSizes(t *testing.T) {
 	}
 	if absent == 0 {
 		t.Error("every generated resource reports a size; the em-dash path is unexercised at scale")
+	}
+}
+
+// The bug ATR-210 names. --demo-scale exists so the report's panels can be
+// exercised at volume, and an exposure panel showing the same three rows at
+// twenty thousand resources as at ninety-eight is a panel the flag never
+// reaches: one that renders a list rather than a count, or that has no design
+// for a hundred entries, would not show up in a scaled run. Backups are the
+// sharpest case, since retention is a database measure and nothing outside the
+// shapes exposureCensus deals could ever move that count on its own.
+func TestScaledEstateExposureGrowsWithIt(t *testing.T) {
+	small := Snapshot("test").Summarize()
+	large := SnapshotN("test", testScale).Summarize()
+	ratio := float64(testScale) / float64(storyboardSize())
+	for _, c := range []struct {
+		what     string
+		from, to int
+	}{
+		{"publicly accessible", small.Public, large.Public},
+		{"unencrypted", small.Unencrypted, large.Unencrypted},
+		{"holding no backups", small.NoBackups, large.NoBackups},
+		{"exposed", small.Exposed, large.Exposed},
+	} {
+		// Half the storyboard's own rate is a floor rather than a target: what
+		// is being asserted is that the count tracks the estate at all, and the
+		// ratio each shape carries is TestGeneratedExposureMatchesTheStoryboards-
+		// OwnRatio's business.
+		if want := int(float64(c.from) * ratio / 2); c.to < want {
+			t.Errorf("%d resources %s in a %d-row estate and only %d in a %d-row one; "+
+				"exposure is not growing with the estate",
+				c.from, c.what, storyboardSize(), c.to, testScale)
+		}
+	}
+}
+
+// Rates, not merely counts. The storyboard owns the risk distribution, so a
+// generated estate has to carry the storyboard's own ratio per shape rather
+// than one the generator picked. Both halves are load-bearing: a shape the
+// storyboard shows as wholly clean stays wholly clean, for the same reason
+// allocate will not fund a weight of zero.
+func TestGeneratedExposureMatchesTheStoryboardsOwnRatio(t *testing.T) {
+	type tally struct{ rows, public, unencrypted, noBackups int }
+	count := func(rows []model.Resource) map[string]*tally {
+		out := map[string]*tally{}
+		for i := range rows {
+			r := &rows[i]
+			if !exposureShapes[r.Service] {
+				continue
+			}
+			key := r.Service + "|" + r.Type
+			e := out[key]
+			if e == nil {
+				e = &tally{}
+				out[key] = e
+			}
+			e.rows++
+			if r.PubliclyAccessible != nil && *r.PubliclyAccessible {
+				e.public++
+			}
+			if r.Encrypted != nil && !*r.Encrypted {
+				e.unencrypted++
+			}
+			if days, ok := r.Measure(model.MeasureBackupRetentionDays); ok && days == 0 {
+				e.noBackups++
+			}
+		}
+		return out
+	}
+
+	hand, made := count(Snapshot("test").Resources), count(generatedResources(t))
+	// Wide enough that a few hundred draws from a sixteen-row multiset do not
+	// fail on sampling noise, narrow enough that a shape drawing from the wrong
+	// census — or from none at all, which is what this issue was — cannot pass.
+	const tolerance = 0.08
+
+	for _, key := range slices.Sorted(maps.Keys(hand)) {
+		want, got := hand[key], made[key]
+		if got == nil {
+			t.Errorf("%s: the generator produced no rows of a shape the storyboard has", key)
+			continue
+		}
+		for _, c := range []struct {
+			what      string
+			want, got int
+		}{
+			{"publicly accessible", want.public, got.public},
+			{"unencrypted", want.unencrypted, got.unencrypted},
+			{"holding no backups", want.noBackups, got.noBackups},
+		} {
+			// A shape with no such rows in the storyboard has no rate to be near,
+			// only a count that has to stay at nil.
+			if c.want == 0 {
+				if c.got != 0 {
+					t.Errorf("%s: %d of %d generated rows are %s where no storyboard row is; "+
+						"the generator is inventing a risk distribution rather than counting one",
+						key, c.got, got.rows, c.what)
+				}
+				continue
+			}
+			wantRate := float64(c.want) / float64(want.rows)
+			gotRate := float64(c.got) / float64(got.rows)
+			if math.Abs(gotRate-wantRate) > tolerance {
+				t.Errorf("%s: %.1f%% of %d generated rows are %s, against %.1f%% of %d hand-written ones",
+					key, 100*gotRate, got.rows, c.what, 100*wantRate, want.rows)
+			}
+		}
+	}
+}
+
+// exposureShapes has to name exactly the services applyExposure fills, and the
+// only way to be sure of that is to ask applyExposure. A service added to its
+// switch and not to the set would have its storyboard rows carry exposure and
+// its generated rows carry none — the freeze this issue fixed, reappearing one
+// service at a time. A service left in the set after leaving the switch would
+// have the generator deal values no scanner reports.
+func TestExposureShapesNamesEveryServiceApplyExposureFills(t *testing.T) {
+	before, after := resources(), applyExposure(resources())
+	if len(before) != len(after) {
+		t.Fatalf("applyExposure returned %d rows for %d", len(after), len(before))
+	}
+	filled := map[string]bool{}
+	for i := range after {
+		// DeepEqual rather than ==, so the comparison reads through the pointers
+		// instead of asking whether two rows share one.
+		if !reflect.DeepEqual(exposureOf(&before[i]), exposureOf(&after[i])) {
+			filled[after[i].Service] = true
+		}
+	}
+	for _, svc := range slices.Sorted(maps.Keys(filled)) {
+		if !exposureShapes[svc] {
+			t.Errorf("applyExposure fills exposure for %s and exposureShapes does not name it: "+
+				"every generated %s row would come out with none", svc, svc)
+		}
+	}
+	for _, svc := range slices.Sorted(maps.Keys(exposureShapes)) {
+		if !filled[svc] {
+			t.Errorf("exposureShapes names %s and applyExposure fills nothing for it: "+
+				"the generator would be dealing values no scanner reports", svc)
+		}
+	}
+}
+
+// exposurePattern renders which of the three exposure fields a row reports.
+// Presence is the part that has to match what a scanner would report; the
+// values are the generator's to vary, and do.
+func exposurePattern(r *model.Resource) string {
+	e := exposureOf(r)
+	var fields []string
+	for _, f := range []struct {
+		name    string
+		present bool
+	}{
+		{"publicly_accessible", e.publiclyAccessible != nil},
+		{"encrypted", e.encrypted != nil},
+		{model.MeasureBackupRetentionDays, e.backupRetention != nil},
+	} {
+		if f.present {
+			fields = append(fields, f.name)
+		}
+	}
+	if len(fields) == 0 {
+		return "nothing"
+	}
+	return strings.Join(fields, ", ")
+}
+
+// exposureTriple renders the three values together, absence included. It is the
+// identity a draw has to preserve: the fields taken apart are three marginals,
+// and what the storyboard owns is a distribution of whole rows.
+func exposureTriple(r *model.Resource) string {
+	e := exposureOf(r)
+	flag := func(b *bool) string {
+		if b == nil {
+			return "-"
+		}
+		return strconv.FormatBool(*b)
+	}
+	days := "-"
+	if e.backupRetention != nil {
+		days = strconv.FormatInt(*e.backupRetention, 10)
+	}
+	return "public=" + flag(e.publiclyAccessible) +
+		" encrypted=" + flag(e.encrypted) + " retention=" + days
+}
+
+// Dealing a whole triple keyed on service and type is honest only while every
+// storyboard row of a shape reports the same fields, and today every one does.
+// The single memcached row reports neither flag, because DescribeCacheClusters
+// reports neither for memcached, and it is the storyboard's only cache cluster.
+// Put a redis cache cluster beside it and that shape's census would hold both
+// patterns at once, so a generated memcached row could draw an encryption flag
+// AWS never reported for it — a value invented by the shape it was filed under.
+// The redis serverless cache is not that hazard: applyExposure excludes the
+// type outright, so every serverless row reports nothing whatever it runs.
+func TestEveryStoryboardShapeReportsExposureUniformly(t *testing.T) {
+	type first struct{ name, pattern string }
+	seen := map[string]first{}
+	for _, r := range Snapshot("test").Resources {
+		if !exposureShapes[r.Service] {
+			continue
+		}
+		key, got := r.Service+"|"+r.Type, exposurePattern(&r)
+		was, ok := seen[key]
+		if !ok {
+			seen[key] = first{r.Name, got}
+			continue
+		}
+		if was.pattern != got {
+			t.Errorf("%s: %s reports %s and %s reports %s; a shape whose rows report "+
+				"different fields cannot have its exposure dealt from one census",
+				key, was.name, was.pattern, r.Name, got)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("no storyboard row belongs to a shape exposureShapes names")
+	}
+}
+
+// The triple is dealt as one value, not as three flags drawn apart. legacy-crm
+// is publicly reachable and unencrypted and keeping no backups all at once,
+// which is what an estate's worst row looks like; three independent draws would
+// reproduce every marginal exactly — so the rate test above would still pass —
+// while scattering that row's risk across three ordinary ones. Only RDS
+// instances hold more than one triple today, which is the reason to assert this
+// rather than assume it: the property is invisible in the other eight shapes,
+// and the report's worst rows all come from the one it is visible in.
+//
+// Containment, not a rate, so no tolerance is needed. Every generated row either
+// carries a triple some storyboard row of its shape carries or it does not.
+func TestGeneratedExposureIsAWholeTripleTheStoryboardHas(t *testing.T) {
+	story := map[string]map[string]bool{}
+	for _, r := range Snapshot("test").Resources {
+		if !exposureShapes[r.Service] {
+			continue
+		}
+		key := r.Service + "|" + r.Type
+		if story[key] == nil {
+			story[key] = map[string]bool{}
+		}
+		story[key][exposureTriple(&r)] = true
+	}
+
+	// One report per shape: a split draw miscarries hundreds of rows at a time,
+	// and the shape is what names the fault.
+	reported, checked := map[string]bool{}, 0
+	for _, r := range generatedResources(t) {
+		if !exposureShapes[r.Service] {
+			continue
+		}
+		checked++
+		key, got := r.Service+"|"+r.Type, exposureTriple(&r)
+		if story[key][got] || reported[key] {
+			continue
+		}
+		reported[key] = true
+		t.Errorf("%s: %s carries %s, an exposure no storyboard row of its shape carries; "+
+			"the triple is being assembled from separate draws rather than dealt whole",
+			key, r.Name, got)
+	}
+	if checked == 0 {
+		t.Fatal("no generated row belongs to a shape exposureShapes names")
+	}
+}
+
+// The census files a row under its service and type, but applyExposure decides
+// an ElastiCache row's exposure from its engine: a cache cluster reports neither
+// flag because it is memcached, not because of its type. The shape key is a
+// stand-in for that, and this is what holds the stand-in on the generated rows,
+// where the storyboard's own uniformity says nothing. Make buildCacheCluster
+// draw redis as well as memcached and every generated redis cluster would be
+// dealt the memcached row's silence — two values DescribeCacheClusters does
+// report, rendering as two the fixture claims it did not.
+//
+// Presence only, never values. The generated rows are risky at the storyboard's
+// rate and applyExposure's four named fixtures are not among them, so the two
+// disagree about nearly every value and must agree about every field.
+func TestDealtExposureReportsTheFieldsApplyExposureWould(t *testing.T) {
+	reported := map[string]bool{}
+	for _, r := range generatedResources(t) {
+		if !exposureShapes[r.Service] || reported[r.Type] {
+			continue
+		}
+		// Strip the dealt exposure and ask applyExposure what this row would
+		// have reported on its own. Cloning the bag first keeps the stripping
+		// off the row being compared against.
+		bare := r
+		bare.Measures = maps.Clone(r.Measures)
+		delete(bare.Measures, model.MeasureBackupRetentionDays)
+		bare.PubliclyAccessible, bare.Encrypted = nil, nil
+
+		want := exposurePattern(&applyExposure([]model.Resource{bare})[0])
+		got := exposurePattern(&r)
+		if got == want {
+			continue
+		}
+		reported[r.Type] = true
+		t.Errorf("%s %s was dealt %s where applyExposure reports %s; the census's "+
+			"shape key has stopped standing in for what applyExposure discriminates on",
+			r.Type, r.Name, got, want)
 	}
 }
 
