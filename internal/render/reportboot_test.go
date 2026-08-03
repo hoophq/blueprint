@@ -698,7 +698,15 @@ const getComputedStyle = () => ({ maxHeight: "640px", getPropertyValue: () => ""
 const requestAnimationFrame = (fn) => setTimeout(fn, 0);
 Object.assign(globalThis, {
   window, document, getComputedStyle, requestAnimationFrame, self: window,
-  navigator: { userAgent: "node" },
+});
+// navigator has to be defined rather than assigned. node 21 and later ship a
+// real one, as a getter with no setter, and Object.assign throws on those
+// instead of skipping them — so a runner that upgrades node takes every boot
+// test down at once, which is how this was found. Defining it also keeps the
+// stub identical on both: a harness whose job is to be one fixed browser
+// should not pick up the host's user agent on the newer runner.
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "node" }, configurable: true, writable: true,
 });
 
 let rejected = null;
