@@ -934,8 +934,13 @@
           order.push(m);
         }
         if (!seenMethod[method]) { seenMethod[method] = true; m.priced++; }
-        var pair = method + " " + cur;
-        if (!seenPair[pair]) { seenPair[pair] = true; m.currencies[cur] = (m.currencies[cur] || 0) + 1; }
+        // Nested rather than a method+currency string key, because there is no
+        // character this can safely join on: currency is whatever AWS returned,
+        // held verbatim, and picking a delimiter is picking a character AWS is
+        // promising never to send. This used to join on a raw NUL, which put a
+        // U+0000 into every rendered report.
+        var seen = seenPair[method] || (seenPair[method] = {});
+        if (!seen[cur]) { seen[cur] = true; m.currencies[cur] = (m.currencies[cur] || 0) + 1; }
       });
     });
     order.sort(function (a, b) {

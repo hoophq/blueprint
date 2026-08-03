@@ -1400,6 +1400,112 @@ func TestReportUntaggedTileStatesNoShareOfAWholeItCannotDivide(t *testing.T) {
 	}
 }
 
+// methodCounts is what the method line under the hero tiles is counting, and it
+// counts resources rather than figures: "Cost Explorer priced 28 resources" has
+// to mean 28 things a reader can point at, whatever number of cost records AWS
+// attached to each. So one resource priced twice by one method is one, and one
+// resource priced by that method in two currencies is one in each.
+//
+// The per-currency dedupe used to key a flat map on the method and the currency
+// joined by a raw NUL — a control character in every rendered report, chosen
+// because it seemed like one AWS would never send. There is no such character:
+// currency is whatever AWS returned, held verbatim under the same rule as every
+// other reported value. So the two dimensions are nested instead of joined, and
+// the last case here is the one a delimiter cannot pass.
+func TestReportMethodCountsTalliesResourcesNotFigures(t *testing.T) {
+	type tally struct {
+		Method     string         `json:"method"`
+		Priced     int            `json:"priced"`
+		Currencies map[string]int `json:"currencies"`
+	}
+
+	cases := []struct {
+		name string
+		rows string
+		want []tally
+	}{
+		{
+			name: "one resource, one figure",
+			rows: `[{"costs":[{"method":"ce","currency":"USD"}]}]`,
+			want: []tally{{Method: "ce", Priced: 1, Currencies: map[string]int{"USD": 1}}},
+		},
+		{
+			// Cost Explorer returns a row per record type, so one resource commonly
+			// arrives with several. It is still one resource.
+			name: "a resource priced twice by one method counts once",
+			rows: `[{"costs":[{"method":"ce","currency":"USD"},{"method":"ce","currency":"USD"}]}]`,
+			want: []tally{{Method: "ce", Priced: 1, Currencies: map[string]int{"USD": 1}}},
+		},
+		{
+			name: "one resource in two currencies counts once in each",
+			rows: `[{"costs":[{"method":"ce","currency":"USD"},{"method":"ce","currency":"EUR"}]}]`,
+			want: []tally{{Method: "ce", Priced: 1, Currencies: map[string]int{"USD": 1, "EUR": 1}}},
+		},
+		{
+			name: "two resources, same method and currency",
+			rows: `[{"costs":[{"method":"ce","currency":"USD"}]},{"costs":[{"method":"ce","currency":"USD"}]}]`,
+			want: []tally{{Method: "ce", Priced: 2, Currencies: map[string]int{"USD": 2}}},
+		},
+		{
+			// Commonest method first; the tie breaks alphabetically so the line does
+			// not reorder itself between runs of the same estate.
+			name: "methods ordered by reach, then by name",
+			rows: `[{"costs":[{"method":"coh","currency":"USD"},{"method":"ce","currency":"USD"}]},` +
+				`{"costs":[{"method":"coh","currency":"USD"}]}]`,
+			want: []tally{
+				{Method: "coh", Priced: 2, Currencies: map[string]int{"USD": 2}},
+				{Method: "ce", Priced: 1, Currencies: map[string]int{"USD": 1}},
+			},
+		},
+		{
+			name: "a resource with no costs contributes nothing",
+			rows: `[{},{"costs":[]},{"costs":[{"method":"ce","currency":"USD"}]}]`,
+			want: []tally{{Method: "ce", Priced: 1, Currencies: map[string]int{"USD": 1}}},
+		},
+		{
+			// Neither field is guaranteed, and an absent one is its own bucket
+			// rather than an excuse to drop the record.
+			name: "an unstated method and currency are their own buckets",
+			rows: `[{"costs":[{"amount":"1.00"}]}]`,
+			want: []tally{{Method: "", Priced: 1, Currencies: map[string]int{"": 1}}},
+		},
+		{
+			// The delimiter case. Any single character used to join the two fields
+			// is a character that makes these two records the same key, and the
+			// second currency then goes uncounted under a method that is priced.
+			name: "two records whose fields collide under any joining character",
+			rows: `[{"costs":[{"method":"ce","currency":"|x"},{"method":"ce|","currency":"x"}]}]`,
+			want: []tally{
+				{Method: "ce", Priced: 1, Currencies: map[string]int{"|x": 1}},
+				{Method: "ce|", Priced: 1, Currencies: map[string]int{"x": 1}},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			script := jsFunc(t, "methodCounts") + "\n" +
+				"console.log(JSON.stringify(methodCounts(" + c.rows + ")));"
+
+			var got []tally
+			evalJSON(t, script, &got)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("methodCounts() =\n  %+v\nwant\n  %+v", got, c.want)
+			}
+			// A method is priced for a resource or it is not, so no currency can be
+			// counted more often than the method that reported it.
+			for _, m := range got {
+				for cur, n := range m.Currencies {
+					if n > m.Priced {
+						t.Errorf("%s reports %s for %d resources but is priced for %d",
+							m.Method, cur, n, m.Priced)
+					}
+				}
+			}
+		})
+	}
+}
+
 // stampCosts is the producer for the panel below: it decides, per row, why the
 // row is not in the totals, and groupReasons only sorts what it was told. The
 // distinction it has to keep is between a resource AWS never priced and one AWS

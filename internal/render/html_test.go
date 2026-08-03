@@ -247,6 +247,41 @@ func TestHTMLNeutralizesCommentAndScriptOpeners(t *testing.T) {
 	}
 }
 
+// The report is a single file handed to a human, mailed around, and opened by
+// whatever is on their machine. A C0 control character in it is a spec-level
+// parse error that every consumer resolves differently: browsers substitute
+// U+FFFD, grep declares the file binary, and a pipeline that strips control
+// bytes changes the content on the way past. None of that is a wrong number,
+// which is exactly why it survives review — a raw NUL sat in the template for
+// a release as the delimiter of an internal dedupe key, and rendered into
+// every report.
+//
+// Tab, newline, and carriage return are the three the format is written in.
+// Nothing else may reach the artifact, from the template or from the data.
+func TestHTMLCarriesNoControlCharacters(t *testing.T) {
+	cases := map[string]string{
+		"demo estate":            renderDemo(t),
+		"demo estate with costs": renderDemoCosts(t),
+	}
+	for name, html := range cases {
+		for i, r := range html {
+			if r >= 0x20 || r == '\t' || r == '\n' || r == '\r' {
+				continue
+			}
+			// One line of context, so the report a reader gets is the report the
+			// failure is about.
+			start := strings.LastIndexByte(html[:i], '\n') + 1
+			end := i + strings.IndexByte(html[i:], '\n')
+			if end < i {
+				end = len(html)
+			}
+			t.Errorf("%s: control character U+%04X at byte %d:\n  %s",
+				name, r, i, strings.TrimSpace(html[start:end]))
+			break
+		}
+	}
+}
+
 func TestHTMLEmptySnapshot(t *testing.T) {
 	snap := &model.Snapshot{Version: "test"}
 	path := filepath.Join(t.TempDir(), "report.html")
