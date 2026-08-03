@@ -898,8 +898,6 @@
     currency: "",
     methods: [],
     priced: 0,
-    offCurrency: 0,
-    unparsed: 0,
     caveated: 0
   };
 
@@ -1195,33 +1193,56 @@
 
   // ---- Cost aggregates ------------------------------------------------------
 
-  // groupReasons orders the explanations AWS gave for a missing figure the way
-  // the terminal renderer does: commonest first, then alphabetically. It also
-  // accounts for the rows nothing was said about, which the callers phrase for
-  // themselves — see the residual group below.
+  // groupReasons splits the rows carrying no usable figure into the kinds of
+  // reason there are for that, ordered the way the terminal renderer orders
+  // them: commonest first, then alphabetically.
+  //
+  // It accounts for every row it is handed, and that is the whole point of it.
+  // Dropping a kind leaves the groups totalling less than the gap the caller
+  // just stated, with the remainder unexplained — in the demo estate the tile
+  // said 70 and the panel titled "Why a figure is missing" listed 66.
+  //
+  // Four kinds, because they are four different claims and only one of them is
+  // a thing AWS said:
+  //
+  //   recorded    a cost pass wrote a reason, carried in reason
+  //   offCurrency AWS priced it, in a currency this page is not totalling
+  //   unparsed    AWS priced it, in something that is not a decimal number
+  //   silent      no pass said anything, and reason is empty because there is
+  //               none to carry
+  //
+  // The two exclusions are not absences and may not be worded as any: the row
+  // has an amount, printed in the table, with costText explaining the exclusion
+  // in its tooltip. Reporting those under "no cause recorded" contradicts the
+  // page's own row. And silence is not a reason either — only Cost Optimization
+  // Hub writes one, the resource-level Cost Explorer pass deliberately writes
+  // nothing rather than guess at a cause — so each caller words that group
+  // itself rather than printing a reason string that was never recorded.
+  //
+  // A row can qualify for two of these at once: Cost Optimization Hub recording
+  // that it has no recommendation says nothing about why the active Cost
+  // Explorer figure is in euros. The kind stamped by stampCosts wins, because
+  // it is about the figure the reader is looking at.
+  var REASON_KINDS = ["recorded", "offCurrency", "unparsed", "silent"];
+
   function groupReasons(rows) {
     var byReason = {};
-    var silent = 0;
+    var excluded = { offCurrency: 0, unparsed: 0, silent: 0 };
     rows.forEach(function (r) {
-      if (r.cost_unavailable) byReason[r.cost_unavailable] = (byReason[r.cost_unavailable] || 0) + 1;
-      else silent++;
+      if (r._costGap === "offCurrency" || r._costGap === "unparsed") excluded[r._costGap]++;
+      else if (r.cost_unavailable) byReason[r.cost_unavailable] = (byReason[r.cost_unavailable] || 0) + 1;
+      else excluded.silent++;
     });
     var out = Object.keys(byReason).map(function (why) {
-      return { reason: why, count: byReason[why], recorded: true };
+      return { reason: why, count: byReason[why], kind: "recorded" };
     });
-    // A resource nothing was recorded about is still one of the resources the
-    // hero counted as unpriced, and this list is what accounts for that count.
-    // Dropped, the reasons total less than the stated gap and the remainder
-    // goes unexplained — in the demo estate the tile says 70 and the panel
-    // titled "Why a figure is missing" listed 66. The group carries no reason
-    // string because there is none to carry: only Cost Optimization Hub writes
-    // one, and the resource-level Cost Explorer pass deliberately writes
-    // nothing rather than guess at a cause. Each caller words the silence
-    // itself, so neither reports it as something a pass said.
-    if (silent) out.push({ reason: "", count: silent, recorded: false });
+    REASON_KINDS.forEach(function (kind) {
+      if (kind !== "recorded" && excluded[kind]) out.push({ reason: "", count: excluded[kind], kind: kind });
+    });
     out.sort(function (a, b) {
       if (a.count !== b.count) return b.count - a.count;
-      if (a.recorded !== b.recorded) return a.recorded ? -1 : 1;
+      var ra = REASON_KINDS.indexOf(a.kind), rb = REASON_KINDS.indexOf(b.kind);
+      if (ra !== rb) return ra - rb;
       return a.reason < b.reason ? -1 : (a.reason > b.reason ? 1 : 0);
     });
     return out;
@@ -1582,23 +1603,27 @@
   // still shows on its own row but is never added to anything.
   function stampCosts() {
     COST.priced = 0;
-    COST.offCurrency = 0;
-    COST.unparsed = 0;
     COST.caveated = 0;
     resources.forEach(function (r) {
       var c = COST.method ? costFor(r, COST.method) : null;
       r._cost = c;
       r._costDec = null;
+      // Why this row is absent from the totals, and "" when it is not there to
+      // explain. A row can be missing from a total for reasons that are not the
+      // same kind of thing: AWS never priced it, or AWS priced it and this page
+      // will not add the figure up. groupReasons reads this so the breakdown
+      // can tell those apart, because calling the second one an absence
+      // contradicts the amount printed in the row itself.
+      r._costGap = "absent";
       if (!c) return;
       var sameCurrency = (c.currency || "") === COST.currency;
       if (sameCurrency) r._costDec = decParse(c.amount);
       if (r._costDec) {
+        r._costGap = "";
         COST.priced++;
         if (c.caveats && c.caveats.length > 0) COST.caveated++;
-      } else if (sameCurrency) {
-        COST.unparsed++;
       } else {
-        COST.offCurrency++;
+        r._costGap = sameCurrency ? "unparsed" : "offCurrency";
       }
     });
   }
@@ -1687,38 +1712,39 @@
           "enroll the account in Cost Optimization Hub (cost-optimization-hub:ListRecommendations)."
       });
     } else if (COST.priced < total) {
-      var unpriced = resources.filter(function (r) { return !r._costDec; });
       issues.push({
-        text: unpriced.length.toLocaleString() + " of " + plural(total, "resource") + " carry no " +
+        text: (total - COST.priced).toLocaleString() + " of " + plural(total, "resource") + " carry no " +
           methodLabel(COST.method) + " figure" + (COST.currency ? " in " + COST.currency : "") +
           ", so every total on this page is a floor rather than the bill.",
         fix: ""
       });
-      // The census keeps one explanation per resource, whichever collector
-      // recorded it, so it is reported as what the cost pass said rather than
-      // as an account of the active source's gap.
-      groupReasons(unpriced).forEach(function (g) {
-        issues.push({
-          text: plural(g.count, "resource") + (g.recorded
-            ? " — the cost pass recorded: " + g.reason
-            : " — no cost pass recorded a cause, and Cost Explorer names none rather than guess at one"),
-          fix: ""
-        });
-      });
     }
-    if (COST.offCurrency > 0) {
-      issues.push({
-        text: plural(COST.offCurrency, "resource") + " were priced in another currency and are excluded from every " +
-          "total here: this tool holds no exchange rate and will not invent one. Each still shows its own amount on " +
-          "its own row.",
-        fix: ""
-      });
-    }
-    if (COST.unparsed > 0) {
-      issues.push({
-        text: plural(COST.unparsed, "figure") + " could not be read as a decimal amount and " +
-          (COST.unparsed === 1 ? "was" : "were") + " left out of every total rather than guessed at.",
-        fix: ""
+    // Whichever of those two sentences was printed, the resources it counted are
+    // accounted for here, and the exclusions are worded as exclusions. They used
+    // to be two standalone bullets sitting outside the breakdown, which said the
+    // same thing twice on a run with both — once as its own sentence and once,
+    // wrongly, inside "no cost pass recorded a cause".
+    //
+    // The census keeps one explanation per resource, whichever collector
+    // recorded it, so a recorded group is reported as what the cost pass said
+    // rather than as an account of the active source's gap.
+    if (COST.priced < total) {
+      groupReasons(resources.filter(function (r) { return !r._costDec; })).forEach(function (g) {
+        var text;
+        if (g.kind === "recorded") {
+          text = plural(g.count, "resource") + " — the cost pass recorded: " + g.reason;
+        } else if (g.kind === "offCurrency") {
+          text = plural(g.count, "resource") + " were priced in another currency and are excluded from every " +
+            "total here: this tool holds no exchange rate and will not invent one. Each still shows its own " +
+            "amount on its own row.";
+        } else if (g.kind === "unparsed") {
+          text = plural(g.count, "figure") + " could not be read as a decimal amount and " +
+            (g.count === 1 ? "was" : "were") + " left out of every total rather than guessed at.";
+        } else {
+          text = plural(g.count, "resource") +
+            " — no cost pass recorded a cause, and Cost Explorer names none rather than guess at one";
+        }
+        issues.push({ text: text, fix: "" });
       });
     }
     probes.forEach(function (p) {
@@ -1951,9 +1977,18 @@
       : ""]);
     entry("Resource-level probes", probes.map(function (p) { return p.service + ": " + probeLine(p); }));
 
+    // Two of the four kinds are exclusions rather than absences, and they are
+    // worded as such: AWS did price the resource, this page is declining to add
+    // that figure into a total. Calling either "no cause recorded" would sit in
+    // an audit panel contradicting the amount printed in the row above it.
     var unpriced = resources.filter(function (r) { return !r._costDec; });
     entry("Why a figure is missing", groupReasons(unpriced).map(function (g) {
-      return plural(g.count, "resource") + " — " + (g.recorded ? g.reason : "no cause recorded");
+      var why;
+      if (g.kind === "recorded") why = g.reason;
+      else if (g.kind === "offCurrency") why = "priced in another currency, so excluded from the totals";
+      else if (g.kind === "unparsed") why = "amount could not be read as a decimal, so excluded from the totals";
+      else why = "no cause recorded";
+      return plural(g.count, "resource") + " — " + why;
     }));
 
     var meters = [];

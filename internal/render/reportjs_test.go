@@ -1400,68 +1400,206 @@ func TestReportUntaggedTileStatesNoShareOfAWholeItCannotDivide(t *testing.T) {
 	}
 }
 
-// The panel headed "Why a figure is missing" is what accounts for the gap the
-// hero tile states, so its counts have to add up to that gap. They did not:
-// only Cost Optimization Hub writes a reason, the resource-level Cost Explorer
-// pass deliberately writes none rather than guess at a cause, and every row
-// without one was dropped on the floor. The demo estate showed 70 unpriced
-// resources above a list totalling 66, with the difference unexplained. The
-// silence is now a group of its own, carrying no reason string — because there
-// is none — and flagged so neither caller reports it as something a pass said.
-func TestReportMissingFigureReasonsAccountForEveryUnpricedResource(t *testing.T) {
-	type group struct {
-		Reason   string `json:"reason"`
-		Count    int    `json:"count"`
-		Recorded bool   `json:"recorded"`
+// stampCosts is the producer for the panel below: it decides, per row, why the
+// row is not in the totals, and groupReasons only sorts what it was told. The
+// distinction it has to keep is between a resource AWS never priced and one AWS
+// did price with a figure this page will not add up — because the second one has
+// an amount printed in its own row, and filing it under "no cause recorded"
+// makes the page contradict itself a line apart.
+func TestReportStampCostsSeparatesAnExcludedFigureFromAMissingOne(t *testing.T) {
+	type stamped struct {
+		Name string `json:"name"`
+		Gap  string `json:"gap"`
+		Dec  bool   `json:"dec"`
 	}
-	const hub = "no Cost Optimization Hub recommendation for this resource"
+	type result struct {
+		Rows     []stamped `json:"rows"`
+		Priced   int       `json:"priced"`
+		Caveated int       `json:"caveated"`
+	}
+
+	const rows = `[
+	  {"name":"totalled",   "costs":[{"method":"ce","currency":"USD","amount":"12.50"}]},
+	  {"name":"zero",       "costs":[{"method":"ce","currency":"USD","amount":"0"}]},
+	  {"name":"caveated",   "costs":[{"method":"ce","currency":"USD","amount":"3.00","caveats":["partial"]}]},
+	  {"name":"euros",      "costs":[{"method":"ce","currency":"EUR","amount":"9.99"}]},
+	  {"name":"nocurrency", "costs":[{"method":"ce","amount":"9.99"}]},
+	  {"name":"notanumber", "costs":[{"method":"ce","currency":"USD","amount":"n/a"}]},
+	  {"name":"othermethod","costs":[{"method":"coh","currency":"USD","amount":"5.00"}]},
+	  {"name":"nocosts"}
+	]`
 
 	cases := []struct {
 		name string
-		rows string // as the census writes them: cost_unavailable present or absent
-		want []group
+		cost string
+		want result
 	}{
 		{
-			name: "rows nobody said anything about are still counted",
-			rows: `[{"cost_unavailable":"` + hub + `"},{},{},{}]`,
-			want: []group{{Reason: "", Count: 3, Recorded: false}, {Reason: hub, Count: 1, Recorded: true}},
+			name: "Cost Explorer active, totalling dollars",
+			cost: `{ method: "ce", currency: "USD" }`,
+			want: result{
+				Rows: []stamped{
+					{Name: "totalled", Gap: "", Dec: true},
+					// A zero AWS reported is a finding, not an absence: it is in the
+					// currency being totalled and it parses, so it is priced.
+					{Name: "zero", Gap: "", Dec: true},
+					{Name: "caveated", Gap: "", Dec: true},
+					{Name: "euros", Gap: "offCurrency", Dec: false},
+					// No stated currency is not the currency being totalled, and
+					// guessing that it is would add an unknown unit into the total.
+					{Name: "nocurrency", Gap: "offCurrency", Dec: false},
+					{Name: "notanumber", Gap: "unparsed", Dec: false},
+					{Name: "othermethod", Gap: "absent", Dec: false},
+					{Name: "nocosts", Gap: "absent", Dec: false},
+				},
+				Priced:   3,
+				Caveated: 1,
+			},
 		},
 		{
-			name: "a recorded reason outranks an equal number of silences",
-			rows: `[{"cost_unavailable":"` + hub + `"},{}]`,
-			want: []group{{Reason: hub, Count: 1, Recorded: true}, {Reason: "", Count: 1, Recorded: false}},
-		},
-		{
-			name: "every row explained leaves no residual group",
-			rows: `[{"cost_unavailable":"` + hub + `"},{"cost_unavailable":"` + hub + `"}]`,
-			want: []group{{Reason: hub, Count: 2, Recorded: true}},
-		},
-		{
-			name: "nothing explained at all is one honest group",
-			rows: `[{},{},{}]`,
-			want: []group{{Reason: "", Count: 3, Recorded: false}},
-		},
-		{
-			// An empty string is not a reason, and the census writes one for a
-			// resource it has nothing to say about.
-			name: "an empty reason string counts as silence, not as a reason",
-			rows: `[{"cost_unavailable":""},{}]`,
-			want: []group{{Reason: "", Count: 2, Recorded: false}},
-		},
-		{
-			name: "commonest reason first, then alphabetically",
-			rows: `[{"cost_unavailable":"b"},{"cost_unavailable":"b"},{"cost_unavailable":"a"},{"cost_unavailable":"c"}]`,
-			want: []group{
-				{Reason: "b", Count: 2, Recorded: true},
-				{Reason: "a", Count: 1, Recorded: true},
-				{Reason: "c", Count: 1, Recorded: true},
+			// Nothing is active, so nothing was excluded: every row is an absence
+			// and none of them may be reported as a figure this page turned down.
+			name: "no method active",
+			cost: `{ method: "", currency: "" }`,
+			want: result{
+				Rows: []stamped{
+					{Name: "totalled", Gap: "absent"},
+					{Name: "zero", Gap: "absent"},
+					{Name: "caveated", Gap: "absent"},
+					{Name: "euros", Gap: "absent"},
+					{Name: "nocurrency", Gap: "absent"},
+					{Name: "notanumber", Gap: "absent"},
+					{Name: "othermethod", Gap: "absent"},
+					{Name: "nocosts", Gap: "absent"},
+				},
 			},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			script := jsFunc(t, "groupReasons") + "\n" +
+			script := jsVar(t, "DEC_RE") + "\n" + jsFunc(t, "decParse") + "\n" +
+				jsFunc(t, "costFor") + "\n" + jsFunc(t, "stampCosts") + "\n" +
+				"var COST = " + c.cost + ";\n" +
+				"var resources = " + rows + ";\n" +
+				"stampCosts();\n" +
+				"console.log(JSON.stringify({ rows: resources.map(function (r) {\n" +
+				"  return { name: r.name, gap: r._costGap, dec: !!r._costDec };\n" +
+				"}), priced: COST.priced, caveated: COST.caveated }));"
+
+			var got result
+			evalJSON(t, script, &got)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("stampCosts() =\n  %+v\nwant\n  %+v", got, c.want)
+			}
+			// The two are not independent: a row carrying a usable figure has no
+			// gap to explain, and a row without one is owed an explanation.
+			for _, r := range got.Rows {
+				if r.Dec != (r.Gap == "") {
+					t.Errorf("%s: gap %q and a %v decimal disagree about whether it is in the totals",
+						r.Name, r.Gap, r.Dec)
+				}
+			}
+		})
+	}
+}
+
+// The panel headed "Why a figure is missing" is what accounts for the gap the
+// hero tile states, so its counts have to add up to that gap. They did not:
+// only Cost Optimization Hub writes a reason, the resource-level Cost Explorer
+// pass deliberately writes none rather than guess at a cause, and every row
+// without one was dropped on the floor. The demo estate showed 70 unpriced
+// resources above a list totalling 66, with the difference unexplained.
+//
+// Accounting for all of them means telling four things apart, and they are not
+// interchangeable. Two are absences: a cost pass recorded a cause, or nobody
+// said anything. Two are exclusions: AWS did price the resource, and this page
+// declines to add that figure into a total because it is in another currency or
+// is not a decimal number. An exclusion reported as "no cause recorded"
+// contradicts the amount printed in the very row it is about — so groupReasons
+// keeps the four apart, and each caller words each one.
+func TestReportMissingFigureReasonsAccountForEveryUnpricedResource(t *testing.T) {
+	type group struct {
+		Reason string `json:"reason"`
+		Count  int    `json:"count"`
+		Kind   string `json:"kind"`
+	}
+	const hub = "no Cost Optimization Hub recommendation for this resource"
+
+	cases := []struct {
+		name string
+		rows string // as stampCosts leaves them: _costGap stamped, cost_unavailable from the census
+		want []group
+	}{
+		{
+			name: "rows nobody said anything about are still counted",
+			rows: `[{"cost_unavailable":"` + hub + `"},{},{},{}]`,
+			want: []group{{Count: 3, Kind: "silent"}, {Reason: hub, Count: 1, Kind: "recorded"}},
+		},
+		{
+			name: "a recorded reason outranks an equal number of silences",
+			rows: `[{"cost_unavailable":"` + hub + `"},{}]`,
+			want: []group{{Reason: hub, Count: 1, Kind: "recorded"}, {Count: 1, Kind: "silent"}},
+		},
+		{
+			name: "every row explained leaves no residual group",
+			rows: `[{"cost_unavailable":"` + hub + `"},{"cost_unavailable":"` + hub + `"}]`,
+			want: []group{{Reason: hub, Count: 2, Kind: "recorded"}},
+		},
+		{
+			// "absent" is what stampCosts stamps when AWS priced nothing, which is
+			// the ordinary case and not an exclusion.
+			name: "nothing explained at all is one honest group",
+			rows: `[{"_costGap":"absent"},{"_costGap":"absent"},{}]`,
+			want: []group{{Count: 3, Kind: "silent"}},
+		},
+		{
+			// An empty string is not a reason, and the census writes one for a
+			// resource it has nothing to say about.
+			name: "an empty reason string counts as silence, not as a reason",
+			rows: `[{"cost_unavailable":""},{}]`,
+			want: []group{{Count: 2, Kind: "silent"}},
+		},
+		{
+			// Both of these rows print an amount in the table. Filing them under a
+			// missing cause would have the page contradict itself one line apart.
+			name: "an excluded figure is not an absence",
+			rows: `[{"_costGap":"offCurrency"},{"_costGap":"unparsed"}]`,
+			want: []group{{Count: 1, Kind: "offCurrency"}, {Count: 1, Kind: "unparsed"}},
+		},
+		{
+			// Cost Optimization Hub recording that it has no recommendation says
+			// nothing about why the active Cost Explorer figure is in euros. The
+			// kind stampCosts stamped wins, because it is about the figure the
+			// reader is looking at.
+			name: "the active figure's exclusion outranks another pass's reason",
+			rows: `[{"_costGap":"offCurrency","cost_unavailable":"` + hub + `"}]`,
+			want: []group{{Count: 1, Kind: "offCurrency"}},
+		},
+		{
+			name: "all four kinds at once, commonest-first then by kind",
+			rows: `[{"cost_unavailable":"a"},{"_costGap":"offCurrency"},{"_costGap":"unparsed"},{}]`,
+			want: []group{
+				{Reason: "a", Count: 1, Kind: "recorded"},
+				{Count: 1, Kind: "offCurrency"},
+				{Count: 1, Kind: "unparsed"},
+				{Count: 1, Kind: "silent"},
+			},
+		},
+		{
+			name: "commonest reason first, then alphabetically",
+			rows: `[{"cost_unavailable":"b"},{"cost_unavailable":"b"},{"cost_unavailable":"a"},{"cost_unavailable":"c"}]`,
+			want: []group{
+				{Reason: "b", Count: 2, Kind: "recorded"},
+				{Reason: "a", Count: 1, Kind: "recorded"},
+				{Reason: "c", Count: 1, Kind: "recorded"},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			script := jsVar(t, "REASON_KINDS") + "\n" + jsFunc(t, "groupReasons") + "\n" +
 				"console.log(JSON.stringify(groupReasons(" + c.rows + ")));"
 
 			var got []group
@@ -1482,17 +1620,26 @@ func TestReportMissingFigureReasonsAccountForEveryUnpricedResource(t *testing.T)
 			if sum != len(in) {
 				t.Errorf("%d of %d unpriced resources are accounted for", sum, len(in))
 			}
+			// A reason string is a quotation from a cost pass. The other three
+			// kinds have nothing to quote, and inventing prose here would put it
+			// in both callers' mouths at once.
+			for _, g := range got {
+				if (g.Kind == "recorded") != (g.Reason != "") {
+					t.Errorf("group %+v carries a reason string it cannot attribute to a cost pass", g)
+				}
+			}
 		})
 	}
 
-	// And neither caller may present the silence as a statement by a cost pass.
-	for _, snippet := range []string{
-		`(g.recorded ? g.reason : "no cause recorded")`,
-		`g.recorded
-            ? " — the cost pass recorded: " + g.reason`,
-	} {
-		if !strings.Contains(reportTemplate, snippet) {
-			t.Errorf("a caller reports the residual group as a recorded reason: missing %q", snippet)
+	// And no caller may collapse the four back into two. Each kind that is not
+	// silence has to be worded where it is rendered — once in the coverage
+	// banner, once in the audit panel — or an exclusion goes out as an absence
+	// again and the page contradicts its own table.
+	for _, kind := range []string{"recorded", "offCurrency", "unparsed"} {
+		snippet := `g.kind === "` + kind + `"`
+		if n := strings.Count(reportTemplate, snippet); n != 2 {
+			t.Errorf("the template words the %s group %d times, want 2 "+
+				"(the coverage banner and the audit panel)", kind, n)
 		}
 	}
 }
