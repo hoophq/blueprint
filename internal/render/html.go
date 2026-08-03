@@ -195,25 +195,54 @@ type htmlSafeWriter struct {
 // jsonLessThan is '<' written as a JSON string escape.
 const jsonLessThan = "\\u003c"
 
+// jsonLessThanBytes is the same escape, held as bytes so that both halves of
+// the write path below can go through one helper and obey one rule.
+var jsonLessThanBytes = []byte(jsonLessThan)
+
+// Write passes p through with every '<' replaced, and reports how much of p it
+// consumed.
+//
+// Consumed, not emitted: the escape is longer than the byte it replaces, and
+// reporting what actually went downstream would look like a short write to
+// every caller in the chain. The same accounting has to hold when a write
+// fails part of the way through, because io.Writer's contract is that the
+// count says which prefix of p the caller no longer owns — returning zero
+// there claims nothing was written when a megabyte may already have been, and
+// an upstream encoder that trusted it would send the prefix twice. A partial
+// escape counts for no input byte at all, since the '<' it stands for is
+// either replaced or it is not, so that count stops before the '<' rather
+// than after it.
 func (h *htmlSafeWriter) Write(p []byte) (int, error) {
 	start := 0
 	for i, b := range p {
 		if b != '<' {
 			continue
 		}
-		if _, err := h.w.Write(p[start:i]); err != nil {
-			return 0, err
+		if n, err := writeFull(h.w, p[start:i]); err != nil {
+			return start + n, err
 		}
-		if _, err := io.WriteString(h.w, jsonLessThan); err != nil {
-			return 0, err
+		if _, err := writeFull(h.w, jsonLessThanBytes); err != nil {
+			return i, err
 		}
 		start = i + 1
 	}
-	if _, err := h.w.Write(p[start:]); err != nil {
-		return 0, err
+	if n, err := writeFull(h.w, p[start:]); err != nil {
+		return start + n, err
 	}
-	// The contract is bytes consumed, not bytes emitted: the escape is longer
-	// than what it replaces, and reporting that would look like a short write
-	// to every caller in the chain.
 	return len(p), nil
+}
+
+// writeFull writes all of buf and reports how many of its bytes landed.
+//
+// A writer that returns a short count with no error has dropped output without
+// saying so. The io.Writer contract forbids it, io.ErrShortWrite is the name
+// for it, and io.Copy makes the same substitution rather than take the count
+// at its word. Doing it here means the escaper cannot be the place a truncated
+// report becomes a successful one.
+func writeFull(w io.Writer, buf []byte) (int, error) {
+	n, err := w.Write(buf)
+	if err == nil && n < len(buf) {
+		err = io.ErrShortWrite
+	}
+	return n, err
 }

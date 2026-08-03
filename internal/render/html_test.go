@@ -2,7 +2,9 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -607,5 +609,83 @@ func TestHTMLEnvironmentAndStatusTags(t *testing.T) {
 		if !shipped[status] {
 			t.Errorf("demo data is missing a fixture with status %q", status)
 		}
+	}
+}
+
+// shortWriter fails after letting the first budget bytes through, either by
+// returning an error or — the nastier case — by returning a short count and
+// claiming success.
+type shortWriter struct {
+	budget int
+	err    error // nil means report the short count with no error
+	got    []byte
+}
+
+func (s *shortWriter) Write(p []byte) (int, error) {
+	if s.budget <= 0 {
+		return 0, s.err
+	}
+	n := min(len(p), s.budget)
+	s.got = append(s.got, p[:n]...)
+	s.budget -= n
+	if n < len(p) {
+		return n, s.err
+	}
+	return n, nil
+}
+
+// The count htmlSafeWriter returns on failure is the prefix of the input the
+// caller can stop worrying about. Returning zero instead would tell an upstream
+// encoder that nothing was written when most of a census may already be in the
+// file, and the natural response to that — write it again — would corrupt the
+// block rather than abandon it.
+func TestHTMLSafeWriterReportsInputBytesConsumedOnFailure(t *testing.T) {
+	boom := errors.New("disk full")
+	// "ab<cd" is five input bytes: two before the '<', the '<' itself at index
+	// 2 (six bytes once escaped), then two more.
+	const in = "ab<cd"
+
+	cases := []struct {
+		name    string
+		budget  int // bytes the downstream writer accepts before it fails
+		err     error
+		want    int
+		wantErr error
+	}{
+		{"fails on the first segment", 1, boom, 1, boom},
+		{"fails at the segment boundary", 0, boom, 0, boom},
+		{"fails on the escape", 2, boom, 2, boom},
+		{"fails part way through the escape", 4, boom, 2, boom},
+		{"fails on the trailing segment", 8, boom, 3, boom},
+		// A writer that reports a short count with no error has dropped output
+		// silently; the escaper must name that rather than pass the lie up.
+		{"short write with no error", 1, nil, 1, io.ErrShortWrite},
+		{"everything lands", 64, boom, len(in), nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sw := &shortWriter{budget: tc.budget, err: tc.err}
+			n, err := (&htmlSafeWriter{w: sw}).Write([]byte(in))
+
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("error = %v, want %v", err, tc.wantErr)
+			}
+			if n != tc.want {
+				t.Errorf("consumed %d bytes of %q, want %d", n, in, tc.want)
+			}
+			if n < 0 || n > len(in) {
+				t.Errorf("consumed count %d is outside 0..%d, which io.Writer forbids", n, len(in))
+			}
+			// Whatever the count claims was consumed must actually have gone
+			// downstream, escapes and all — a count ahead of the bytes is the
+			// same lie in the other direction. The reverse does not have to
+			// hold: half an escape can be downstream while the '<' it stands
+			// for is still uncounted, which is the whole reason the escape
+			// case stops the count short.
+			if want := strings.ReplaceAll(in[:n], "<", jsonLessThan); !strings.HasPrefix(string(sw.got), want) {
+				t.Errorf("count claims %q was written, but downstream only received %q", want, sw.got)
+			}
+		})
 	}
 }
