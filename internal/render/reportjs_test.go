@@ -50,14 +50,38 @@ func jsFunc(t *testing.T, name string) string {
 	return ""
 }
 
-// jsVar lifts a single-line "var NAME = ...;" declaration out of the template.
+// jsVar lifts a "var NAME = ...;" declaration out of the template, whether or
+// not it fits on one line: some of them are multi-line object literals, and
+// stopping at the first newline hands node an unterminated brace and a syntax
+// error pointing at whatever was concatenated next.
+//
+// The scan counts brackets and stops at the first semicolon outside them. Like
+// jsFunc's, it does not understand strings or comments — which holds because
+// these are small data declarations, and fails loudly rather than silently if
+// one ever isn't.
 func jsVar(t *testing.T, name string) string {
 	t.Helper()
+	prefix := "var " + name + " ="
+	pos := 0
 	for line := range strings.SplitSeq(reportTemplate, "\n") {
-		s := strings.TrimSpace(line)
-		if strings.HasPrefix(s, "var "+name+" =") {
-			return s
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			start := pos + strings.Index(line, prefix)
+			depth := 0
+			for i := start; i < len(reportTemplate); i++ {
+				switch reportTemplate[i] {
+				case '{', '[', '(':
+					depth++
+				case '}', ']', ')':
+					depth--
+				case ';':
+					if depth == 0 {
+						return reportTemplate[start : i+1]
+					}
+				}
+			}
+			t.Fatalf("var %s is never terminated", name)
 		}
+		pos += len(line) + 1
 	}
 	t.Fatalf("var %s not found in the report template", name)
 	return ""
@@ -90,19 +114,12 @@ func evalJSON(t *testing.T, script string, into any) {
 	}
 }
 
-// embeddedJSON returns the report's embedded data block.
-func embeddedJSON(t *testing.T, html string) string {
-	t.Helper()
-	_, rest, ok := strings.Cut(html, `<script type="application/json" id="blueprint-data">`)
-	if !ok {
-		t.Fatal("no embedded data block")
-	}
-	data, _, ok := strings.Cut(rest, "</script>")
-	if !ok {
-		t.Fatal("embedded data block is not closed")
-	}
-	return data
-}
+// The two fixture tests below read the census back out of a rendered report
+// with decodeDataBlock (payload_test.go) and then hand those rows to the
+// template's own JS. That is the point of running them against the artifact
+// rather than against demo.Snapshot directly: the rows the JS sees here have
+// been through the columnar encoding, so a field the encoder drops shows up as
+// a column the report declines to paint.
 
 // A byte count must render at its own scale. The predecessor of this code
 // rounded storage up to whole gigabytes, so every non-empty DynamoDB table
@@ -157,19 +174,16 @@ console.log(JSON.stringify(input.map(function (b) {
 // data the report actually ships, because the Redshift Serverless gap was
 // invisible until someone looked at a real workgroup row.
 func TestReportRendersEverySizingDimensionInFixture(t *testing.T) {
-	var snap model.Snapshot
-	if err := json.Unmarshal([]byte(embeddedJSON(t, renderDemo(t))), &snap); err != nil {
-		t.Fatalf("embedded data block is not valid JSON: %v", err)
-	}
+	shipped := decodeDataBlock(t, renderDemo(t))
 
 	// Which resources the report owes a Class, judged from the data alone.
 	type want struct {
 		name  string
 		sized bool
 	}
-	wants := make([]want, len(snap.Resources))
+	wants := make([]want, len(shipped))
 	sizedCount := 0
-	for i, r := range snap.Resources {
+	for i, r := range shipped {
 		_, hasRPU := r.Measures[model.MeasureBaseCapacityRPU]
 		wants[i] = want{
 			name: r.Name,
@@ -184,7 +198,7 @@ func TestReportRendersEverySizingDimensionInFixture(t *testing.T) {
 		t.Fatal("fixture reports no sizing dimension at all; this test proves nothing")
 	}
 
-	resources, err := json.Marshal(snap.Resources)
+	resources, err := json.Marshal(shipped)
 	if err != nil {
 		t.Fatalf("re-encoding resources: %v", err)
 	}
@@ -264,18 +278,15 @@ func TestReportPlatformReadsEveryServicesNameForIt(t *testing.T) {
 // platform the report then declines to show — the gap the Lambda rows fell into
 // when the column read "engine" alone.
 func TestReportRendersEveryPlatformInFixture(t *testing.T) {
-	var snap model.Snapshot
-	if err := json.Unmarshal([]byte(embeddedJSON(t, renderDemo(t))), &snap); err != nil {
-		t.Fatalf("embedded data block is not valid JSON: %v", err)
-	}
+	shipped := decodeDataBlock(t, renderDemo(t))
 
 	type want struct {
 		name     string
 		platform string
 	}
-	wants := make([]want, len(snap.Resources))
+	wants := make([]want, len(shipped))
 	runtimes := 0
-	for i, r := range snap.Resources {
+	for i, r := range shipped {
 		p := r.Attr(model.AttrEngine)
 		if p == "" {
 			p = r.Attr(model.AttrRuntime)
@@ -291,7 +302,7 @@ func TestReportRendersEveryPlatformInFixture(t *testing.T) {
 		t.Fatal("fixture reports no runtime at all; this test proves nothing")
 	}
 
-	resources, err := json.Marshal(snap.Resources)
+	resources, err := json.Marshal(shipped)
 	if err != nil {
 		t.Fatalf("re-encoding resources: %v", err)
 	}
@@ -891,30 +902,46 @@ func TestReportModelledWindowIsOnlyStatedWhenEveryFigureAgrees(t *testing.T) {
 	cases := []struct {
 		name      string
 		resources string // JSON
+		unread    bool   // COST.counted is false: nobody has read these rows
 		want      string // JSON: the window, or null
 	}{
-		{"one window", `[{"costs":[` + a + `]},{"costs":[` + a + `]}]`,
+		{"one window", `[{"costs":[` + a + `]},{"costs":[` + a + `]}]`, false,
 			`{"from":"2026-06-01T00:00:00Z","to":"2026-07-01T00:00:00Z"}`},
-		{"a mixture states none", `[{"costs":[` + a + `]},{"costs":[` + b + `]}]`, "null"},
-		{"another source's window is not borrowed", `[{"costs":[` + ce + `]}]`, "null"},
-		{"figures with no window at all", `[{"costs":[` + bare + `]}]`, "null"},
-		{"one dated and one bare still disagree", `[{"costs":[` + a + `]},{"costs":[` + bare + `]}]`, "null"},
+		{"a mixture states none", `[{"costs":[` + a + `]},{"costs":[` + b + `]}]`, false, "null"},
+		{"another source's window is not borrowed", `[{"costs":[` + ce + `]}]`, false, "null"},
+		{"figures with no window at all", `[{"costs":[` + bare + `]}]`, false, "null"},
+		{"one dated and one bare still disagree", `[{"costs":[` + a + `]},{"costs":[` + bare + `]}]`, false, "null"},
 		// Half a window is not a window. Joining the two ends into one key hides
 		// this: "|2026-07-01T00:00:00Z" is a perfectly good key that no other
 		// figure matches, so a lone half-placed figure passed as agreement and
 		// rendered "from  up to 2026-07-01 UTC" — a stated end with an origin
 		// the source never gave. Go's sharedWindow bails on either end being nil.
-		{"an end with no start", `[{"costs":[` + toOnly + `]}]`, "null"},
-		{"a start with no end", `[{"costs":[` + fromOnly + `]}]`, "null"},
+		{"an end with no start", `[{"costs":[` + toOnly + `]}]`, false, "null"},
+		{"a start with no end", `[{"costs":[` + fromOnly + `]}]`, false, "null"},
 		{"a half-placed figure spoils an otherwise agreed window",
-			`[{"costs":[` + a + `]},{"costs":[` + toOnly + `]}]`, "null"},
-		{"nothing priced", `[{"costs":[]},{}]`, "null"},
+			`[{"costs":[` + a + `]},{"costs":[` + toOnly + `]}]`, false, "null"},
+		{"nothing priced", `[{"costs":[]},{}]`, false, "null"},
+
+		// The window is a fact about rows, and the panels that print it now run
+		// at boot, before any row exists, and again from failCensus. There are
+		// two decode failures and only one of them clears the rows: the
+		// continuation assigns resources before it checks their number against
+		// the summary's, so a census that contradicts its own summary arrives at
+		// failCensus fully populated and perfectly foldable. Folding it would
+		// stamp a census-derived window onto the panel directly under a banner
+		// that says the inventory could not be read and the trail beneath it
+		// "comes from the report's metadata, which read fine" — and it would do
+		// it on one of the two failures, which is worse than on both.
+		{"an unread census states no window, however well its rows agree",
+			`[{"costs":[` + a + `]},{"costs":[` + a + `]}]`, true, "null"},
+		{"nor at boot, before the rows are there at all", "null", true, "null"},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			script := strings.Join([]string{
 				"var resources = " + c.resources + ";",
+				"var COST = { counted: " + strconv.FormatBool(!c.unread) + " };",
 				jsFunc(t, "methodWindow"),
 				`console.log(JSON.stringify(methodWindow("coh")));`,
 			}, "\n")
@@ -1804,5 +1831,510 @@ func TestReportCoverageTitleDoesNotBorrowTheWordForCostRecordCaveats(t *testing.
 	if !strings.Contains(reportTemplate, `plural(COST.caveated, "figure")`) {
 		t.Error("the † lower-bound line no longer counts a cost record's caveats; " +
 			"the banner title gave up the word for it")
+	}
+}
+
+// The decoder in report.html.tmpl is the only one a reader ever runs, and
+// until now nothing ran it. payload_test.go's Go decoder is a deliberate
+// second implementation written from the wire format, which proves the encoder
+// is decodable — not that the shipped JS decodes it. This runs the real thing:
+// the census block out of a rendered report, through the template's own
+// readTable under node, compared against the Go decode of the same bytes.
+func TestReportJSDecoderMatchesGoDecoder(t *testing.T) {
+	page := renderDemo(t)
+	want := decodeDataBlock(t, page)
+	if len(want) == 0 {
+		t.Fatal("the fixture census is empty; this test proves nothing")
+	}
+
+	script := strings.Join([]string{
+		jsVar(t, "COL_TAG"),
+		jsVar(t, "COL_ATTR"),
+		jsFunc(t, "targetOf"),
+		jsFunc(t, "readTable"),
+		"console.log(JSON.stringify(readTable(" + string(dataBlockJSON(t, page)) + ")));",
+	}, "\n")
+
+	var got []model.Resource
+	evalJSON(t, script, &got)
+	assertResourcesEqual(t, want, got)
+}
+
+// A tag key of "__proto__" is legal in AWS and hostile in JavaScript: assigning
+// it to an ordinary object runs the prototype setter and stores nothing, so the
+// tag would disappear between the encoder and the page. Nothing a service
+// reported may go missing on the way to the reader, whatever it is named.
+func TestReportJSDecoderKeepsHostileTagKeys(t *testing.T) {
+	r := model.Resource{
+		ARN: "arn:aws:rds:us-east-1:111122223333:db:hostile", Service: "rds",
+		Name: "hostile", Type: "AWS::RDS::DBInstance", Region: "us-east-1",
+		AccountID: "111122223333",
+	}
+	r.Tags = map[string]string{"__proto__": "prod-owner", "constructor": "team-a", "Name": "hostile"}
+	r.SetAttr("__proto__", "engine-x")
+
+	table, err := buildTable([]model.Resource{r})
+	if err != nil {
+		t.Fatalf("buildTable: %v", err)
+	}
+	wire, err := json.Marshal(table)
+	if err != nil {
+		t.Fatalf("marshal table: %v", err)
+	}
+
+	script := strings.Join([]string{
+		jsVar(t, "COL_TAG"),
+		jsVar(t, "COL_ATTR"),
+		jsFunc(t, "targetOf"),
+		jsFunc(t, "readTable"),
+		// The bags go to JSON.stringify as they are. Copying them first with
+		// Object.assign would not do: it assigns rather than defines, so it
+		// re-runs the prototype setter and loses the key all over again — which
+		// is worth knowing, because the same trap is one refactor away from any
+		// code downstream that decides to clone a bag.
+		"var rows = readTable(" + string(wire) + ");",
+		"console.log(JSON.stringify(rows.map(function (row) {",
+		"  return { tags: row.tags, attributes: row.attributes };",
+		"})));",
+	}, "\n")
+
+	var got []struct {
+		Tags       map[string]string `json:"tags"`
+		Attributes map[string]string `json:"attributes"`
+	}
+	evalJSON(t, script, &got)
+	if len(got) != 1 {
+		t.Fatalf("decoded %d rows, want 1", len(got))
+	}
+	for key, want := range r.Tags {
+		if got[0].Tags[key] != want {
+			t.Errorf("tag %q decoded as %q, want %q", key, got[0].Tags[key], want)
+		}
+	}
+	if got[0].Attributes["__proto__"] != "engine-x" {
+		t.Errorf("attribute %q decoded as %q, want %q", "__proto__", got[0].Attributes["__proto__"], "engine-x")
+	}
+}
+
+// The wire format is agreed between Go and a copy of its constants written out
+// in JavaScript, and nothing but this test connects the two. Bumping
+// payloadWire without bumping WIRE ships a report that refuses to open itself;
+// renaming an encoding or a column prefix on one side alone ships one that
+// decodes to an empty census. Both are silent — the Go tests keep passing,
+// because they compare the encoder against a Go decoder that moved with it.
+func TestReportJSWireConstantsMatchGo(t *testing.T) {
+	script := strings.Join([]string{
+		jsVar(t, "WIRE"),
+		jsVar(t, "ENCODING_JSON"),
+		jsVar(t, "ENCODING_GZIP"),
+		jsVar(t, "COL_TAG"),
+		jsVar(t, "COL_ATTR"),
+		`console.log(JSON.stringify({wire: WIRE, json: ENCODING_JSON,` +
+			` gzip: ENCODING_GZIP, tag: COL_TAG, attr: COL_ATTR}));`,
+	}, "\n")
+
+	var got struct {
+		Wire int    `json:"wire"`
+		JSON string `json:"json"`
+		Gzip string `json:"gzip"`
+		Tag  string `json:"tag"`
+		Attr string `json:"attr"`
+	}
+	evalJSON(t, script, &got)
+
+	for _, c := range []struct {
+		name    string
+		js, api any
+	}{
+		{"WIRE / payloadWire", got.Wire, payloadWire},
+		{"ENCODING_JSON / encodingJSON", got.JSON, encodingJSON},
+		{"ENCODING_GZIP / encodingGzip", got.Gzip, encodingGzip},
+		{"COL_TAG / colTagPrefix", got.Tag, colTagPrefix},
+		{"COL_ATTR / colAttrPrefix", got.Attr, colAttrPrefix},
+	} {
+		if c.js != c.api {
+			t.Errorf("%s disagree: the page reads %v, Go writes %v", c.name, c.js, c.api)
+		}
+	}
+}
+
+// groupHeaderShim is the DOM appendGroupCost touches — el and a button — as
+// plain objects, so the assertion lands on the text a reader sees.
+const groupHeaderShim = `
+var document = { createElement: function (tag) {
+  return { tag: tag, className: "", textContent: "", title: "",
+           children: [], appendChild: function (c) { this.children.push(c); } };
+} };
+function text(n) {
+  return (n.textContent || "") + n.children.map(text).join(" ");
+}
+function titles(n) {
+  return [n.title || ""].concat(n.children.map(titles)).join(" ");
+}`
+
+// groupHeader runs appendGroupCost against one summary entry with the source
+// selector set to (method, currency), and returns the header's text and the
+// concatenation of its tooltips.
+func groupHeader(t *testing.T, method, currency, spend string) (string, string) {
+	t.Helper()
+	script := strings.Join([]string{
+		groupHeaderShim,
+		jsVar(t, "COST"),
+		jsVar(t, "METHOD_LABELS"),
+		jsVar(t, "COST_METHODS"),
+		jsFunc(t, "methodLabel"),
+		jsFunc(t, "el"),
+		jsFunc(t, "groupBucket"),
+		jsFunc(t, "appendGroupCost"),
+		`COST.method = ` + strconv.Quote(method) + `;`,
+		`COST.currency = ` + strconv.Quote(currency) + `;`,
+		`var btn = document.createElement("button");`,
+		`appendGroupCost(btn, ` + spend + `);`,
+		`console.log(JSON.stringify([text(btn), titles(btn)]));`,
+	}, "\n")
+
+	var got []string
+	evalJSON(t, script, &got)
+	if len(got) != 2 {
+		t.Fatalf("harness returned %d values, want 2", len(got))
+	}
+	return got[0], got[1]
+}
+
+// A group header prints the group's whole membership next to a total summed
+// over only the members something priced. Where those differ the header has to
+// say which fraction it is, because the count and the total read as one
+// sentence and that sentence would otherwise be false: the fixture's
+// 111111111111 account is 73 resources of which Cost Explorer priced 22, and
+// "73 resources · 4425.52 USD" states the other 51 cost nothing.
+//
+// The Go side of this is TestBuildGroupsCountsEveryMemberNotOnlyThePricedOnes;
+// this is the half that puts it on the page.
+func TestReportGroupHeaderDisclosesPartialCostCoverage(t *testing.T) {
+	cases := []struct {
+		name     string
+		spend    string
+		want     string // substring the header must carry
+		wantSeen bool
+	}{
+		{
+			name:     "partial coverage is disclosed",
+			spend:    `{costs: [{method: "ce", currency: "USD", amount: "4425.52", priced: 22}], priced: 22, total: 73}`,
+			want:     "over 22 of 73",
+			wantSeen: true,
+		},
+		{
+			name:     "full coverage says nothing extra",
+			spend:    `{costs: [{method: "ce", currency: "USD", amount: "36.28", priced: 12}], priced: 12, total: 12}`,
+			want:     "over ",
+			wantSeen: false,
+		},
+		{
+			// The count that matters is the printed bucket's, not the group's.
+			// Ten of these twelve have a Cost Optimization Hub estimate, so the
+			// group's own priced count is 12 — but the total on screen is Cost
+			// Explorer's, and Cost Explorer reached two of them. Reading the
+			// group's count here would suppress the disclosure on a total
+			// covering a sixth of what it is printed beside.
+			name: "the fraction is the printed bucket's reach, not the group's",
+			spend: `{costs: [{method: "ce", currency: "USD", amount: "40.00", priced: 2},` +
+				`{method: "coh", currency: "USD", amount: "900.00", priced: 10}], priced: 12, total: 12}`,
+			want:     "over 2 of 12",
+			wantSeen: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := groupHeader(t, "ce", "USD", tc.spend)
+
+			if seen := strings.Contains(got, tc.want); seen != tc.wantSeen {
+				t.Errorf("header text %q: contains %q = %v, want %v",
+					got, tc.want, seen, tc.wantSeen)
+			}
+			// The total itself must still be there either way. A disclosure
+			// that swallowed the figure would pass the check above.
+			if !strings.Contains(got, "USD") {
+				t.Errorf("header text %q lost its total", got)
+			}
+		})
+	}
+}
+
+// The header prints one total: the one from the source the reader selected.
+//
+// A group carries a total per (method, currency) pair its members were priced
+// in, and the page has exactly one cost axis. Printing every pair at once sets
+// a billed Cost Explorer window total beside a modelled Cost Optimization Hub
+// monthly rate — same currency suffix, joined by a middot — which is the
+// cross-method ranking the rest of the report refuses to do, performed where
+// the eye lands first. Worse, it does not move when the source selector does,
+// so a header can print money from Cost Explorer over a column of Cost
+// Optimization Hub figures, or over a column of "—".
+func TestReportGroupHeaderPrintsOnlyTheSelectedSource(t *testing.T) {
+	// One group, priced by both sources: 14 days of billed spend and a
+	// modelled monthly rate, which are not comparable and must never share a
+	// line.
+	const spend = `{costs: [` +
+		`{method: "ce", currency: "USD", amount: "5140.80", priced: 6},` +
+		`{method: "coh", currency: "USD", amount: "10360.00", priced: 4}` +
+		`], priced: 6, total: 6}`
+
+	ce, _ := groupHeader(t, "ce", "USD", spend)
+	coh, _ := groupHeader(t, "coh", "USD", spend)
+
+	if !strings.Contains(ce, "5140.80") {
+		t.Errorf("Cost Explorer header %q does not print the Cost Explorer total", ce)
+	}
+	if strings.Contains(ce, "10360.00") {
+		t.Errorf("Cost Explorer header %q also prints the Cost Optimization Hub "+
+			"total: a billed window total and a modelled monthly rate on one line "+
+			"is the comparison this report exists to refuse", ce)
+	}
+	if !strings.Contains(coh, "10360.00") {
+		t.Errorf("Cost Optimization Hub header %q does not print its own total: "+
+			"the header is stranded on whichever bucket the summary listed first", coh)
+	}
+	if strings.Contains(coh, "5140.80") {
+		t.Errorf("Cost Optimization Hub header %q still prints the Cost Explorer total", coh)
+	}
+
+	// Each source discloses its own reach. Six of six under Cost Explorer is
+	// full coverage and says nothing; four of six under the Hub is not.
+	if strings.Contains(ce, "over ") {
+		t.Errorf("Cost Explorer header %q discloses partial coverage over 6 of 6", ce)
+	}
+	if !strings.Contains(coh, "over 4 of 6") {
+		t.Errorf("Cost Optimization Hub header %q does not disclose that its total "+
+			"covers 4 of the group's 6 members", coh)
+	}
+}
+
+// A group the selected source never priced has no total to print. Printing
+// nothing is not an option: a blank header among headers carrying figures reads
+// as free, and the group is not free — it is unpriced by the source on screen.
+// Printing the other source's figure is worse, and printing zero is a number
+// nobody reported.
+func TestReportGroupHeaderSaysWhenTheSelectedSourcePricedNothing(t *testing.T) {
+	// The demo census's natgateway group: Cost Optimization Hub modelled it,
+	// Cost Explorer never reported it, and under Cost Explorer it sat above
+	// four rows of "—" printing 131.40 USD.
+	const spend = `{costs: [{method: "coh", currency: "USD", amount: "131.40", priced: 4}], priced: 4, total: 4}`
+
+	got, tips := groupHeader(t, "ce", "USD", spend)
+
+	if strings.Contains(got, "131.40") {
+		t.Errorf("header %q prints a Cost Optimization Hub total while Cost "+
+			"Explorer is the selected source", got)
+	}
+	if !strings.Contains(got, "no Cost Explorer figure") {
+		t.Errorf("header %q says nothing: an empty header beside headers that "+
+			"carry totals reads as free", got)
+	}
+	// And it must point at the way out, since the figure does exist.
+	if !strings.Contains(tips, "switch source") {
+		t.Errorf("tooltips %q do not mention that another source may have priced "+
+			"this group", tips)
+	}
+
+	// A currency the reader did not select is just as absent: two totals in
+	// two currencies may not be summed, so the unselected one is not this
+	// group's total either.
+	other, _ := groupHeader(t, "coh", "EUR", spend)
+	if strings.Contains(other, "131.40") {
+		t.Errorf("header %q prints a USD total under a EUR selection", other)
+	}
+}
+
+// A group *nothing* priced is the other way to have no figure, and it used to
+// be the silent one: appendGroupCost returned early on a missing summary entry
+// and appended no slot at all.
+//
+// On its own that was defensible — it is what the report did before there was a
+// source selector, and back then a blank header meant one thing. Adding the
+// selector added a second no-figure state, which the header labels; leaving the
+// first blank makes the two contradict each other on the same screen. In the
+// 6000-resource fixture that is twelve service headers printing nothing beside
+// two printing money, while dynamodb — in the identical epistemic position, no
+// figure from the selected source — reads "no Cost Optimization Hub figure".
+// Whatever the header says about an unpriced group, it has to say it the same
+// way both times, or the blank ones read as free.
+//
+// The tooltip is where the two part company, because only the tooltip can
+// afford to: telling a reader to switch source is help when the figure exists
+// somewhere in the file and a wild goose chase when it does not.
+func TestReportGroupHeaderSaysWhenNothingPricedTheGroupAtAll(t *testing.T) {
+	// No summary entry: Go attributed no spend to this group under any source
+	// or currency, so there is no bucket to select and none to fall back to.
+	got, tips := groupHeader(t, "ce", "USD", "null")
+
+	if !strings.Contains(got, "no Cost Explorer figure") {
+		t.Errorf("header %q is blank: a header with no cost slot, sitting among "+
+			"headers that carry one, reads as a group that costs nothing", got)
+	}
+	if strings.Contains(tips, "switch source") {
+		t.Errorf("tooltips %q send the reader to another source for a figure no "+
+			"source in this report produced", tips)
+	}
+	if !strings.Contains(tips, "no source in this report priced") {
+		t.Errorf("tooltips %q do not say why the figure is missing", tips)
+	}
+
+	// And it must not invent one. Zero is a number a source reported; nobody
+	// reported anything here.
+	for _, no := range []string{"0.00", "0 ", "over "} {
+		if strings.Contains(got, no) {
+			t.Errorf("header %q contains %q: an unpriced group has no total and no "+
+				"coverage fraction", got, no)
+		}
+	}
+}
+
+// Whether a group header carries a cost slot at all is a property of the
+// grouping, not of the group: either this dimension is one the report can talk
+// about money in, and every header speaks — some with a total, some to say they
+// have none — or it is not, and none of them do.
+//
+// The distinction the flag exists to keep is between "no figure" and "no
+// question". Go writes a summary entry only for a group something priced, so a
+// missing entry inside a priced dimension means the reader is looking at a
+// group its neighbours' figures leave out, which is the header's job to say.
+// A dimension Go priced nowhere is the other case: no header has a figure, a
+// blank one contrasts with nothing, and stamping "no Cost Explorer figure" onto
+// all fourteen of them is the coverage banner restated fourteen times.
+func TestReportGroupSlotIsAPropertyOfTheDimensionNotTheGroup(t *testing.T) {
+	// Two services, one of which Go priced. Both must come back with a slot.
+	const priced = `{groups: {service: [
+    {value: "rds", costs: [{method: "ce", currency: "USD", amount: "12.00", priced: 1}], priced: 1, total: 1}
+  ]}}`
+	// The same census under a dimension nothing was attributed to. Go drops a
+	// dimension entirely when no group in it carries a total, so this is what
+	// grouping by region looks like on a report whose costs are per service.
+	const unpriced = `{groups: {service: []}}`
+
+	type group struct {
+		Group string `json:"_group"`
+		Slot  bool   `json:"_costSlot"`
+		Spend *struct {
+			Total int `json:"total"`
+		} `json:"_spend"`
+	}
+
+	run := func(t *testing.T, summary, filter string) []group {
+		t.Helper()
+		script := strings.Join([]string{
+			"var summary = " + summary + ";",
+			"var costIndexCache = Object.create(null);",
+			"var openByDim = Object.create(null);",
+			"var activeTier = null, activeService = null;",
+			"var filterEl = { value: " + strconv.Quote(filter) + " };",
+			"function defaultOpen() { return false; }",
+			// Deliberately false, and the slot must appear anyway. COST.active
+			// is the nearby flag that means "the selected source priced nothing
+			// in this census", which is a state the header exists to report, not
+			// a reason to fall silent; gating the slot on it would blank every
+			// header on exactly the report that most needs them labelled.
+			`var COST = { active: false, method: "ce", currency: "USD" };`,
+			jsVar(t, "GROUP_FIELD"),
+			jsFunc(t, "costIndex"),
+			jsFunc(t, "filterActive"),
+			jsFunc(t, "isOpen"),
+			jsFunc(t, "flatten"),
+			`var rows = [{service: "rds"}, {service: "sqs"}];`,
+			`console.log(JSON.stringify(flatten(rows, "service")));`,
+		}, "\n")
+		var got []group
+		evalJSON(t, script, &got)
+		return got
+	}
+
+	t.Run("a priced dimension gives every group a slot", func(t *testing.T) {
+		got := run(t, priced, "")
+		if len(got) != 2 {
+			t.Fatalf("flatten returned %d groups, want 2: %+v", len(got), got)
+		}
+		for _, g := range got {
+			if !g.Slot {
+				t.Errorf("group %q carries no cost slot; it will render blank beside "+
+					"a sibling that prints money, which reads as free rather than "+
+					"as unpriced", g.Group)
+			}
+		}
+		// And the slot still reports the truth about each one: rds has Go's
+		// entry, sqs has none and must not borrow its neighbour's.
+		for _, g := range got {
+			if (g.Group == "rds") != (g.Spend != nil) {
+				t.Errorf("group %q spend = %+v; want the entry only for rds", g.Group, g.Spend)
+			}
+		}
+	})
+
+	t.Run("an unpriced dimension gives none of them one", func(t *testing.T) {
+		for _, g := range run(t, unpriced, "") {
+			if g.Slot {
+				t.Errorf("group %q claims a cost slot in a dimension no source "+
+					"priced: every header would say the same nothing", g.Group)
+			}
+		}
+	})
+
+	// A filtered table's group totals cover rows that are not on screen, so the
+	// slot goes away with the same reasoning — and it must go away for the
+	// priced groups too, not just the ones without an entry.
+	t.Run("a filtered table shows no group totals", func(t *testing.T) {
+		for _, g := range run(t, priced, "rds") {
+			if g.Slot || g.Spend != nil {
+				t.Errorf("group %q kept its cost slot under a filter: the total is "+
+					"the whole group's, and the group is not what is on screen", g.Group)
+			}
+		}
+	})
+}
+
+// compareGroupCost ranks group headers, and it reads the totals off the summary
+// entry Go writes. It used to be handed a bare costs array; it is now handed the
+// whole entry, because the entry is what carries the coverage counts that decide
+// whether ranking is allowed at all. A stale caller would read undefined off
+// every group and sort the table into census order without saying so.
+func TestReportCompareGroupCostReadsTheSummaryEntry(t *testing.T) {
+	entry := func(amount string) string {
+		return `{costs: [{method: "ce", currency: "USD", amount: "` + amount +
+			`", priced: 1}], priced: 1, total: 1}`
+	}
+	script := strings.Join([]string{
+		jsVar(t, "COST"),
+		jsFunc(t, "groupBucket"),
+		jsFunc(t, "compareGroupCost"),
+		jsFunc(t, "compareDecimal"),
+		jsFunc(t, "compareMagnitude"),
+		`COST.method = "ce"; COST.currency = "USD";`,
+		`console.log(JSON.stringify([`,
+		`  compareGroupCost(` + entry("100.00") + `, ` + entry("90.00") + `),`,
+		`  compareGroupCost(` + entry("90.00") + `, ` + entry("100.00") + `),`,
+		`  compareGroupCost(` + entry("10.50") + `, ` + entry("10.50") + `),`,
+		// A group whose figures all failed to parse carries no total, and must
+		// not be ordered as though it were the cheapest thing in the census.
+		`  compareGroupCost({costs: [], priced: 0, total: 4}, ` + entry("1.00") + `),`,
+		// A group only the other source priced is unpriced here. Ranking it on
+		// a Cost Optimization Hub estimate would put a modelled monthly rate in
+		// an ordering of billed windows, and would order the headers by a
+		// figure none of them is printing.
+		`  compareGroupCost({costs: [{method: "coh", currency: "USD", amount: "9000.00", priced: 3}],` +
+			` priced: 3, total: 3}, ` + entry("1.00") + `)`,
+		`]));`,
+	}, "\n")
+
+	var got []int
+	evalJSON(t, script, &got)
+
+	want := []int{1, -1, 0, -1, -1}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("comparison %d = %d, want %d; the comparator is not reading "+
+				"amounts off the summary entry", i, got[i], w)
+		}
 	}
 }

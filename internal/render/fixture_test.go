@@ -76,6 +76,18 @@ func demoCostSnapshot(version string) *model.Snapshot {
 	return snap
 }
 
+// demoCostSnapshotN is the scaled fixture priced, which is the combination the
+// size budget cares about: the cost overlay puts a decimal string and a method
+// on every row, and per-row weight is the only thing that scales.
+func demoCostSnapshotN(version string, n int) *model.Snapshot {
+	snap := demo.SnapshotN(version, n)
+	snap.Cost = demo.CostReport()
+	demo.AddResourceCosts(snap)
+	demo.AddResourceCostOverlay(snap)
+	snap.FinalizeAt(budgetClock)
+	return snap
+}
+
 // The pin is only worth having if something notices when it stops working, and
 // until this test nothing in this package did. Breaking the seam in
 // model.FinalizeAt — having it read the wall clock and ignore the instant it is
