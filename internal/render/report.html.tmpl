@@ -7,7 +7,25 @@
 <title>blueprint report</title>
 <style>
   /* blueprint report — dark, single file, no external resources:
-     font-family names only, everything inline. */
+     font-family names only, everything inline.
+
+     Two rules govern this file, both enforced by internal/render/html_test.go,
+     and both by scanning the finished page for literal text. That matters when
+     writing comments here: the scan cannot tell a note about a forbidden
+     construct from the construct itself, so this one describes them without
+     spelling any of them out. The list itself lives in html_test.go.
+
+     1. Nothing loads from off the machine. No stylesheet or script may be
+        pulled in by reference, in markup or from CSS, and the one href in the
+        page points at the project's own repository. Everything the report
+        needs is inline, because it is opened from disk, offline, by someone
+        who may have no reason to trust an outbound request.
+
+     2. No HTML comments, anywhere. The sequence that opens one — like the one
+        that closes a script tag — ends the HTML parser's script-data state,
+        and either would let census content escape into markup. The template
+        writes its notes as CSS comments (here) and JavaScript comments
+        (below) instead. */
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -236,12 +254,21 @@
     background: rgba(247, 247, 247, 0.02);
     border: 1px solid rgba(247, 247, 247, 0.08);
     border-radius: 10px;
-    overflow-x: auto;
+    overflow: auto;
+    max-height: 72vh;
   }
-  table { width: 100%; border-collapse: collapse; }
+  /* The table body is virtualized, so the scroll container is the wrap rather
+     than the page: the script needs one element whose scrollTop maps to a row
+     offset. border-spacing over border-collapse because collapsed borders
+     vanish under a sticky header. */
+  table { width: 100%; border-collapse: separate; border-spacing: 0; }
   thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     text-align: left;
     padding: 0;
+    background: #101010;
     border-bottom: 1px solid rgba(247, 247, 247, 0.1);
     white-space: nowrap;
   }
@@ -271,18 +298,58 @@
     color: rgba(247, 247, 247, 0.75);
     white-space: nowrap;
   }
-  tbody td .sub { display: block; margin-top: 1px; }
-  tbody tr:last-child td { border-bottom: none; }
+  /* Sub-labels sit inline, not on a second line. Virtualization positions rows
+     by arithmetic, which needs every data row to be the same height; letting
+     one cell wrap to two lines would put every row below it in the wrong
+     place. Cells are nowrap and .table-wrap scrolls horizontally, so nothing
+     is hidden by the change — the row just gets wider. */
+  tbody td .sub { margin-left: 6px; }
   tbody tr:hover td { background: rgba(247, 247, 247, 0.03); }
   tbody tr.group-row td {
     background: rgba(247, 247, 247, 0.045);
     font-weight: 600;
     font-size: 12px;
     color: #F7F7F7;
-    padding: 8px 10px;
+    padding: 0;
   }
-  tbody tr.group-row:hover td { background: rgba(247, 247, 247, 0.045); }
-  .group-count { color: rgba(247, 247, 247, 0.45); font-weight: 400; margin-left: 8px; }
+  tbody tr.group-row:hover td { background: rgba(247, 247, 247, 0.06); }
+  .group-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 10px;
+    background: none;
+    border: none;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: #F7F7F7;
+    text-align: left;
+    cursor: pointer;
+  }
+  .group-caret {
+    display: inline-block;
+    width: 9px;
+    font-size: 9px;
+    color: rgba(247, 247, 247, 0.45);
+  }
+  .group-count { color: rgba(247, 247, 247, 0.45); font-weight: 400; }
+  .group-cost { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .group-cost .sub { margin-left: 5px; }
+  /* The covered fraction rides with the total rather than under it: the two are
+     one statement, and a total that outruns its qualifier for even a line has
+     already been read as the whole group's. */
+  .group-partial {
+    margin-left: 6px;
+    color: rgba(247, 247, 247, 0.45);
+    font-weight: 400;
+    font-size: 11px;
+  }
+  /* Spacer rows stand in for the rows scrolled out of view. They must
+     contribute their exact height and nothing else. */
+  tbody tr.spacer td { padding: 0; border: none; background: none; }
+  tbody tr.spacer:hover td { background: none; }
   td.mono, .mono {
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
@@ -433,7 +500,7 @@
         </select>
       </label>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap" id="table-wrap">
       <table id="census">
         <thead><tr id="head-row"></tr></thead>
         <tbody id="rows"></tbody>
@@ -441,40 +508,71 @@
     </div>
   </section>
 
+  <section id="decode-error" class="rr-section empty" hidden>
+    <h2>This browser cannot open the inventory</h2>
+    <p id="decode-error-msg"></p>
+  </section>
+
   <footer class="rr-foot">generated locally by blueprint &mdash; open source: <a href="https://github.com/hoophq/blueprint" target="_blank" rel="noreferrer">github.com/hoophq/blueprint</a> &middot; nothing leaves your machine</footer>
 
 </div>
 
-<script type="application/json" id="blueprint-data">__BLUEPRINT_JSON__</script>
+<script type="application/json" id="blueprint-meta">__BLUEPRINT_META__</script>
+<script type="application/json" id="blueprint-data">__BLUEPRINT_DATA__</script>
 <script>
 (function () {
   "use strict";
 
-  var data = JSON.parse(document.getElementById("blueprint-data").textContent);
-  var resources = data.resources || [];
-  var failures = data.failures || [];
+  // The page arrives in two blocks.
+  //
+  // The meta block is small and always plain JSON: scan metadata, the failure
+  // ledger, the cost rollups, and a summary Go already folded over the whole
+  // census. Everything above the inventory table is painted from it, straight
+  // away, without the browser looking at a single resource.
+  //
+  // The census block is the resources, transposed into columns and — past a
+  // few thousand of them — gzipped and base64'd, because a census that would
+  // be twenty megabytes of row JSON is a few hundred kilobytes this way.
+  // Unpacking it needs DecompressionStream, so it is asynchronous and it can
+  // fail on an old browser; that is why nothing above the table depends on it.
+  var WIRE = 1;
+  var ENCODING_JSON = "json";
+  var ENCODING_GZIP = "gzip+base64";
+  var meta = JSON.parse(document.getElementById("blueprint-meta").textContent);
+  var summary = meta.summary || {};
+  var failures = meta.failures || [];
+  var total = summary.total || 0;
+
+  // resources stays null until the census block is decoded. Every table
+  // function checks it, so a click that lands during the decode does nothing
+  // instead of throwing.
+  var resources = null;
 
   // Attribution tiers: ownership hygiene computed from owner/environment tags.
   // Ordered as they appear in the stacked attribution bar and its legend.
   var TIERS = [
-    { key: "full", label: "Fully attributed", color: "#4fb477", count: 0 },
-    { key: "partial", label: "Partially attributed", color: "#e6a23c", count: 0 },
-    { key: "untagged", label: "Untagged", color: "#e5484d", count: 0 }
+    { key: "full", label: "Fully attributed", color: "#4fb477", count: summary.full || 0 },
+    { key: "partial", label: "Partially attributed", color: "#e6a23c", count: summary.partial || 0 },
+    { key: "untagged", label: "Untagged", color: "#e5484d", count: summary.untagged || 0 }
   ];
   var TIER_BY_KEY = {};
   TIERS.forEach(function (t) { TIER_BY_KEY[t.key] = t; });
 
-  // Categorical service palette tuned for the #0c0c0c page.
-  var SERVICE_COLORS = {
-    rds: "#5a9cf8",
-    aurora: "#8b7cf6",
-    documentdb: "#4fb477",
-    neptune: "#38bdf8",
-    dynamodb: "#e6a23c",
-    elasticache: "#e5484d",
-    redshift: "#f472b6"
-  };
+  // Service colors are derived from the name rather than looked up in a table.
+  // A fixed palette covered the seven services this report started with; a
+  // total census reaches dozens, so most rows fell through to one grey and
+  // every new service arrived unpainted. Hashing the name gives every service
+  // a color, the same color in every report and every scan, with nothing to
+  // maintain. Saturation and lightness are fixed so all of them stay legible
+  // on the near-black page. A resource with no service name keeps the neutral
+  // grey rather than being assigned a color that would look meaningful.
   var SERVICE_FALLBACK = "rgba(247,247,247,0.35)";
+  function hashColor(name) {
+    if (!name) return SERVICE_FALLBACK;
+    var h = 0;
+    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return "hsl(" + (h % 360) + ", 62%, 62%)";
+  }
 
   function tierOf(r) {
     if (r.owner && r.environment) return "full";
@@ -538,23 +636,206 @@
     return r.publicly_accessible === true || r.encrypted === false || r._backup === 0;
   }
 
-  // Precompute the tier, the bag lookups every renderer needs, and one
-  // lowercase haystack per row for the filter. Doing the bag reads once here
-  // keeps the rest of the report reading plain fields.
-  resources.forEach(function (r) {
-    r._tier = tierOf(r);
-    TIER_BY_KEY[r._tier].count++;
+  // ---- Census block ---------------------------------------------------------
+  //
+  // The resources arrive transposed: one array per field rather than one object
+  // per resource, with each column's repeated strings pulled into a dictionary
+  // and referenced by index. A census is mostly the same values over and over —
+  // the same dozen regions, the same handful of instance classes, the same
+  // "arn:aws:ec2" fifty thousand times — so storing each once and pointing at
+  // it is where most of the saving comes from, before compression even runs.
+  //
+  // readTable puts the rows back together. Everything downstream sees the same
+  // row objects, bags and all, that the report has always used, so nothing else
+  // on the page knows the wire format exists.
 
-    r._engine = platformOf(r);
-    r._engineVersion = attr(r, "engine_version");
-    r._class = classOf(r);
-    r._sizeBytes = measure(r, "size_bytes");
-    r._sizeAsOf = attr(r, "size_bytes_as_of");
-    r._backup = measure(r, "backup_retention_days");
-    // "AWS::RDS::DBCluster" → "DBCluster": the CloudFormation type without the
-    // provider/service prefix already shown in the Service column.
-    r._typeShort = String(r.type || "").split("::").pop();
+  // decodeCensus unpacks the census block.
+  //
+  // Below a few thousand resources the block is plain JSON and this is a parse.
+  // Above that it is gzip, base64'd so it can sit inside the page, and unpacked
+  // with DecompressionStream — a browser built-in, because this report loads
+  // nothing and ships no libraries. That makes the decode asynchronous, and on
+  // a browser older than about 2023 it makes it impossible. Both are why
+  // nothing above the table waits for it.
+  function decodeCensus() {
+    if (meta.wire !== WIRE) {
+      return Promise.reject(new Error(
+        "This file was written by a different version of blueprint: its inventory is in " +
+        "payload format " + meta.wire + " and this page reads format " + WIRE + "."));
+    }
+    if (meta.encoding !== ENCODING_JSON && meta.encoding !== ENCODING_GZIP) {
+      return Promise.reject(new Error("This report's inventory is in an encoding this page does not know: " + meta.encoding + "."));
+    }
+    if (meta.encoding === ENCODING_GZIP && typeof DecompressionStream !== "function") {
+      return Promise.reject(new Error(
+        "The inventory in this report is compressed, and this browser has no built-in way " +
+        "to decompress it. Chrome or Edge 80+, Firefox 113+, or Safari 16.4+ will open it. " +
+        "The same census is in the JSON and CSV files written alongside this one, which " +
+        "need no browser at all."));
+    }
+    // Everything above rejects; everything below can throw. JSON.parse and atob
+    // run synchronously, so on a truncated or hand-edited file they raise before
+    // any promise exists and sail straight past the .catch that puts the reason
+    // on screen — leaving disabled controls, a "reading…" label, and no
+    // explanation. Both paths are funnelled back into a rejection here.
+    var raw = document.getElementById("blueprint-data").textContent;
+    try {
+      if (meta.encoding === ENCODING_JSON) return Promise.resolve(JSON.parse(raw));
+      return inflate(raw).catch(function (err) { throw unreadable(err); });
+    } catch (err) {
+      return Promise.reject(unreadable(err));
+    }
+  }
 
+  function inflate(raw) {
+    var bin = atob(raw);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Response(stream).text().then(JSON.parse);
+  }
+
+  // unreadable turns a decoder's own words — "Unexpected token }", "incorrect
+  // header check" — into something that tells the reader what happened and
+  // where the same census still is, without hiding the original.
+  function unreadable(err) {
+    return new Error(
+      "The inventory in this report could not be read; the file looks truncated or edited. " +
+      "The same census is in the JSON and CSV files written alongside it. (" +
+      ((err && err.message) || String(err)) + ")");
+  }
+
+  // failCensus replaces the table with the reason there isn't one. Everything
+  // above it — the scan metadata, the failure ledger, the headline counts —
+  // came from the meta block and stays on screen, so the reader still learns
+  // what was scanned and what it found.
+  function failCensus(err) {
+    document.getElementById("table-section").hidden = true;
+    document.getElementById("decode-error-msg").textContent = (err && err.message) || String(err);
+    document.getElementById("decode-error").hidden = false;
+  }
+
+  var COL_TAG = "tag:";
+  var COL_ATTR = "attr:";
+
+  // targetOf works out where a column lands on the rebuilt row — once per
+  // column, not once per cell.
+  function targetOf(key) {
+    if (key.indexOf(COL_TAG) === 0) return { bag: "tags", name: key.slice(COL_TAG.length) };
+    if (key.indexOf(COL_ATTR) === 0) return { bag: "attributes", name: key.slice(COL_ATTR.length) };
+    return { bag: null, name: key };
+  }
+
+  function readTable(t) {
+    var n = t.n || 0;
+    var i;
+    var rows = new Array(n);
+    // The bags are keyed by strings AWS chose, and "__proto__" is a legal tag
+    // key. Assigning it on an ordinary object hits the prototype setter and is
+    // silently swallowed — the tag would vanish between the encoder and the
+    // page, which is the one thing this report may not do. A null prototype
+    // makes every key an ordinary own property, and matches what JSON.parse
+    // already does on the uncompressed path.
+    for (i = 0; i < n; i++) {
+      rows[i] = { tags: Object.create(null), attributes: Object.create(null), measures: Object.create(null) };
+    }
+
+    var str = t.str || {};
+    Object.keys(str).forEach(function (key) {
+      var col = str[key] || {};
+      var dict = col.d || [];
+      var idx = col.i || [];
+      var to = targetOf(key);
+      for (var j = 0; j < n; j++) {
+        // A negative index is "the service did not report this field". The row
+        // gets no key at all, which is what every reader downstream already
+        // treats as absence.
+        var k = idx[j];
+        if (!(k >= 0)) continue;
+        if (to.bag) rows[j][to.bag][to.name] = dict[k];
+        else rows[j][to.name] = dict[k];
+      }
+    });
+
+    // Measures are the only numbers on the wire, so they carry no prefix. null
+    // is absence; 0 is a reading — a zero-byte table, a zero-day backup window
+    // — and it is kept like any other number. Testing these for truthiness
+    // instead of for null is the one bug this encoding exists to not have.
+    var num = t.num || {};
+    Object.keys(num).forEach(function (key) {
+      var col = num[key] || [];
+      for (var j = 0; j < n; j++) {
+        var v = col[j];
+        if (v === null || v === undefined) continue;
+        rows[j].measures[key] = v;
+      }
+    });
+
+    // Exposure flags are tri-state: true, false, or a service with no such
+    // concept. The third stays undefined on the row, which is why the
+    // renderers test === true and === false rather than truthiness.
+    var bool = t.bool || {};
+    Object.keys(bool).forEach(function (key) {
+      var col = bool[key] || [];
+      for (var j = 0; j < n; j++) {
+        var v = col[j];
+        if (v === null || v === undefined) continue;
+        rows[j][key] = v;
+      }
+    });
+
+    if (t.costs) {
+      for (i = 0; i < n; i++) {
+        if (t.costs[i]) rows[i].costs = t.costs[i];
+      }
+    }
+
+    // Most ARNs were never stored. They are rebuilt from the head, the
+    // resource-part prefix, and the region, account and name the row already
+    // carries — the same three lines as decodeARN in payload.go, and Go checked
+    // the reassembly against the real ARN before dropping anything. An ARN that
+    // did not survive that round trip was stored verbatim instead, so a row has
+    // one representation or the other and never both.
+    for (i = 0; i < n; i++) {
+      var r = rows[i];
+      if (r.arn_head === undefined) continue;
+      r.arn = r.arn_head + ":" + (r.region || "") + ":" + (r.account_id || "") + ":" +
+        (r.arn_infix || "") + (r.name || "");
+      delete r.arn_head;
+      delete r.arn_infix;
+    }
+    return rows;
+  }
+
+  // Precompute the tier and the bag lookups every renderer needs, so the rest
+  // of the report reads plain fields. One pass, and the only one before first
+  // paint — the headline numbers are already folded in the meta block.
+  function precompute() {
+    for (var i = 0; i < resources.length; i++) {
+      var r = resources[i];
+      r._tier = tierOf(r);
+      r._engine = platformOf(r);
+      r._engineVersion = attr(r, "engine_version");
+      r._class = classOf(r);
+      r._sizeBytes = measure(r, "size_bytes");
+      r._sizeAsOf = attr(r, "size_bytes_as_of");
+      r._backup = measure(r, "backup_retention_days");
+      // "AWS::RDS::DBCluster" → "DBCluster": the CloudFormation type without
+      // the provider/service prefix already shown in the Service column.
+      r._typeShort = String(r.type || "").split("::").pop();
+    }
+  }
+
+  // The filter's haystack is built on demand and kept.
+  //
+  // It is the largest derived thing in the page — every searchable string of
+  // every resource, concatenated — and a census that is never filtered never
+  // needs it. Building it eagerly put tens of megabytes of string between the
+  // reader and first paint for a search box they may not touch. Building it on
+  // the first keystroke moves that cost to the moment it buys something, and
+  // caching it on the row keeps every keystroke after the first cheap.
+  function hayOf(r) {
+    if (r._hay !== undefined) return r._hay;
     var hay = [r.name, r._engine, r._engineVersion, r.arn, r.service, r.type,
       r.region, r.account_id, r.environment, r.owner, r.status, r._class];
     if (r.eol) hay.push("eol");
@@ -568,7 +849,8 @@
       });
     }
     r._hay = hay.filter(Boolean).join("\n").toLowerCase();
-  });
+    return r._hay;
+  }
 
   // formatSize renders a byte measure at human scale. Sizes span lookup tables
   // of a few hundred bytes up to multi-TB warehouses, so every unit down to
@@ -627,20 +909,20 @@
   }
 
   // ---- Header metadata ------------------------------------------------------
-  var gen = new Date(data.generated_at);
+  var gen = new Date(meta.generated_at);
   var genEl = document.getElementById("gen-at");
   genEl.textContent = isNaN(gen.getTime())
-    ? String(data.generated_at || "")
+    ? String(meta.generated_at || "")
     : gen.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  genEl.title = String(data.generated_at || "");
+  genEl.title = String(meta.generated_at || "");
 
   var verEl = document.getElementById("brand-ver");
-  if (data.version) { verEl.textContent = String(data.version); } else { verEl.hidden = true; }
+  if (meta.version) { verEl.textContent = String(meta.version); } else { verEl.hidden = true; }
 
-  var accounts = data.accounts || [];
-  var regions = data.regions || [];
+  var accounts = meta.accounts || [];
+  var regions = meta.regions || [];
   document.getElementById("chip-scope").textContent =
-    plural(accounts.length, "account") + " · " + plural(regions.length, "region") + " · " + plural(resources.length, "resource");
+    plural(accounts.length, "account") + " · " + plural(regions.length, "region") + " · " + plural(total, "resource");
 
   // ---- Failures banner (honesty ledger) ------------------------------------
   if (failures.length > 0) {
@@ -658,7 +940,11 @@
   }
 
   // ---- Empty state ----------------------------------------------------------
-  if (resources.length === 0) {
+  // A census with no resources needs none of the rest of the page, and — the
+  // reason this check sits above the decode rather than after it — no census
+  // block either. Returning here means an empty report never touches
+  // DecompressionStream, so it opens in any browser.
+  if (total === 0) {
     document.getElementById("empty-state").hidden = false;
     ["stats-section", "engines-section", "table-section"].forEach(function (id) {
       document.getElementById(id).hidden = true;
@@ -666,23 +952,13 @@
     return;
   }
 
-  var total = resources.length;
-
   // Tier filter composes with the free-text filter via AND.
   var activeTier = null;
 
   // ---- Stat strip -----------------------------------------------------------
-  var seen = { types: {}, accounts: {} };
-  var noOwner = 0;
-  var eolCount = 0;
-  var exposedCount = 0;
-  resources.forEach(function (r) {
-    if (r.type) seen.types[r.type] = true;
-    if (r.account_id) seen.accounts[r.account_id] = true;
-    if (!r.owner) noOwner++;
-    if (r.eol) eolCount++;
-    if (isExposed(r)) exposedCount++;
-  });
+  var noOwner = summary.no_owner || 0;
+  var eolCount = summary.eol || 0;
+  var exposedCount = summary.exposed || 0;
 
   var kpisEl = document.getElementById("kpis");
   function addStat(label, num, sub, opts) {
@@ -698,7 +974,7 @@
     kpisEl.appendChild(box);
   }
   addStat("Resources", total.toLocaleString(),
-    plural(Object.keys(seen.types).length, "type") + " · " + plural(Object.keys(seen.accounts).length, "account"));
+    plural(summary.types || 0, "type") + " · " + plural(summary.accounts || 0, "account"));
   addStat("Attribution score", String(Math.round((100 * TIER_BY_KEY.full.count) / total)),
     "owner + environment tagged", { denom: "/100" });
   addStat("Untagged", TIER_BY_KEY.untagged.count.toLocaleString(), "no owner or environment");
@@ -744,7 +1020,7 @@
   function setTier(key) {
     activeTier = activeTier === key ? null : key;
     syncTierUI();
-    render();
+    rebuild(false);
   }
 
   function syncTierUI() {
@@ -759,31 +1035,11 @@
   }
 
   // ---- Engines ----------------------------------------------------------------
-  var engineMap = {};
-  var engineRows = [];
-  var servicesSeen = {};
-  var serviceCount = 0;
-  resources.forEach(function (r) {
-    if (r.service && !servicesSeen[r.service]) {
-      servicesSeen[r.service] = true;
-      serviceCount++;
-    }
-    // Services with no platform concept (object stores, networking, storage)
-    // are simply absent here rather than piling into an "(unknown)" bucket
-    // that would imply blueprint failed to read something.
-    if (!r._engine) return;
-    var e = engineMap[r._engine];
-    if (!e) {
-      e = engineMap[r._engine] = { name: r._engine, service: r.service || "", count: 0, versions: {}, regions: {} };
-      engineRows.push(e);
-    }
-    e.count++;
-    if (r._engineVersion) e.versions[r._engineVersion] = true;
-    if (r.region) e.regions[r.region] = true;
-  });
-  engineRows.sort(function (a, b) {
-    return b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-  });
+  // Already folded, ranked and deduplicated in Go. Services with no platform
+  // concept (object stores, networking, storage) contribute no row rather than
+  // piling into an "(unknown)" bucket that would imply blueprint failed to read
+  // something.
+  var engineRows = summary.platforms || [];
 
   var engRowsEl = document.getElementById("engine-rows");
   var max = 1;
@@ -793,24 +1049,24 @@
     var row = el("div", "rr-eng-row");
     var entity = el("div", "rr-eng-entity");
     var dot = el("span", "rr-eng-dot");
-    dot.style.background = SERVICE_COLORS[e.service] || SERVICE_FALLBACK;
+    dot.style.background = hashColor(e.service);
     entity.appendChild(dot);
     entity.appendChild(el("span", "rr-eng-name", e.name));
     row.appendChild(entity);
-    var nver = Object.keys(e.versions).length;
-    row.appendChild(el("div", "rr-eng-family", nver > 0 ? e.service + " · " + plural(nver, "version") : e.service));
+    row.appendChild(el("div", "rr-eng-family",
+      e.versions > 0 ? e.service + " · " + plural(e.versions, "version") : e.service));
     var barWrap = el("div", "rr-bar-wrap");
     var bar = el("div", "rr-bar");
     bar.style.width = Math.round((e.count / max) * 100) + "%";
     barWrap.appendChild(bar);
     row.appendChild(barWrap);
     row.appendChild(el("div", "rr-eng-total", e.count.toLocaleString()));
-    row.appendChild(el("div", "rr-eng-regions", plural(Object.keys(e.regions).length, "region")));
+    row.appendChild(el("div", "rr-eng-regions", plural(e.regions || 0, "region")));
     engFrag.appendChild(row);
   });
   engRowsEl.replaceChildren(engFrag);
   document.getElementById("engines-sub").textContent =
-    plural(engineRows.length, "platform") + " · " + plural(serviceCount, "service");
+    plural(engineRows.length, "platform") + " · " + plural(summary.services || 0, "service");
   // Nothing in scope reports a platform — hide the section instead of showing
   // an empty chart.
   if (engineRows.length === 0) document.getElementById("engines-section").hidden = true;
@@ -855,7 +1111,7 @@
         sortDir = 1;
       }
       updateSortIndicators();
-      render();
+      rebuild(false);
     });
     th.appendChild(btn);
     headRow.appendChild(th);
@@ -871,8 +1127,13 @@
     });
   }
 
+  // Size is the only numeric column, and a resource whose service never
+  // reported a size is not a zero-byte resource. Folding absence to zero
+  // interleaved the two, so sorting by Size buried genuinely empty tables among
+  // rows that simply had nothing to say about their size. null keeps them
+  // apart; compareRows puts them in their own block.
   function sortValue(r, key) {
-    if (key === "_sizeBytes") return r._sizeBytes || 0;
+    if (key === "_sizeBytes") return typeof r._sizeBytes === "number" ? r._sizeBytes : null;
     return String(r[key] || "").toLowerCase();
   }
 
@@ -881,6 +1142,14 @@
   function compareRows(a, b, key) {
     var av = sortValue(a, key);
     var bv = sortValue(b, key);
+    if (av === null || bv === null) {
+      if (av === bv) return 0;
+      // The caller multiplies by sortDir, so multiplying by it here cancels:
+      // unreported sizes stay together at the bottom whichever way the arrow
+      // points, rather than swapping to the top and reading as the smallest
+      // values in the census.
+      return (av === null ? 1 : -1) * sortDir;
+    }
     if (typeof av === "number") return av - bv;
     if (av !== bv) return av < bv ? -1 : 1;
     if (key === "_engine") {
@@ -978,7 +1247,6 @@
     var sizeTd = cellOrDash(formatSize(r._sizeBytes), "num");
     var observed = formatObserved(r._sizeAsOf);
     if (observed && typeof r._sizeBytes === "number") {
-      sizeTd.appendChild(document.createElement("br"));
       sizeTd.appendChild(el("span", "sub", observed));
       sizeTd.title = "observed " + r._sizeAsOf +
         " — CloudWatch publishes this daily, so it can be up to 48h behind, and it counts noncurrent versions and incomplete multipart uploads";
@@ -1006,18 +1274,27 @@
     return tr;
   }
 
+  function filterActive() {
+    return activeTier !== null || filterEl.value.trim() !== "";
+  }
+
   function currentRows() {
     var q = filterEl.value.trim().toLowerCase();
     var terms = q ? q.split(/\s+/) : null;
-    var rows = resources.filter(function (r) {
-      if (activeTier && r._tier !== activeTier) return false;
+    var rows = [];
+    for (var i = 0; i < resources.length; i++) {
+      var r = resources[i];
+      if (activeTier && r._tier !== activeTier) continue;
       if (terms) {
-        for (var i = 0; i < terms.length; i++) {
-          if (r._hay.indexOf(terms[i]) === -1) return false;
+        var hay = hayOf(r);
+        var matched = true;
+        for (var j = 0; j < terms.length; j++) {
+          if (hay.indexOf(terms[j]) === -1) { matched = false; break; }
         }
+        if (!matched) continue;
       }
-      return true;
-    });
+      rows.push(r);
+    }
     if (sortKey) {
       rows.sort(function (a, b) {
         return sortDir * compareRows(a, b, sortKey);
@@ -1026,62 +1303,443 @@
     return rows;
   }
 
-  function render() {
-    var rows = currentRows();
-    var frag = document.createDocumentFragment();
-    var groupBy = groupEl.value;
+  // ---- Grouping -------------------------------------------------------------
+  //
+  // Past a few hundred resources the table opens grouped and closed. A census
+  // is not a list anybody reads top to bottom; the first useful thing it can
+  // say is where the estate actually is — "ec2 · 1,284 resources · 41,208.00
+  // USD" — and fifty thousand rows say that in about twenty-five lines. The
+  // reader opens the part they came for.
+  var GROUP_COLLAPSE_ABOVE = 500;
 
-    if (rows.length === 0) {
-      var tr = el("tr", "no-match");
-      var td = el("td", "dim", "No resources match the current filters.");
-      td.colSpan = COLUMNS.length;
-      tr.appendChild(td);
-      frag.appendChild(tr);
-    } else if (groupBy !== "none" && GROUP_FIELD[groupBy]) {
-      var field = GROUP_FIELD[groupBy];
-      var groups = {};
-      var order = [];
-      rows.forEach(function (r) {
-        var v = String(r[field] || "");
-        if (!Object.prototype.hasOwnProperty.call(groups, v)) {
-          groups[v] = [];
-          order.push(v);
-        }
-        groups[v].push(r);
-      });
-      order.sort(function (a, b) {
-        if (a === "") return 1;
-        if (b === "") return -1;
-        return groups[b].length - groups[a].length || (a < b ? -1 : a > b ? 1 : 0);
-      });
-      order.forEach(function (v) {
-        var gtr = el("tr", "group-row");
-        var gtd = document.createElement("td");
-        gtd.colSpan = COLUMNS.length;
-        gtd.appendChild(el("span", "group-name", v || (groupBy === "environment" ? "no environment tag" : "(none)")));
-        gtd.appendChild(el("span", "group-count", groups[v].length.toLocaleString()));
-        gtr.appendChild(gtd);
-        frag.appendChild(gtr);
-        groups[v].forEach(function (r) { frag.appendChild(buildRow(r)); });
-      });
+  // Explicit open/closed state, per dimension, for the groups the reader has
+  // actually clicked. Everything else follows defaultOpen().
+  var openByDim = Object.create(null);
+  var preFilterOpen = null;
+  var allOpen = false;
+  var filterWasActive = false;
+
+  function defaultOpen() { return allOpen || total <= GROUP_COLLAPSE_ABOVE; }
+
+  function isOpen(dim, value) {
+    var m = openByDim[dim];
+    if (m && Object.prototype.hasOwnProperty.call(m, value)) return m[value];
+    return defaultOpen();
+  }
+
+  function setOpen(dim, value, open) {
+    if (!openByDim[dim]) openByDim[dim] = Object.create(null);
+    openByDim[dim][value] = open;
+  }
+
+  // A filter opens every group for as long as it is on. Three matches hiding
+  // inside three closed groups looks exactly like no matches at all, which
+  // would make the search box lie. The reader's own collapsing is put aside
+  // rather than thrown away, and comes back when the filter clears — so the
+  // carets always describe what is really on screen, and clicking one while
+  // filtering still works.
+  function syncFilterCollapse() {
+    var now = filterActive();
+    if (now === filterWasActive) return;
+    filterWasActive = now;
+    if (now) {
+      preFilterOpen = openByDim;
+      openByDim = Object.create(null);
+      allOpen = true;
     } else {
-      rows.forEach(function (r) { frag.appendChild(buildRow(r)); });
+      openByDim = preFilterOpen || Object.create(null);
+      preFilterOpen = null;
+      allOpen = false;
+    }
+  }
+
+  // costIndex maps a group value to the spend Go attributed to it. The totals
+  // describe the whole census, so they are only ever shown — and only ever
+  // sorted on — when no filter is narrowing the view; printing a census-wide
+  // total beside a filtered count would invite the reader to divide one by the
+  // other.
+  var costIndexCache = Object.create(null);
+  function costIndex(dim) {
+    if (costIndexCache[dim]) return costIndexCache[dim];
+    var out = Object.create(null);
+    ((summary.groups || {})[dim] || []).forEach(function (g) {
+      out[g.value] = g;
+    });
+    costIndexCache[dim] = out;
+    return out;
+  }
+
+  // Group totals are decimal strings and they are compared as decimals, digit
+  // by digit. Money that reached this page exactly is not going to be pushed
+  // through a float for the sake of a sort. This runs only when the summary
+  // says one method and one currency priced every resource in the census, so a
+  // group has at most one total to compare and no group is ranked on a total
+  // that covers only part of it.
+  function compareGroupCost(a, b) {
+    var ac = a && a.costs, bc = b && b.costs;
+    var av = ac && ac.length ? ac[0].amount : null;
+    var bv = bc && bc.length ? bc[0].amount : null;
+    if (av === null && bv === null) return 0;
+    if (av === null) return -1;
+    if (bv === null) return 1;
+    return compareDecimal(av, bv);
+  }
+
+  function compareDecimal(a, b) {
+    var an = a.charAt(0) === "-";
+    var bn = b.charAt(0) === "-";
+    if (an !== bn) return an ? -1 : 1;
+    var m = compareMagnitude(an ? a.slice(1) : a, bn ? b.slice(1) : b);
+    return an ? -m : m;
+  }
+
+  // Longer whole part wins; same length compares lexicographically, which for
+  // equal-length digit strings is the same as comparing the numbers. Fractions
+  // are zero-padded to a common length so "1.5" and "1.45" compare correctly.
+  function compareMagnitude(a, b) {
+    var ap = a.split(".");
+    var bp = b.split(".");
+    var aw = ap[0].replace(/^0+(?=\d)/, "");
+    var bw = bp[0].replace(/^0+(?=\d)/, "");
+    if (aw.length !== bw.length) return aw.length < bw.length ? -1 : 1;
+    if (aw !== bw) return aw < bw ? -1 : 1;
+    var af = ap[1] || "";
+    var bf = bp[1] || "";
+    var width = Math.max(af.length, bf.length);
+    while (af.length < width) af += "0";
+    while (bf.length < width) bf += "0";
+    if (af !== bf) return af < bf ? -1 : 1;
+    return 0;
+  }
+
+  // flatten turns the filtered rows into the single sequence the body paints:
+  // group headers interleaved with the rows of the groups that are open. It is
+  // one array so that virtualization has one thing to index into.
+  function flatten(rows, groupBy) {
+    if (groupBy === "none" || !GROUP_FIELD[groupBy]) return rows;
+    var field = GROUP_FIELD[groupBy];
+    var groups = Object.create(null);
+    var order = [];
+    for (var i = 0; i < rows.length; i++) {
+      var v = String(rows[i][field] || "");
+      if (!Object.prototype.hasOwnProperty.call(groups, v)) {
+        groups[v] = [];
+        order.push(v);
+      }
+      groups[v].push(rows[i]);
     }
 
+    var showCost = !filterActive();
+    var costs = costIndex(groupBy);
+    var byCost = showCost && summary.cost_sortable === true;
+    order.sort(function (a, b) {
+      if (a === "") return 1;
+      if (b === "") return -1;
+      if (byCost) {
+        var c = compareGroupCost(costs[b], costs[a]);
+        if (c !== 0) return c;
+      }
+      return groups[b].length - groups[a].length || (a < b ? -1 : a > b ? 1 : 0);
+    });
+
+    var out = [];
+    for (var k = 0; k < order.length; k++) {
+      var value = order[k];
+      var open = isOpen(groupBy, value);
+      out.push({
+        _group: value,
+        _dim: groupBy,
+        _rows: groups[value].length,
+        _spend: showCost ? costs[value] : null,
+        _open: open
+      });
+      if (open) {
+        var members = groups[value];
+        for (var m = 0; m < members.length; m++) out.push(members[m]);
+      }
+    }
+    return out;
+  }
+
+  var COST_METHODS = {
+    ce: "Cost Explorer — what AWS billed over a closed window",
+    coh: "Cost Optimization Hub — modelled monthly rate for the current configuration"
+  };
+
+  // A group prints one total per (method, currency) pair its resources were
+  // priced in, side by side rather than combined: a billed figure and a
+  // modelled forecast answer different questions, and adding across currencies
+  // needs a rate this tool does not have. A total containing a caveated figure
+  // prices a component rather than a whole resource, so it is a lower bound and
+  // is marked as one instead of passing for the full bill.
+  function appendGroupCost(btn, spend) {
+    var costs = spend && spend.costs;
+    if (!costs || costs.length === 0) return;
+    var wrap = el("span", "group-cost");
+    costs.forEach(function (c, i) {
+      if (i > 0) wrap.appendChild(el("span", "sub", "·"));
+      var span = el("span", "", (c.qualified ? "≥ " : "") + c.amount + " " + c.currency);
+      span.title = COST_METHODS[c.method] || c.method;
+      if (c.qualified) {
+        span.title += " — lower bound: at least one figure in this total prices a component, not the whole resource";
+      }
+      wrap.appendChild(span);
+    });
+    // The count beside the group name is every member; the total is only over
+    // the ones something priced. Where those differ the header says so, because
+    // the two read as a pair and the pair would otherwise state that the whole
+    // group costs what its priced fraction costs.
+    if (spend.priced < spend.total) {
+      var note = el("span", "group-partial",
+        "over " + spend.priced + " of " + spend.total);
+      note.title = "cost unavailable for " + (spend.total - spend.priced) +
+        " of " + spend.total + " resources in this group — the total is a lower " +
+        "bound, and groups are ordered by resource count rather than spend " +
+        "while any group is short";
+      wrap.appendChild(note);
+    }
+    btn.appendChild(wrap);
+  }
+
+  function buildGroupRow(g) {
+    var tr = el("tr", "group-row");
+    var td = document.createElement("td");
+    td.colSpan = COLUMNS.length;
+    var btn = el("button", "group-btn");
+    btn.type = "button";
+    btn.setAttribute("aria-expanded", g._open ? "true" : "false");
+    btn.appendChild(el("span", "group-caret", g._open ? "▼" : "▶"));
+    btn.appendChild(el("span", "group-name",
+      g._group || (g._dim === "environment" ? "no environment tag" : "(none)")));
+    btn.appendChild(el("span", "group-count", plural(g._rows, "resource")));
+    appendGroupCost(btn, g._spend);
+    btn.addEventListener("click", function () {
+      setOpen(g._dim, g._group, !isOpen(g._dim, g._group));
+      rebuild(true);
+    });
+    td.appendChild(btn);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  // ---- Virtualized body -----------------------------------------------------
+  //
+  // The body holds the rows that are on screen and nothing else.
+  //
+  // One row is about twenty-five DOM nodes. Fifty thousand of them is over a
+  // million nodes — long enough to lay out that the browser offers to kill the
+  // tab — and the old renderer rebuilt every one of them on every keystroke.
+  // Here the body holds about sixty rows whatever the census size, with a
+  // spacer above and below standing in for the rest so the scrollbar keeps its
+  // true length and a scroll position keeps its true meaning.
+  //
+  // Group headers are taller than data rows, so the visible window cannot be
+  // found by dividing. Each rebuild fills a prefix-sum table of row offsets in
+  // one pass and each paint binary-searches it. Row heights come from CSS, so
+  // they are measured off the first painted window rather than hard-coded.
+  var OVERSCAN = 8;
+  var ROW_H = 31;
+  var GROUP_H = 34;
+  // Measured per kind, not once overall. A census that opens grouped and
+  // collapsed paints nothing but group headers, so a single flag would take the
+  // first window as proof of both and leave the data-row height at its guess
+  // for the session — in exactly the view this virtualization exists to serve.
+  var measuredRow = false;
+  var measuredGroup = false;
+
+  var wrap = document.getElementById("table-wrap");
+  var view = [];
+  var offsets = null;
+  var firstPainted = -1;
+  var lastPainted = -1;
+
+  function isGroup(item) { return item._group !== undefined; }
+  function heightOf(item) { return isGroup(item) ? GROUP_H : ROW_H; }
+
+  function spacer() {
+    var tr = el("tr", "spacer");
+    var td = document.createElement("td");
+    td.colSpan = COLUMNS.length;
+    // The height lives on an inner div: a td's own height is a minimum that
+    // the table layout is free to ignore, a block box's is not.
+    var box = document.createElement("div");
+    td.appendChild(box);
+    tr.appendChild(td);
+    tr._box = box;
+    return tr;
+  }
+  var topSpacer = spacer();
+  var bottomSpacer = spacer();
+
+  function setSpacer(tr, px) {
+    tr._box.style.height = px + "px";
+    tr.hidden = px <= 0;
+  }
+
+  function buildOffsets() {
+    var n = view.length;
+    offsets = new Float64Array(n + 1);
+    var y = 0;
+    for (var i = 0; i < n; i++) {
+      offsets[i] = y;
+      y += heightOf(view[i]);
+    }
+    offsets[n] = y;
+  }
+
+  // indexAt returns the last entry starting at or before y.
+  function indexAt(y) {
+    var lo = 0;
+    var hi = view.length - 1;
+    if (hi < 0) return 0;
+    while (lo < hi) {
+      var mid = (lo + hi + 1) >> 1;
+      if (offsets[mid] <= y) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  function noMatchRow() {
+    var tr = el("tr", "no-match");
+    var td = el("td", "dim", "No resources match the current filters.");
+    td.colSpan = COLUMNS.length;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  // The wrapper caps its height in CSS but never sets one, so clientHeight is
+  // whatever it currently holds. Sizing the window from it measures the body
+  // about to be replaced — on first paint, an empty one — and paints far too
+  // few rows to cover the screen, leaving a blank strip until the next scroll
+  // nudges it. The cap is the height the window actually has to fill, so it is
+  // read from CSS once and refreshed when the viewport changes.
+  var heightCap = 0;
+  function measureCap() {
+    var cap = parseFloat(getComputedStyle(wrap).maxHeight);
+    heightCap = cap > 0 ? cap : 0;
+  }
+  function viewportHeight() { return Math.max(wrap.clientHeight, heightCap); }
+
+  function paint(force) {
+    if (!offsets) return;
+    var n = view.length;
+    if (n === 0) {
+      firstPainted = lastPainted = -1;
+      tbody.replaceChildren(noMatchRow());
+      return;
+    }
+    var top = wrap.scrollTop;
+    var first = Math.max(0, indexAt(top) - OVERSCAN);
+    var last = Math.min(n - 1, indexAt(top + viewportHeight()) + OVERSCAN);
+    if (!force && first === firstPainted && last === lastPainted) return;
+    firstPainted = first;
+    lastPainted = last;
+
+    var sawRow = false;
+    var sawGroup = false;
+    var frag = document.createDocumentFragment();
+    setSpacer(topSpacer, offsets[first]);
+    frag.appendChild(topSpacer);
+    for (var i = first; i <= last; i++) {
+      var item = view[i];
+      if (isGroup(item)) sawGroup = true; else sawRow = true;
+      frag.appendChild(isGroup(item) ? buildGroupRow(item) : buildRow(item));
+    }
+    setSpacer(bottomSpacer, offsets[n] - offsets[last + 1]);
+    frag.appendChild(bottomSpacer);
     tbody.replaceChildren(frag);
+
+    // Only measure when this window holds a kind that has never been measured.
+    // Asking otherwise would force a layout on every scroll frame for a number
+    // already known.
+    if ((sawRow && !measuredRow) || (sawGroup && !measuredGroup)) measureRowHeights();
+  }
+
+  // Row heights are a guess until a row exists to measure: CSS decides them,
+  // and so do the reader's font settings and zoom level. Each kind is asked
+  // once, off the first painted window that contains one, and the offset table
+  // is rebuilt if the guess was wrong. The flags are set before the repaint, so
+  // it cannot come back here and loop.
+  function measureRowHeights() {
+    var changed = false;
+    var rows = tbody.children;
+    for (var i = 0; i < rows.length; i++) {
+      var tr = rows[i];
+      var h = tr.offsetHeight;
+      if (!h || tr.classList.contains("spacer")) continue;
+      if (tr.classList.contains("group-row")) {
+        measuredGroup = true;
+        if (h !== GROUP_H) { GROUP_H = h; changed = true; }
+      } else {
+        measuredRow = true;
+        if (h !== ROW_H) { ROW_H = h; changed = true; }
+      }
+    }
+    if (!changed) return;
+    buildOffsets();
+    paint(true);
+  }
+
+  function rebuild(keepScroll) {
+    if (!resources) return;
+    syncFilterCollapse();
+    var rows = currentRows();
+    view = flatten(rows, groupEl.value);
+    buildOffsets();
+    if (!keepScroll) wrap.scrollTop = 0;
+    paint(true);
     countEl.textContent = rows.length.toLocaleString() + " of " + total.toLocaleString() + " resources";
   }
+
+  var scrollQueued = false;
+  wrap.addEventListener("scroll", function () {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    requestAnimationFrame(function () {
+      scrollQueued = false;
+      paint(false);
+    });
+  });
+  // A taller viewport shows more rows, so both the cap and the window have to
+  // be recomputed even though nothing scrolled.
+  window.addEventListener("resize", function () { measureCap(); paint(true); });
 
   var debounceTimer = null;
   filterEl.addEventListener("input", function () {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(render, 150);
+    debounceTimer = setTimeout(function () { rebuild(false); }, 150);
   });
-  groupEl.addEventListener("change", render);
+  groupEl.addEventListener("change", function () { rebuild(false); });
 
+  // ---- Boot -----------------------------------------------------------------
   syncTierUI();
   updateSortIndicators();
-  render();
+  measureCap();
+  if (total > GROUP_COLLAPSE_ABOVE) groupEl.value = "service";
+
+  // The controls stay inert until there is something to control. Everything
+  // above the table is already painted at this point; only the inventory is
+  // waiting on the decode.
+  filterEl.disabled = true;
+  groupEl.disabled = true;
+  countEl.textContent = "reading " + total.toLocaleString() + " resources…";
+
+  decodeCensus().then(function (table) {
+    resources = readTable(table);
+    // The summary and the census block are folded from the same snapshot by
+    // the same run. If they disagree about how many resources there are, one
+    // of them is wrong and there is no way to tell which — so the page says so
+    // rather than showing a table it cannot vouch for.
+    if (resources.length !== total) {
+      throw new Error("This report is inconsistent: it summarizes " +
+        total.toLocaleString() + " resources but its inventory holds " +
+        resources.length.toLocaleString() + ".");
+    }
+    precompute();
+    filterEl.disabled = false;
+    groupEl.disabled = false;
+    rebuild(false);
+  }).catch(failCensus);
 })();
 </script>
 </body>

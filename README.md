@@ -315,7 +315,7 @@ does not, because a clock advancing is not a finding.
 ## Outputs
 
 - **Terminal**: a sprawl summary — total resources, distinct types/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
-- **HTML**: a single self-contained file (`blueprint-YYYY-MM-DD.html`) you can open in a browser or attach to a doc. No external assets, no CDN calls.
+- **HTML**: a single self-contained file (`blueprint-YYYY-MM-DD.html`) you can open in a browser or attach to a doc. No external assets, no CDN calls. Past 5,000 resources the inventory is compressed into the page and unpacked by the browser — a 50,000-resource census lands under three megabytes instead of nearly thirty — which needs Chrome or Edge 80+, Firefox 113+, or Safari 16.4+. Reports that big open grouped by service and collapsed, so the first screen is a few dozen rows rather than the whole estate. Smaller reports stay plain text in the file and open anywhere.
 - **JSON**: the complete snapshot (`blueprint-YYYY-MM-DD.json`) — every resource, plus the failure ledger, plus the cost report when `--costs` is on.
 - **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets. The columns are the narrow core and stay fixed as new services land; attributes and measures ride in a final `k=v;k=v` cell.
 
