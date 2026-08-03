@@ -50,6 +50,17 @@ type reportSummary struct {
 	// CostSortable says whether ordering groups by spend is a claim the data
 	// supports. See costSortable.
 	CostSortable bool `json:"cost_sortable"`
+	// Costed says whether any resource carries a cost record at all — any
+	// method, any currency, readable or not. It is the one cost fact the page
+	// needs before the census has decoded, because it decides whether the
+	// inventory table has a Cost column and the header row is built from this
+	// block: a column cannot grow a header after the reader has read the
+	// header. Everything else about cost waits for the rows.
+	//
+	// It is deliberately not derived from Groups, which drops a group whose
+	// every figure was unreadable, and would therefore hide the column on
+	// exactly the run whose cost data most needs looking at.
+	Costed bool `json:"costed"`
 }
 
 // summaryPlatform is one row of the platform chart: the software a set of
@@ -73,6 +84,11 @@ type summaryPlatform struct {
 // the page to divide its own row count by something: the totals are census-wide
 // and the row count is not, so they are only the same number by a coincidence
 // the header should not depend on.
+// Priced is how many members carry a figure from any source. It is the
+// group's coverage as a whole; what the header discloses is groupCost.Priced,
+// the coverage of the one bucket it is printing, because a reader looking at a
+// Cost Explorer total is owed the fraction Cost Explorer reached and not the
+// fraction some other source did.
 type summaryGroup struct {
 	Value  string      `json:"value"`
 	Costs  []groupCost `json:"costs,omitempty"`
@@ -87,12 +103,19 @@ type summaryGroup struct {
 // Optimization Hub figure is a forward-looking monthly rate modelled from
 // recent usage; adding them produces a number that answers no question, and
 // adding across currencies needs an exchange rate this tool does not have and
-// will not invent. So a group carries one total per (method, currency) pair
-// and the header prints them side by side rather than combined.
+// will not invent. So a group carries one total per (method, currency) pair,
+// each with the count of members it covers, and the page prints one at a time:
+// the pair the reader has selected as the report's source.
 type groupCost struct {
 	Method   string `json:"method"`
 	Currency string `json:"currency"`
 	Amount   string `json:"amount"`
+	// Priced is how many of the group's members this bucket priced. The
+	// header prints it against the group's full membership, so it has to be
+	// this bucket's reach rather than the group's: a Cost Explorer total over
+	// two of twelve resources is not made whole by ten of them having a Cost
+	// Optimization Hub estimate instead.
+	Priced int `json:"priced"`
 	// Qualified marks a total that includes at least one figure whose source
 	// attached a caveat — "storage only", say. Such a figure prices a component
 	// rather than a resource, so the sum is a lower bound whose distance from
@@ -176,6 +199,9 @@ func buildSummary(snap *model.Snapshot) reportSummary {
 		if r.Exposed() {
 			sum.Exposed++
 		}
+		if len(r.Costs) > 0 {
+			sum.Costed = true
+		}
 	}
 	sum.Types = len(types)
 	sum.Accounts = len(accounts)
@@ -250,7 +276,10 @@ func buildPlatforms(resources []model.Resource) []summaryPlatform {
 func buildGroups(resources []model.Resource) map[string][]summaryGroup {
 	out := map[string][]summaryGroup{}
 	for dim, field := range groupDimensions {
-		byValue := map[string][]model.ResourceCost{}
+		// Grouped per resource rather than flattened, because each bucket has
+		// to report how many resources it reached and a flat list of figures
+		// cannot say which resource any of them came from.
+		byValue := map[string][][]model.ResourceCost{}
 		priced := map[string]int{}
 		total := map[string]int{}
 		var order []string
@@ -265,7 +294,7 @@ func buildGroups(resources []model.Resource) map[string][]summaryGroup {
 				continue
 			}
 			priced[v]++
-			byValue[v] = append(byValue[v], r.Costs...)
+			byValue[v] = append(byValue[v], r.Costs)
 		}
 		var groups []summaryGroup
 		for _, v := range order {
@@ -298,35 +327,47 @@ func buildGroups(resources []model.Resource) map[string][]summaryGroup {
 // figure whose amount does not parse takes its whole bucket out rather than
 // being skipped: a total quietly missing one of its parts is worse than no
 // total, because nothing on the page would show it was short.
-func totalCosts(costs []model.ResourceCost) []groupCost {
+//
+// The input is one slice of figures per resource, not one flat list, so each
+// bucket can count the resources it reached. A resource counts once towards a
+// bucket however many figures it contributed to it.
+func totalCosts(perResource [][]model.ResourceCost) []groupCost {
 	type key struct{ method, currency string }
 	type bucket struct {
 		sum       *big.Rat
 		digits    int
+		priced    int
 		qualified bool
 		broken    bool
 	}
 	buckets := map[key]*bucket{}
 	var order []key
-	for _, c := range costs {
-		k := key{c.Method, c.Currency}
-		b := buckets[k]
-		if b == nil {
-			b = &bucket{sum: new(big.Rat)}
-			buckets[k] = b
-			order = append(order, k)
-		}
-		if len(c.Caveats) > 0 {
-			b.qualified = true
-		}
-		amount, ok := parseDecimal(c.Amount)
-		if !ok {
-			b.broken = true
-			continue
-		}
-		b.sum.Add(b.sum, amount)
-		if d := fractionDigits(c.Amount); d > b.digits {
-			b.digits = d
+	for _, costs := range perResource {
+		counted := map[key]bool{}
+		for _, c := range costs {
+			k := key{c.Method, c.Currency}
+			b := buckets[k]
+			if b == nil {
+				b = &bucket{sum: new(big.Rat)}
+				buckets[k] = b
+				order = append(order, k)
+			}
+			if !counted[k] {
+				counted[k] = true
+				b.priced++
+			}
+			if len(c.Caveats) > 0 {
+				b.qualified = true
+			}
+			amount, ok := parseDecimal(c.Amount)
+			if !ok {
+				b.broken = true
+				continue
+			}
+			b.sum.Add(b.sum, amount)
+			if d := fractionDigits(c.Amount); d > b.digits {
+				b.digits = d
+			}
 		}
 	}
 	sort.Slice(order, func(i, j int) bool {
@@ -345,6 +386,7 @@ func totalCosts(costs []model.ResourceCost) []groupCost {
 			Method:    k.method,
 			Currency:  k.currency,
 			Amount:    b.sum.FloatString(b.digits),
+			Priced:    b.priced,
 			Qualified: b.qualified,
 		})
 	}
