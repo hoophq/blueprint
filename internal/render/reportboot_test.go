@@ -67,10 +67,15 @@ type bootProbe struct {
 	// sentence is gone" from "this sentence is one click away".
 	CoverageHidden bool   `json:"coverageHidden"`
 	CoverageText   string `json:"coverageText"`
-	NoteText       string `json:"noteText"`
-	MoreHidden     bool   `json:"moreHidden"`
-	MoreText       string `json:"moreText"`
-	CountText      string `json:"countText"`
+	// The line under the hero that says why two totals of different sizes are
+	// not two answers to one question. Hidden when only one source priced
+	// anything, since a lone total has nothing to be mistaken for.
+	CautionHidden bool   `json:"cautionHidden"`
+	CautionText   string `json:"cautionText"`
+	NoteText      string `json:"noteText"`
+	MoreHidden    bool   `json:"moreHidden"`
+	MoreText      string `json:"moreText"`
+	CountText     string `json:"countText"`
 	// AttrLegend is the attribution bar's legend, which ends in the sentence
 	// naming what the bar is weighted by. LegendAfterMethod is the same legend
 	// read again after the drive phase switches cost source: the bar is weighted
@@ -314,6 +319,31 @@ func TestReportGivesEachCostSourceItsOwnColumn(t *testing.T) {
 		}
 	}
 
+	// Two totals of different sizes read as a disagreement about price unless
+	// the page says otherwise, and the reason they differ is mostly that one
+	// covers a fortnight and the other a month. So each tile leads with its own
+	// period, and the caution under them names all three differences.
+	for _, want := range []string{"billed over 14 days", "modelled per month"} {
+		if !strings.Contains(probe.HeroText, want) {
+			t.Errorf("a hero tile never states its period — %q is nowhere:\n%s", want, probe.HeroText)
+		}
+	}
+	if probe.CautionHidden || probe.CautionText == "" {
+		t.Errorf("two sources rendered without the caution line (hidden=%v, text=%q)",
+			probe.CautionHidden, probe.CautionText)
+	}
+	for _, want := range []string{"different periods and different resources", "never adds, scales or reconciles"} {
+		if !strings.Contains(probe.CautionText, want) {
+			t.Errorf("the caution never says %q:\n%s", want, probe.CautionText)
+		}
+	}
+	// The one thing it must not do is close the gap for the reader. Scaling a
+	// fortnight of billing up to a month is a run rate AWS never billed, and it
+	// is the exact figure the rest of the report exists to refuse.
+	if strings.Contains(probe.CautionText, "equivalent") || strings.Contains(probe.CautionText, "would be") {
+		t.Errorf("the caution extrapolates one window onto the other:\n%s", probe.CautionText)
+	}
+
 	// The standing explanation moved behind a disclosure rather than off the
 	// page. Both halves are asserted: a note that swallowed the disclosures
 	// would pass a test that only checked the note got shorter.
@@ -368,6 +398,11 @@ func TestReportWithOneCostSourceDrawsOneColumn(t *testing.T) {
 	// same finding whether or not a second source exists to compare it against.
 	if probe.CoverageHidden {
 		t.Error("the coverage block hid itself because there was only one source to chart")
+	}
+	// The caution is the opposite case. It exists to stop two totals being read
+	// against each other, and there is only one here.
+	if !probe.CautionHidden {
+		t.Errorf("a single total was cautioned against a comparison nothing offers: %q", probe.CautionText)
 	}
 }
 
@@ -932,6 +967,8 @@ setTimeout(function () {
     bannerList: el("cost-banner-list").textContent,
     coverageHidden: el("cost-coverage").hidden,
     coverageText: el("cost-coverage").textContent,
+    cautionHidden: el("cost-caution").hidden,
+    cautionText: el("cost-caution").textContent,
     noteText: el("cost-note").textContent,
     moreHidden: el("cost-more").hidden,
     moreText: el("cost-more-body").textContent,

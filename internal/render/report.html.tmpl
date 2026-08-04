@@ -184,6 +184,23 @@
   .rr-cost-cur { font-size: 14px; font-weight: 500; color: rgba(247, 247, 247, 0.4); margin-left: 5px; }
   .rr-cost-sub { font-size: 11.5px; color: rgba(247, 247, 247, 0.34); margin-top: 7px; }
   .rr-cost-sub-bad { color: #f08a8e; }
+  /* The period line sits directly under the number and is the only sub-line not
+     dimmed to 0.34. With two sources side by side the reader's first question is
+     why one figure is roughly twice the other, and the answer is usually that
+     one covers a fortnight and the other a month. Set at the same weight as the
+     coverage counts below it, that answer loses the race to the two big numbers
+     and the tiles read as a disagreement about price. */
+  .rr-cost-sub-period { color: rgba(247, 247, 247, 0.62); }
+  /* Sits under the hero, not inside it: a full-width row in an auto-fit grid
+     pushes the remaining tiles onto a fresh row, where :first-child no longer
+     matches the tile in column one and the dividers point at nothing. */
+  .rr-cost-caution {
+    margin-top: 16px;
+    max-width: 76ch;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: rgba(247, 247, 247, 0.46);
+  }
   .rr-cost-note {
     margin-top: 18px;
     max-width: 76ch;
@@ -636,6 +653,7 @@
 
   <section class="rr-section" id="cost-section" hidden>
     <div class="rr-cost-hero" id="cost-hero"></div>
+    <p class="rr-cost-caution" id="cost-caution" hidden></p>
     <div class="rr-method" id="cost-method" hidden>
       <span class="rr-method-label">Totals and rankings use</span>
     </div>
@@ -1482,7 +1500,16 @@
   function methodBasis(m) {
     var method = m === undefined ? COST.method : m;
     if (method === "coh") {
-      return { noun: "modelled cost", metric: "modelled monthly rate", window: "", monthly: true };
+      return {
+        noun: "modelled cost",
+        metric: "modelled monthly rate",
+        window: "",
+        // "per month" rather than "per 30 days": the hub states a monthly rate
+        // and never says which month, so counting days into it would be a
+        // precision AWS did not report.
+        period: "per month",
+        monthly: true
+      };
     }
     // The label is left as the pass wrote it. costPartialSuffix belongs to the
     // account rollup, whose window is a calendar month and is labelled as one —
@@ -1495,12 +1522,28 @@
     // days", which is arithmetic about nothing. It also never reads as full
     // coverage, so every report would carry the parenthesis.
     var win = (resourceCostReport && resourceCostReport.window) || null;
+    var days = windowDays(win);
     return {
       noun: "spend",
       metric: (resourceCostReport && resourceCostReport.metric) || "",
       window: win ? (win.label || "") : "",
+      period: days ? "over " + plural(days, "day") : "",
       monthly: false
     };
+  }
+
+  // windowDays counts the length of a cost window so a tile can lead with it.
+  // This restates the window the pass already asked for — end is exclusive, so
+  // 07-21→08-04 is fourteen days — and is not arithmetic on any amount: nothing
+  // here divides a figure by the count or multiplies it up to a longer period.
+  // Returns 0 when either endpoint is missing or unparseable, which reads as
+  // "no period to name" rather than a zero-length one.
+  function windowDays(w) {
+    if (!w || !w.start || !w.end) return 0;
+    var a = Date.parse(w.start + "T00:00:00Z");
+    var b = Date.parse(w.end + "T00:00:00Z");
+    if (isNaN(a) || isNaN(b) || b <= a) return 0;
+    return Math.round((b - a) / 86400000);
   }
 
   // costPartialSuffix mirrors render.partialSuffix. A window that stops short of
@@ -2325,7 +2368,10 @@
       box.appendChild(num);
       subs.forEach(function (s) {
         if (!s || !s.text) return;
-        box.appendChild(el("div", "rr-cost-sub" + (s.bad ? " rr-cost-sub-bad" : ""), s.text));
+        var cls = "rr-cost-sub";
+        if (s.bad) cls += " rr-cost-sub-bad";
+        if (s.period) cls += " rr-cost-sub-period";
+        box.appendChild(el("div", cls, s.text));
       });
       frag.appendChild(box);
     }
@@ -2338,15 +2384,19 @@
       var s = sourceSummary(m.method);
       if (!s || !s.total) return;
       var b = methodBasis(m.method);
-      // A modelled monthly rate has no billed period to name, so it says what it
-      // is rather than borrowing the other source's window. Its metric is that
-      // same sentence — methodBasis returns "modelled monthly rate" for it — so
-      // appending it as well printed the phrase twice in one line.
+      // Verb and period first, in that order, in both tiles: "billed over 14
+      // days" against "modelled per month" says in four words why one number is
+      // about twice the other. The window's own dates and the metric follow as
+      // the exact statement of it. A modelled rate has no billed period to name,
+      // so it says what it is rather than borrowing the other source's window,
+      // and its metric is that same sentence — methodBasis returns "modelled
+      // monthly rate" for it — so appending it too printed the phrase twice.
       var basisLine = b.monthly
-        ? "modelled monthly rate · not an amount AWS billed"
-        : "billed" + (b.window ? " · " + b.window : "") + (b.metric ? " · " + b.metric : "");
+        ? "modelled " + b.period + " · not an amount AWS billed"
+        : ["billed" + (b.period ? " " + b.period : ""), b.window, b.metric]
+            .filter(Boolean).join(" · ");
       tile(methodLabel(m.method), decFormat(s.total), s.currency, [
-        { text: basisLine },
+        { text: basisLine, period: true },
         { text: heroCoverage(s.priced, total) },
         { text: heroGap(s, total) }
       ]);
@@ -2459,6 +2509,35 @@
     }
 
     box.replaceChildren(frag);
+    box.hidden = false;
+  }
+
+  // renderCostCaution answers the question two totals side by side provoke and
+  // the tiles alone cannot: why is one roughly twice the other. It states the
+  // three reasons they differ — period, coverage, and billed-versus-modelled —
+  // and stops there. It deliberately does not scale the shorter window up to
+  // the longer one to "compare like for like": that number is a run rate, AWS
+  // never billed it, and printing it here would make the page fabricate exactly
+  // the figure the rest of the report refuses to.
+  function renderCostCaution() {
+    var box = document.getElementById("cost-caution");
+    var shown = COST.methods.filter(function (m) {
+      var s = sourceSummary(m.method);
+      return s && s.total;
+    });
+    // One source has nothing to be confused with.
+    if (shown.length < 2) { box.hidden = true; return; }
+
+    var parts = shown.map(function (m) {
+      var b = methodBasis(m.method);
+      var s = sourceSummary(m.method);
+      return methodLabel(m.method) + " " + (b.monthly ? "models a rate " : "bills ") +
+        (b.period || "") + " across " + s.priced.toLocaleString() + " resources";
+    });
+    box.textContent = "These totals are not two opinions about the same number. " +
+      parts.join("; ") + ". They cover different periods and different resources, " +
+      "so one being larger says nothing about the other — the report never adds, " +
+      "scales or reconciles them.";
     box.hidden = false;
   }
 
@@ -2712,6 +2791,7 @@
   function renderCostViews() {
     renderCostBanner();
     var tiles = renderCostHero();
+    renderCostCaution();
     renderMethodSelector();
     renderCoverage();
     renderCostNote();

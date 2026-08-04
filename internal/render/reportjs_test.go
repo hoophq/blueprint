@@ -829,6 +829,7 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 		Noun    string `json:"noun"`
 		Metric  string `json:"metric"`
 		Window  string `json:"window"`
+		Period  string `json:"period"`
 		Monthly bool   `json:"monthly"`
 	}
 	cases := []struct {
@@ -843,7 +844,7 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 			// a calendar month; the resource-level window is a rolling fortnight
 			// that need not sit inside one month at all.
 			name: "Cost Explorer states its billed window and metric", method: "ce", report: report,
-			want: basis{Noun: "spend", Metric: "AmortizedCost", Window: "2026-07-17→2026-07-30"},
+			want: basis{Noun: "spend", Metric: "AmortizedCost", Window: "2026-07-17→2026-07-30", Period: "over 14 days"},
 		},
 		{
 			// The scan that exposed it: a window straddling a month boundary was
@@ -853,13 +854,13 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 			name:   "a window straddling two months claims a fraction of neither",
 			method: "ce",
 			report: `{"metric":"AmortizedCost","window":{"start":"2026-06-26","end":"2026-07-10","label":"2026-06-26→2026-07-09"}}`,
-			want:   basis{Noun: "spend", Metric: "AmortizedCost", Window: "2026-06-26→2026-07-09"},
+			want:   basis{Noun: "spend", Metric: "AmortizedCost", Window: "2026-06-26→2026-07-09", Period: "over 14 days"},
 		},
 		{
 			// The regression: not Cost Explorer's window, not its metric, and not
 			// the word "spend" for something nothing has been billed for yet.
 			name: "Cost Optimization Hub borrows neither", method: "coh", report: report,
-			want: basis{Noun: "modelled cost", Metric: "modelled monthly rate", Monthly: true},
+			want: basis{Noun: "modelled cost", Metric: "modelled monthly rate", Period: "per month", Monthly: true},
 		},
 		{
 			name: "no resource-level pass ran", method: "ce", report: "null",
@@ -876,10 +877,13 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 			script := strings.Join([]string{
 				costPrelude(c.method, "USD"),
 				"var resourceCostReport = " + c.report + ";",
-				// Nothing else is lifted on purpose: methodBasis reads two globals
-				// and formats them. Reaching for a date helper again would fail
-				// here as a ReferenceError before the expectation below could
+				// Only what methodBasis calls: it reads two globals, measures
+				// the window between them, and formats the result. Nothing
+				// further is lifted, so a helper it should not need fails here
+				// as a ReferenceError before the expectation below could
 				// disagree politely.
+				jsFunc(t, "plural"),
+				jsFunc(t, "windowDays"),
 				jsFunc(t, "methodBasis"),
 				"console.log(JSON.stringify(methodBasis()));",
 			}, "\n")
