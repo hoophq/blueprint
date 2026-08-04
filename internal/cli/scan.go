@@ -49,7 +49,7 @@ func scanCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan",
-		Short: "Discover managed databases and write the census locally",
+		Short: "Discover AWS resources and their cost, and write the census locally",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if ctx == nil {
