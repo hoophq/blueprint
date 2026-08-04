@@ -61,6 +61,16 @@ type reportSummary struct {
 	// every figure was unreadable, and would therefore hide the column on
 	// exactly the run whose cost data most needs looking at.
 	Costed bool `json:"costed"`
+	// CostMethods names every source that priced anything, sorted, and exists
+	// for the same reason Costed does: the table gives each source its own
+	// column, and the header row is built before the census has decoded. The
+	// browser cannot count the methods itself at that point, and a column that
+	// appears after the reader has read the header is not a column.
+	//
+	// Sorted rather than ranked by coverage, because this decides column order
+	// and column order must not move between two scans of the same account. The
+	// hero tiles rank by coverage; they are re-rendered on every change anyway.
+	CostMethods []string `json:"cost_methods,omitempty"`
 }
 
 // summaryPlatform is one row of the platform chart: the software a set of
@@ -170,6 +180,7 @@ func buildSummary(snap *model.Snapshot) reportSummary {
 	types := map[string]struct{}{}
 	accounts := map[string]struct{}{}
 	services := map[string]struct{}{}
+	methods := map[string]struct{}{}
 
 	for i := range snap.Resources {
 		r := &snap.Resources[i]
@@ -202,7 +213,14 @@ func buildSummary(snap *model.Snapshot) reportSummary {
 		if len(r.Costs) > 0 {
 			sum.Costed = true
 		}
+		for _, c := range r.Costs {
+			methods[c.Method] = struct{}{}
+		}
 	}
+	for m := range methods {
+		sum.CostMethods = append(sum.CostMethods, m)
+	}
+	sort.Strings(sum.CostMethods)
 	sum.Types = len(types)
 	sum.Accounts = len(accounts)
 	sum.Services = len(services)

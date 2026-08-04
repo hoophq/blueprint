@@ -162,7 +162,11 @@
   /* ── Cost hero ──
      Its own grid rather than another cell in .rr-kpis: the strip is pinned to
      seven equal columns and money needs the width. */
-  .rr-cost-hero { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; }
+  /* auto-fit, not a fixed three: a census priced by both sources draws four
+     tiles — one per source, untagged, and the account rollup — and a fixed
+     track count dropped the fourth onto a row of its own with the dividers
+     still pointing at neighbours it no longer had. */
+  .rr-cost-hero { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 20px 0; }
   .rr-cost-tile { padding: 0 18px; border-right: 1px solid rgba(247, 247, 247, 0.07); }
   .rr-cost-tile:first-child { padding-left: 0; }
   .rr-cost-tile:last-child { border-right: none; padding-right: 0; }
@@ -189,6 +193,51 @@
   }
   .rr-cost-note p { margin: 0 0 7px; }
   .rr-cost-note p:last-child { margin-bottom: 0; }
+  /* The standing explanation of what the two sources are lives behind this,
+     because it is the same paragraph on every report ever generated. What
+     stays on the page unprompted is only what is true of this census. */
+  .rr-cost-more { margin-top: 12px; }
+  .rr-cost-more summary {
+    cursor: pointer;
+    font-size: 11.5px;
+    color: rgba(247, 247, 247, 0.42);
+  }
+  .rr-cost-more summary:hover { color: rgba(247, 247, 247, 0.7); }
+  .rr-cost-more .rr-cost-note { margin-top: 10px; }
+
+  /* ── Cost coverage ──
+     One track per source rather than one track split between them. A shared
+     bar would make the two sources read as parts of a single whole, which is
+     exactly the sum this report refuses to publish: Cost Explorer reports what
+     was billed over a closed fortnight and Cost Optimization Hub a modelled
+     monthly rate, so each is its own denominator. Identity comes from the row
+     label, never from hue alone — the fill carries "priced" and nothing else,
+     which is also why both rows share one colour instead of being told apart
+     by two that collapse into each other for a deuteranope. */
+  .rr-cov { margin-top: 22px; display: flex; flex-direction: column; gap: 13px; }
+  .rr-cov-head { font-size: 11.5px; font-weight: 500; color: rgba(247, 247, 247, 0.42); }
+  .rr-cov-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 210px) 1fr auto;
+    align-items: center;
+    gap: 16px;
+  }
+  .rr-cov-name { font-size: 12.5px; font-weight: 500; color: rgba(247, 247, 247, 0.78); }
+  .rr-cov-basis { font-size: 11px; color: rgba(247, 247, 247, 0.34); margin-top: 2px; }
+  .rr-cov-track {
+    height: 8px;
+    border-radius: 4px;
+    background: rgba(247, 247, 247, 0.07);
+    overflow: hidden;
+  }
+  .rr-cov-fill { height: 100%; border-radius: 4px; background: #8ab8fa; }
+  .rr-cov-count {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    color: rgba(247, 247, 247, 0.6);
+    white-space: nowrap;
+  }
+  .rr-cov-none { font-size: 11.5px; color: rgba(247, 247, 247, 0.38); }
 
   .rr-method { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 20px; }
   .rr-method-label { font-size: 11.5px; color: rgba(247, 247, 247, 0.42); }
@@ -588,9 +637,14 @@
   <section class="rr-section" id="cost-section" hidden>
     <div class="rr-cost-hero" id="cost-hero"></div>
     <div class="rr-method" id="cost-method" hidden>
-      <span class="rr-method-label">Cost source</span>
+      <span class="rr-method-label">Totals and rankings use</span>
     </div>
+    <div class="rr-cov" id="cost-coverage" hidden></div>
     <div class="rr-cost-note" id="cost-note"></div>
+    <details class="rr-cost-more" id="cost-more" hidden>
+      <summary>How these figures are produced</summary>
+      <div class="rr-cost-note" id="cost-more-body"></div>
+    </details>
   </section>
 
   <section class="rr-section" id="cost-audit-section" hidden>
@@ -1202,14 +1256,29 @@
     method: "",
     currency: "",
     methods: [],
+    // currencyBy is each source's own dominant currency, keyed by method. The
+    // table shows every source at once, so "the currency" is no longer a single
+    // fact about the page — COST.currency is only the one the totals are summed
+    // in, and judging a Cost Optimization Hub figure against it would call a
+    // column foreign to itself.
+    currencyBy: {},
     priced: 0,
     caveated: 0
   };
 
   var METHOD_LABELS = { ce: "Cost Explorer", coh: "Cost Optimization Hub" };
+  // What a column header can fit. The full source name, its meter and its
+  // window go in the sub-line and the tooltip; the head itself carries the one
+  // word that stops the two columns being read as the same measurement twice.
+  var METHOD_COLUMNS = { ce: "Billed", coh: "Modelled" };
 
   function methodLabel(m) {
     return METHOD_LABELS[m] || m || "unnamed source";
+  }
+
+  function costColumnLabel(m) {
+    if (!m) return "Cost";
+    return METHOD_COLUMNS[m] || methodLabel(m);
   }
 
   function costFor(r, method) {
@@ -1266,6 +1335,47 @@
       if (m.currencies[cur] > bestN) { bestN = m.currencies[cur]; best = cur; }
     });
     return best;
+  }
+
+  // sourceSummary folds one source's figures on its own terms — its own dominant
+  // currency, its own coverage — without touching COST.method. It exists so the
+  // hero and the coverage bars can show Cost Explorer and Cost Optimization Hub
+  // beside each other instead of one behind a toggle. Each summary is closed:
+  // nothing here is ever added to, subtracted from or ranked against another
+  // source's, because the two meter different things over different periods.
+  // A resource priced in a currency this source did not mostly report is counted
+  // as off-currency rather than folded in at an exchange rate this tool
+  // does not have.
+  function sourceSummary(method) {
+    var entry = null;
+    COST.methods.forEach(function (e) { if (e.method === method) entry = e; });
+    if (!entry) return null;
+    var cur = dominantCurrency(entry);
+    var amounts = [];
+    var priced = 0;
+    var caveated = 0;
+    var offCurrency = 0;
+    resources.forEach(function (r) {
+      var c = costFor(r, method);
+      if (!c) return;
+      if ((c.currency || "") !== cur) { offCurrency++; return; }
+      var d = decParse(c.amount);
+      // A figure this page could not parse is not a zero and not an absence —
+      // it is a reported amount nobody here can add up, so it stays out of the
+      // total and out of the priced count, exactly as stampCosts treats it.
+      if (!d) return;
+      amounts.push(d);
+      priced++;
+      if (c.caveats && c.caveats.length > 0) caveated++;
+    });
+    return {
+      method: method,
+      currency: cur,
+      priced: priced,
+      caveated: caveated,
+      offCurrency: offCurrency,
+      total: decSum(amounts)
+    };
   }
 
   // ---- Cost windows ---------------------------------------------------------
@@ -1365,8 +1475,13 @@
   // figure that never covered it — a real period attached to the wrong number,
   // which is the fabrication the honesty guardrails exist to prevent. It also
   // supplies the noun, so a modelled rate is never labelled "spend".
-  function methodBasis() {
-    if (COST.method === "coh") {
+  //
+  // The method is a parameter rather than a read of COST.method because the hero
+  // now describes both sources at once. Defaulting to COST.method keeps the
+  // aggregate callers — which still total one basis at a time — unchanged.
+  function methodBasis(m) {
+    var method = m === undefined ? COST.method : m;
+    if (method === "coh") {
       return { noun: "modelled cost", metric: "modelled monthly rate", window: "", monthly: true };
     }
     // The label is left as the pass wrote it. costPartialSuffix belongs to the
@@ -1649,8 +1764,18 @@
   // three states a reader has to be able to tell apart stay testable: a reported
   // figure (a reported "0.00" included), an absence AWS explained, and an
   // absence it did not. None of them renders as zero.
-  function costText(r) {
-    var c = r._cost;
+  // The method is a parameter because the table now gives each source its own
+  // column, so the same row is asked this question once per source. The
+  // currency it is judged against is that source's own dominant currency, not
+  // the selected basis: a column headed "Cost Optimization Hub" that dimmed
+  // every figure for being in the wrong currency, because the *other* source
+  // mostly reported a different one, would be marking the column's own subject
+  // as foreign to itself.
+  function costText(r, m) {
+    var method = m === undefined ? COST.method : m;
+    var cell = (r._costBy || {})[method];
+    var c = cell ? cell.rec : null;
+    var currency = COST.currencyBy[method] || "";
     if (!c) {
       // The reason is quoted, not offered as the explanation for this absence.
       // cost_unavailable is written by whichever pass had something to say, and
@@ -1664,7 +1789,7 @@
         text: "",
         dim: true,
         flag: "",
-        title: "No " + methodLabel(COST.method) + " figure for this resource." +
+        title: "No " + methodLabel(method) + " figure for this resource." +
           (r.cost_unavailable ? " The cost pass recorded: " + r.cost_unavailable : "")
       };
     }
@@ -1681,7 +1806,7 @@
       flag = "†";
       parts.push("Lower bound — " + c.caveats.join(" "));
     }
-    var off = (c.currency || "") !== COST.currency;
+    var off = (c.currency || "") !== currency;
     if (off) {
       parts.push("Reported in " + (c.currency ? c.currency : "no stated currency") +
         ", so it is excluded from every total on this page and sorts last.");
@@ -1930,6 +2055,33 @@
     });
   }
 
+  // stampSources pins every source's figure onto each row, one cell per method,
+  // for the table columns that show them side by side. Unlike stampCosts this
+  // does not move when the selected basis moves — a Cost Explorer column shows
+  // Cost Explorer whichever source the totals are using — so it runs once.
+  //
+  // Each cell is judged against its own source's dominant currency, and dec is
+  // null unless the amount both matches that currency and parses. dec exists
+  // only to order that one column; it is never added across columns, and there
+  // is no code path that could, because no caller reads two of them at once.
+  function stampSources() {
+    COST.currencyBy = {};
+    COST.methods.forEach(function (m) { COST.currencyBy[m.method] = dominantCurrency(m); });
+    resources.forEach(function (r) {
+      var by = {};
+      (r.costs || []).forEach(function (c) {
+        var method = c.method || "";
+        // First figure wins for a method, matching costFor, which the hero and
+        // the old single column both read through. A resource priced twice by
+        // one source is rare and the alternative is picking a winner by size.
+        if (by[method]) return;
+        var dec = (c.currency || "") === (COST.currencyBy[method] || "") ? decParse(c.amount) : null;
+        by[method] = { rec: c, dec: dec };
+      });
+      r._costBy = by;
+    });
+  }
+
   // initCost folds the rows into COST. It runs once, in the decode
   // continuation; everything the metadata alone can say about cost is already
   // on screen by then (see costAttemptedFromMeta).
@@ -1937,6 +2089,7 @@
     COST.methods = methodCounts(resources);
     var hasReasons = resources.some(function (r) { return !!r.cost_unavailable; });
     COST.attempted = COST.attempted || COST.methods.length > 0 || hasReasons;
+    stampSources();
     if (COST.methods.length > 0) {
       // Default to whichever source priced the most resources; ties go to
       // Cost Explorer, which reports what was billed rather than what a model
@@ -2136,11 +2289,25 @@
   // did report, two of which are printed in the Cost column of the very rows
   // this line is describing. The coverage banner already says it correctly;
   // this is the same sentence.
-  function heroCoverage(priced, total, method, currency) {
-    var line = "across " + priced.toLocaleString() + " of " + plural(total, "resource");
-    if (priced >= total) return line;
-    return line + " · " + (total - priced).toLocaleString() + " carry no " +
-      methodLabel(method) + " figure" + (currency ? " in " + currency : "");
+  function heroCoverage(priced, total) {
+    return "across " + priced.toLocaleString() + " of " + plural(total, "resource");
+  }
+
+  // heroGap is the other half of that sentence, split out because a source tile
+  // is titled by the source: repeating "carry no Cost Explorer figure" under a
+  // tile already headed "Cost Explorer" spends a line saying nothing. It keeps
+  // the two absences apart — a resource this source never priced is a different
+  // fact from one it priced in a currency nothing here can add — because the
+  // second is an amount printed in the row below and calling it missing would
+  // contradict the page.
+  function heroGap(s, whole) {
+    var missing = whole - s.priced - s.offCurrency;
+    var bits = [];
+    if (missing > 0) bits.push(missing.toLocaleString() + " carry no figure from this source");
+    if (s.offCurrency > 0) {
+      bits.push(s.offCurrency.toLocaleString() + " priced in another currency, added to nothing");
+    }
+    return bits.join(" · ");
   }
 
   // renderCostHero returns how many tiles it drew, so the caller can hide the
@@ -2163,22 +2330,32 @@
       frag.appendChild(box);
     }
 
+    // One tile per source, side by side, in the order methodCounts fixed: the
+    // source that priced the most resources first, Cost Explorer breaking ties.
+    // Neither tile is a share of the other and there is no tile underneath them
+    // holding a combined figure, because there is no window both cover.
+    COST.methods.forEach(function (m) {
+      var s = sourceSummary(m.method);
+      if (!s || !s.total) return;
+      var b = methodBasis(m.method);
+      // A modelled monthly rate has no billed period to name, so it says what it
+      // is rather than borrowing the other source's window. Its metric is that
+      // same sentence — methodBasis returns "modelled monthly rate" for it — so
+      // appending it as well printed the phrase twice in one line.
+      var basisLine = b.monthly
+        ? "modelled monthly rate · not an amount AWS billed"
+        : "billed" + (b.window ? " · " + b.window : "") + (b.metric ? " · " + b.metric : "");
+      tile(methodLabel(m.method), decFormat(s.total), s.currency, [
+        { text: basisLine },
+        { text: heroCoverage(s.priced, total) },
+        { text: heroGap(s, total) }
+      ]);
+    });
+
     var spend = COST.active ? tierSpend(resources) : null;
     var basis = methodBasis();
 
     if (spend && spend.total) {
-      var source = methodLabel(COST.method);
-      if (basis.metric) source += " · " + basis.metric;
-      // A modelled monthly rate has no billed period to name, so it is titled by
-      // what it is rather than dressed in a window it did not cover.
-      var headline = basis.monthly
-        ? "Modelled monthly cost"
-        : "Spend" + (basis.window ? " · " + basis.window : "");
-      tile(headline, decFormat(spend.total), COST.currency, [
-        { text: heroCoverage(COST.priced, total, COST.method, COST.currency) },
-        { text: source }
-      ]);
-
       var untagged = null;
       spend.tiers.forEach(function (t) { if (t.key === "untagged") untagged = t; });
       var unowned = decSum(resources
@@ -2192,7 +2369,12 @@
             : untaggedShare(untagged.sum, spend.total, untagged.priced, COST.priced, basis.noun, COST.currency),
           bad: hasUntagged && untagged.sum.u > 0n
         },
-        { text: unowned ? "no owner tag at all: " + formatMoney(decFormat(unowned), COST.currency) : "" }
+        { text: unowned ? "no owner tag at all: " + formatMoney(decFormat(unowned), COST.currency) : "" },
+        // Unlike the source tiles beside it, this one is a total, so it has to
+        // pick a single basis — and say which, because with two sources on the
+        // page an unlabelled total is a number the reader cannot place. The
+        // control that changes it sits directly underneath.
+        { text: COST.methods.length > 1 ? "totalled from " + methodLabel(COST.method) + " figures" : "" }
       ]);
     }
 
@@ -2218,19 +2400,87 @@
     return tiles;
   }
 
+  // renderCoverage draws one track per source: how much of the census that
+  // source could put a figure on. Both figures are already in the table, one
+  // column each, so this answers the question the columns cannot — how much of
+  // the estate each source actually saw — before the reader starts trusting
+  // either total.
+  //
+  // Separate tracks, not one split track. A single bar divided between the two
+  // sources would read as a whole made of two parts, and they are not parts of
+  // anything: the same resource is routinely priced by both, so the segments
+  // would overlap and the bar would sum past its own denominator. Each source
+  // gets the full census as its denominator and is scored against it alone.
+  function renderCoverage() {
+    var box = document.getElementById("cost-coverage");
+    if (!COST.counted || COST.methods.length === 0 || total === 0) { box.hidden = true; return; }
+    var frag = document.createDocumentFragment();
+    frag.appendChild(el("div", "rr-cov-head", "Cost coverage · share of the " +
+      total.toLocaleString() + " censused resources each source could price"));
+
+    COST.methods.forEach(function (m) {
+      var b = methodBasis(m.method);
+      var row = el("div", "rr-cov-row");
+
+      var name = el("div", "");
+      name.appendChild(el("div", "rr-cov-name", methodLabel(m.method)));
+      name.appendChild(el("div", "rr-cov-basis", b.monthly ? "modelled · monthly rate" : "billed · closed window"));
+      row.appendChild(name);
+
+      // m.priced is the count of resources this source returned any figure for,
+      // which is the honest denominator question — currency and parsing are
+      // this page's problems with the figure, not the source's failure to
+      // report one. The hero tiles carry that finer split.
+      var pct = decShare({ u: BigInt(m.priced), e: 0 }, { u: BigInt(total), e: 0 });
+      var track = el("div", "rr-cov-track");
+      var fill = el("div", "rr-cov-fill");
+      fill.style.width = pct + "%";
+      track.appendChild(fill);
+      track.setAttribute("role", "img");
+      track.setAttribute("aria-label", methodLabel(m.method) + " priced " + m.priced.toLocaleString() +
+        " of " + total.toLocaleString() + " resources");
+      track.title = methodLabel(m.method) + " returned a figure for " + m.priced.toLocaleString() +
+        " of " + plural(total, "resource") + " (" + decPercent({ u: BigInt(m.priced), e: 0 }, { u: BigInt(total), e: 0 }) + "%)";
+      row.appendChild(track);
+
+      row.appendChild(el("div", "rr-cov-count", m.priced.toLocaleString() + " / " + total.toLocaleString()));
+      frag.appendChild(row);
+    });
+
+    // Priced by nobody: the rows where every source came back empty. Counted
+    // from the rows rather than subtracted from the tracks above, because a
+    // resource priced by both sources is in both of them and the arithmetic
+    // would double-count it straight into a negative.
+    var none = 0;
+    resources.forEach(function (r) { if (!(r.costs || []).length) none++; });
+    if (none > 0) {
+      frag.appendChild(el("div", "rr-cov-none", none.toLocaleString() + " of " +
+        total.toLocaleString() + " priced by neither source — each row states why in the cost columns"));
+    }
+
+    box.replaceChildren(frag);
+    box.hidden = false;
+  }
+
   function renderMethodSelector() {
     var box = document.getElementById("cost-method");
     // One source is not a choice, and a control that cannot change anything is
     // just something else to read.
     if (COST.methods.length < 2) { box.hidden = true; return; }
     var frag = document.createDocumentFragment();
-    frag.appendChild(el("span", "rr-method-label", "Cost source"));
+    // The scope is in the label. This control no longer hides half the data —
+    // both sources have their own hero tile, their own coverage track and their
+    // own table column — so all it still decides is which single basis the
+    // things that must pick one are computed from: the untagged total, the
+    // attribution bar, Spend by service, and grouped rows.
+    frag.appendChild(el("span", "rr-method-label", "Totals and rankings use"));
     COST.methods.forEach(function (m) {
-      var btn = el("button", "rr-method-btn", methodLabel(m.method) + " · " + plural(m.priced, "resource"));
+      var btn = el("button", "rr-method-btn", methodLabel(m.method));
       btn.type = "button";
       btn.setAttribute("aria-pressed", m.method === COST.method ? "true" : "false");
-      btn.title = "Cost Explorer reports what AWS billed; Cost Optimization Hub reports a modelled monthly rate. " +
-        "One source is shown at a time — the two are never added together or ranked against each other.";
+      btn.title = "Totals have to pick one source: Cost Explorer bills a closed window and Cost Optimization Hub " +
+        "models a monthly rate, so adding them would publish a figure neither reported. Both sources stay visible " +
+        "per resource in the table whichever is selected here.";
       btn.addEventListener("click", function () { setMethod(m.method); });
       frag.appendChild(btn);
     });
@@ -2238,7 +2488,31 @@
     box.hidden = false;
   }
 
+  // The cost prose splits by whether a sentence is a finding about *this*
+  // census or a standing explanation of the instrument. Only findings stay on
+  // the page unprompted; the rest is identical in every report blueprint has
+  // ever written, and five paragraphs of it under the headline figures is how
+  // the disclosures stopped being read at all. Nothing is deleted — moving a
+  // caveat behind a disclosure would be a quieter way of dropping it — it moves
+  // one click away, into a summary that says what is under it.
   function renderCostNote() {
+    var frag = document.createDocumentFragment();
+    if (COST.methods.length > 1) {
+      frag.appendChild(el("p", "", "Two sources priced this census and both are shown per resource. They are never " +
+        "added: " + methodLabel("ce") + " reports what AWS billed over a closed window, " +
+        methodLabel("coh") + " a modelled rate for a month that has not happened."));
+    }
+    if (COST.caveated > 0) {
+      frag.appendChild(el("p", "", "† " + plural(COST.caveated, "figure") + " below " +
+        (COST.caveated === 1 ? "is a lower bound" : "are lower bounds") + ": they cover part of a resource's charges " +
+        "and are ranked alongside complete ones, because a table has a single order. Each row's tooltip carries the " +
+        "source's own wording."));
+    }
+    document.getElementById("cost-note").replaceChildren(frag);
+  }
+
+  // renderCostMore carries everything renderCostNote used to print inline.
+  function renderCostMore() {
     var frag = document.createDocumentFragment();
     // The commitment disclosure describes the figure actually in front of the
     // reader. Cost Explorer's metric name says nothing true about a Cost
@@ -2247,7 +2521,11 @@
     var metric = (resourceCostReport && resourceCostReport.metric) || (costReport && costReport.metric) || "";
     frag.appendChild(el("p", "", commitmentNote(metric, COST.method)));
     frag.appendChild(el("p", "", NO_ESTIMATE_NOTE));
-    if (COST.method === "coh") {
+    // Stated whenever Cost Optimization Hub priced anything, not only when it is
+    // the selected basis: its figures are now on the page in their own hero tile
+    // and their own table column regardless of what the selector says, so the
+    // sentence explaining what they are has to be there regardless too.
+    if (COST.methods.some(function (m) { return m.method === "coh"; })) {
       var lookback = methodWindow("coh");
       var over = lookback
         ? ", modelled from usage from " + costWindowStamp(lookback.from) + " up to " +
@@ -2263,13 +2541,12 @@
         "windows and are not meant to add up: the rollup covers the whole bill, the per-resource figures cover only " +
         "what AWS reported against a resource this census could see."));
     }
-    if (COST.caveated > 0) {
-      frag.appendChild(el("p", "", "† " + plural(COST.caveated, "figure") + " below " +
-        (COST.caveated === 1 ? "is a lower bound" : "are lower bounds") + ": they cover part of a resource's charges " +
-        "and are ranked alongside complete ones, because a table has a single order. Each row's tooltip carries the " +
-        "source's own wording."));
-    }
-    document.getElementById("cost-note").replaceChildren(frag);
+    // Counted before the append: replaceChildren moves the fragment's children
+    // out of it, so reading the length afterwards always sees zero and the
+    // disclosure would never open.
+    var n = frag.childNodes.length;
+    document.getElementById("cost-more-body").replaceChildren(frag);
+    document.getElementById("cost-more").hidden = n === 0;
   }
 
   function renderRecon() {
@@ -2436,7 +2713,9 @@
     renderCostBanner();
     var tiles = renderCostHero();
     renderMethodSelector();
+    renderCoverage();
     renderCostNote();
+    renderCostMore();
     renderRecon();
     document.getElementById("cost-section").hidden = !COST.attempted || tiles === 0;
     renderSpend();
@@ -2469,9 +2748,33 @@
   // rows to count: summary.costed is the same question asked of the same
   // resources one process earlier.
   var costColumn = summary.costed === true;
-  if (costColumn) {
-    COLUMNS.splice(1, 0, { key: "_costSort", label: "Cost", num: true, cost: true, startDir: -1 });
-  }
+  // One column per source, both always present, neither hidden behind the
+  // selector. A reader comparing "AWS billed 12.40 for this over a fortnight"
+  // against "the model says 31.00 a month for it as configured" is doing the
+  // most useful thing on the page, and it used to take two clicks and a memory.
+  //
+  // They stay two columns and never merge into one: there is no cell that could
+  // hold both without either summing them or dropping one, and each sorts on its
+  // own. Sorting is per column for the same reason — a combined order would rank
+  // a billed fortnight against a modelled month.
+  //
+  // costMethods is read from the metadata block for the same reason costColumn
+  // is: COST knows nothing until the census decodes, and by then the header row
+  // is on screen. Both fall back to a single unlabelled column if an older
+  // payload has costed but no cost_methods, which keeps the money visible
+  // rather than vanishing it on a payload mismatch.
+  var costMethods = costColumn ? (summary.cost_methods || []).slice() : [];
+  if (costColumn && costMethods.length === 0) costMethods = [""];
+  costMethods.forEach(function (m, i) {
+    COLUMNS.splice(1 + i, 0, {
+      key: "_costSort:" + m,
+      label: costColumnLabel(m),
+      num: true,
+      cost: true,
+      method: m,
+      startDir: -1
+    });
+  });
   var GROUP_FIELD = { service: "service", type: "type", engine: "_engine", environment: "environment", region: "region", account: "account_id" };
 
   var filterEl = document.getElementById("filter");
@@ -2518,15 +2821,26 @@
 
   // syncCostHeader states the window and the meter in the column header itself.
   // A cost with no window named beside it is a number without a question.
+  // Each cost column describes its own source. The head says Billed or
+  // Modelled; the sub-line underneath is where the source is named in full, so
+  // the two columns are never told apart by a single word the reader has to
+  // remember the meaning of.
   function syncCostHeader() {
     COLUMNS.forEach(function (c) {
       if (!c.cost || !c._sub) return;
-      var basis = methodBasis();
-      var bits = [methodLabel(COST.method)];
+      var m = c.method === undefined ? COST.method : c.method;
+      var basis = methodBasis(m);
+      var bits = [methodLabel(m)];
       if (basis.metric) bits.push(basis.metric);
       if (basis.window) bits.push(basis.window);
-      if (COST.currency) bits.push(COST.currency);
+      var cur = COST.currencyBy[m] || (m === COST.method ? COST.currency : "");
+      if (cur) bits.push(cur);
       c._sub.textContent = bits.join(" · ");
+      c._th.title = basis.monthly
+        ? methodLabel(m) + " models a monthly rate for each resource as it is configured now. It is not an " +
+          "amount AWS billed, and it is never added to or ranked against the billed column beside it."
+        : methodLabel(m) + " reports what AWS billed over a closed window. It is never added to or ranked " +
+          "against a modelled rate.";
     });
   }
 
@@ -2543,11 +2857,28 @@
   // interleaved the two, so sorting by Size buried genuinely empty tables among
   // rows that simply had nothing to say about their size. null keeps them
   // apart; compareRows puts them in their own block.
+  // costSortMethod pulls the source out of a cost column's key, or null for any
+  // other column. Each cost column sorts on its own source alone: an order that
+  // interleaved a billed fortnight with a modelled month would be a ranking
+  // across two questions, which is the one thing this page will not publish.
+  function costSortMethod(key) {
+    if (typeof key !== "string" || key.indexOf("_costSort:") !== 0) return null;
+    return key.slice("_costSort:".length);
+  }
+
+  function costSortDec(r, key) {
+    var m = costSortMethod(key);
+    if (m === null) return undefined;
+    var cell = (r._costBy || {})[m];
+    return cell ? cell.dec : null;
+  }
+
   function sortValue(r, key) {
     if (key === "_sizeBytes") return typeof r._sizeBytes === "number" ? r._sizeBytes : null;
     // A decimal object or null. Never a number: a charge is compared with
     // decCmp, digit by digit, and 0.00 is an object like any other amount.
-    if (key === "_costSort") return r._costDec;
+    var dec = costSortDec(r, key);
+    if (dec !== undefined) return dec;
     return String(r[key] || "").toLowerCase();
   }
 
@@ -2558,7 +2889,8 @@
   // charge — ranked as the finding it is instead of tied with the unknown.
   function nullRank(r, key) {
     if (key === "_sizeBytes") return (r._sizeBytes === null || r._sizeBytes === undefined) ? 1 : 0;
-    if (key === "_costSort") return r._costDec ? 0 : 1;
+    var dec = costSortDec(r, key);
+    if (dec !== undefined) return dec ? 0 : 1;
     return 0;
   }
 
@@ -2573,7 +2905,7 @@
     // already sits outside it, and doing it in both places negates twice and
     // sends the unreported rows back to the top of a descending sort.
     if (av === null || av === undefined || bv === null || bv === undefined) return 0;
-    if (key === "_costSort") return decCmp(av, bv);
+    if (costSortMethod(key) !== null) return decCmp(av, bv);
     if (typeof av === "number") return av - bv;
     if (av !== bv) return av < bv ? -1 : 1;
     if (key === "_engine") {
@@ -2634,8 +2966,8 @@
   // reported, an absence AWS explained, and an absence it did not. A resource
   // with no figure is not a free resource, so it gets a dash and a tooltip, not
   // a zero.
-  function costCell(r) {
-    var t = costText(r);
+  function costCell(r, m) {
+    var t = costText(r, m);
     var td = el("td", "num mono");
     if (t.text) {
       td.appendChild(document.createTextNode(t.text));
@@ -2660,8 +2992,9 @@
     name.appendChild(document.createTextNode(r.name || ""));
     if (r.arn) name.title = r.arn;
     tr.appendChild(name);
-    // Second cell, matching where COLUMNS splices the header.
-    if (costColumn) tr.appendChild(costCell(r));
+    // One cell per source, in the same order and at the same offset COLUMNS
+    // spliced the headers.
+    costMethods.forEach(function (m) { tr.appendChild(costCell(r, m)); });
 
     var svc = el("td", "", "");
     svc.appendChild(el("span", "", r.service || ""));
@@ -3282,8 +3615,14 @@
     // The table opens ranked by money when there is money to rank by. Set here
     // rather than beside the other sort state, because "is anything priced" is
     // a fact about the rows.
-    if (COST.active) {
-      sortKey = "_costSort";
+    //
+    // It opens on the selected basis's column, which is the source that priced
+    // the most of the census — the one ranking that describes the most of it.
+    // Falling back to the first column keeps a sort rather than none if the
+    // selected method somehow has no column of its own.
+    if (COST.active && costMethods.length > 0) {
+      var opening = costMethods.indexOf(COST.method) >= 0 ? COST.method : costMethods[0];
+      sortKey = "_costSort:" + opening;
       sortDir = -1;
     }
     renderCostViews();

@@ -430,8 +430,14 @@ func TestReportObservationLabelNamesTheUTCDay(t *testing.T) {
 // would be wrong anyway: it is state the report computes at load time, so a
 // test that wants a particular source active has to say so rather than inherit
 // whatever the fixture produced.
+// currencyBy is seeded from the same pair so a single-source harness reads the
+// same currency however it asks for it. The report keeps the two separate
+// because the table shows every source at once and each is judged against its
+// own dominant currency; a test that only exercises one source has nothing to
+// distinguish.
 func costPrelude(method, currency string) string {
-	return "var COST = { method: " + strconv.Quote(method) + ", currency: " + strconv.Quote(currency) + " };"
+	return "var COST = { method: " + strconv.Quote(method) + ", currency: " + strconv.Quote(currency) +
+		", currencyBy: { " + strconv.Quote(method) + ": " + strconv.Quote(currency) + " } };"
 }
 
 // The report re-implements the collector's idea of an amount, because the
@@ -961,9 +967,16 @@ func TestReportModelledWindowIsOnlyStatedWhenEveryFigureAgrees(t *testing.T) {
 // reading it as "value or 0" tied every unmeasured bucket with every empty one.
 func TestReportSortKeepsAbsenceOutOfTheRanking(t *testing.T) {
 	// rows() builds the shape currentRows sorts, from a compact literal.
+	// _costBy is keyed by source because each cost column sorts on its own
+	// source alone. The harness fills only "ce"; a second key would be a second
+	// column, never a second value in this one.
 	const rows = `function rows(spec) {
   return spec.map(function (s) {
-    return { name: s[0], _costDec: s[1] === null ? null : decParse(s[1]), _sizeBytes: s[2] };
+    return {
+      name: s[0],
+      _costBy: { ce: { dec: s[1] === null ? null : decParse(s[1]) } },
+      _sizeBytes: s[2]
+    };
   });
 }`
 	cases := []struct {
@@ -974,18 +987,18 @@ func TestReportSortKeepsAbsenceOutOfTheRanking(t *testing.T) {
 		want string // space-separated names, in order
 	}{
 		{
-			name: "cost, descending", key: "_costSort", dir: -1,
+			name: "cost, descending", key: "_costSort:ce", dir: -1,
 			spec: `[["a","10.00",null],["b",null,null],["c","0.00",null],["d","2.50",null],["e",null,null],["f","-3.00",null]]`,
 			want: "a d c f b e",
 		},
 		{
 			// Reversing must not promote silence to the top.
-			name: "cost, ascending", key: "_costSort", dir: 1,
+			name: "cost, ascending", key: "_costSort:ce", dir: 1,
 			spec: `[["a","10.00",null],["b",null,null],["c","0.00",null],["d","2.50",null],["e",null,null],["f","-3.00",null]]`,
 			want: "f c d a b e",
 		},
 		{
-			name: "scale is not string order", key: "_costSort", dir: -1,
+			name: "scale is not string order", key: "_costSort:ce", dir: -1,
 			spec: `[["nine","9.99",null],["ten","10.0",null],["hundred","100",null]]`,
 			want: "hundred ten nine",
 		},
@@ -1011,6 +1024,8 @@ func TestReportSortKeepsAbsenceOutOfTheRanking(t *testing.T) {
 				jsFunc(t, "decParse"),
 				jsFunc(t, "decAlign"),
 				jsFunc(t, "decCmp"),
+				jsFunc(t, "costSortMethod"),
+				jsFunc(t, "costSortDec"),
 				jsFunc(t, "sortValue"),
 				jsFunc(t, "nullRank"),
 				jsFunc(t, "compareRows"),
@@ -1170,8 +1185,20 @@ func TestReportCostTextNeverPrintsZeroForAbsence(t *testing.T) {
 		jsFunc(t, "costWindowStamp"),
 		jsFunc(t, "costWindowSentence"),
 		jsFunc(t, "costText"),
+		// Each case names the source its row is read through. The fixtures carry
+		// _cost, the one-figure shape the single Cost column used; the table now
+		// asks per source, so the harness keys it the way stampSources does. The
+		// currency stays USD for every source, because what this test separates
+		// is figure from absence, not one source's currency from another's.
 		`console.log(JSON.stringify([` + strings.Join(in, ",") +
-			`].map(function (r, i) { COST.method = METHODS[i]; return costText(r); })));`,
+			`].map(function (r, i) {
+  var m = METHODS[i];
+  COST.method = m;
+  COST.currencyBy[m] = "USD";
+  r._costBy = {};
+  if (r._cost) r._costBy[m] = { rec: r._cost };
+  return costText(r, m);
+})));`,
 	}, "\n")
 
 	var got []cell
@@ -1288,67 +1315,91 @@ func TestReportCommitmentNoteNeverPromisesASaving(t *testing.T) {
 	}
 }
 
-func TestReportHeroNamesTheSourceItsCoverageGapBelongsTo(t *testing.T) {
+// Every source now gets its own hero tile, so the sub-lines under one no longer
+// have to name it — the tile is headed with it. What they still have to do is
+// keep the tile's own gap scoped to the tile's own source, and keep the two
+// kinds of gap apart: a resource this source never priced, and one it priced in
+// a currency nothing on the page can add. Folding the second into the first
+// would call an amount printed two rows below "missing".
+func TestReportHeroSplitsEachSourcesGapByKind(t *testing.T) {
 	cases := []struct {
-		name     string
-		priced   int
-		total    int
-		method   string
-		currency string
-		want     string
+		name        string
+		priced      int
+		offCurrency int
+		total       int
+		want        string
 	}{
 		{
-			name:   "the gap is scoped to the active source and currency",
-			priced: 28, total: 98, method: "ce", currency: "USD",
-			want: "across 28 of 98 resources · 70 carry no Cost Explorer figure in USD",
+			name:   "the plain gap does not name a source, because the tile is the source",
+			priced: 28, total: 98,
+			want: "70 carry no figure from this source",
 		},
 		{
-			name:   "the other source is named when it is the active one",
-			priced: 4, total: 98, method: "coh", currency: "USD",
-			want: "across 4 of 98 resources · 94 carry no Cost Optimization Hub figure in USD",
+			// Both kinds at once, and neither absorbs the other: 98 = 28 priced
+			// + 2 off-currency + 68 the source never reported.
+			name:   "an off-currency figure is not counted as missing",
+			priced: 28, offCurrency: 2, total: 98,
+			want: "68 carry no figure from this source · 2 priced in another currency, added to nothing",
 		},
 		{
-			// No currency was settled on, so none is claimed; the source still is.
-			name:   "no active currency",
-			priced: 1, total: 3, method: "ce", currency: "",
-			want: "across 1 of 3 resources · 2 carry no Cost Explorer figure",
+			// The source reached every resource; the only gap is this page's
+			// inability to add two currencies together.
+			name:   "off-currency alone",
+			priced: 10, offCurrency: 2, total: 12,
+			want: "2 priced in another currency, added to nothing",
 		},
 		{
 			// Full coverage has no gap to describe, and "0 carry no figure" is a
 			// sentence about nothing.
 			name:   "everything priced states no gap",
-			priced: 12, total: 12, method: "ce", currency: "USD",
-			want: "across 12 of 12 resources",
-		},
-		{
-			name:   "one resource, singular",
-			priced: 1, total: 1, method: "coh", currency: "BRL",
-			want: "across 1 of 1 resource",
+			priced: 12, total: 12,
+			want: "",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			script := strings.Join([]string{
-				jsVar(t, "METHOD_LABELS"),
-				jsFunc(t, "plural"),
-				jsFunc(t, "methodLabel"),
-				jsFunc(t, "heroCoverage"),
-				"console.log(JSON.stringify(heroCoverage(" +
-					strconv.Itoa(c.priced) + ", " + strconv.Itoa(c.total) + ", " +
-					strconv.Quote(c.method) + ", " + strconv.Quote(c.currency) + ")));",
+				jsFunc(t, "heroGap"),
+				"console.log(JSON.stringify(heroGap({ priced: " + strconv.Itoa(c.priced) +
+					", offCurrency: " + strconv.Itoa(c.offCurrency) + " }, " + strconv.Itoa(c.total) + ")));",
 			}, "\n")
 
 			var got string
 			evalJSON(t, script, &got)
 			if got != c.want {
-				t.Errorf("heroCoverage() =\n  %q\nwant\n  %q", got, c.want)
+				t.Errorf("heroGap() =\n  %q\nwant\n  %q", got, c.want)
 			}
 			// The phrasing this replaced, barred rather than merely corrected.
 			if strings.Contains(got, "reported by AWS") {
 				t.Errorf("a method-scoped gap is stated as a fact about AWS:\n  %s", got)
 			}
 		})
+	}
+
+	// The count line itself, which is now the whole of what heroCoverage says.
+	for _, c := range []struct {
+		priced, total int
+		want          string
+	}{
+		{28, 98, "across 28 of 98 resources"},
+		{1, 1, "across 1 of 1 resource"},
+	} {
+		script := strings.Join([]string{
+			jsFunc(t, "plural"),
+			jsFunc(t, "heroCoverage"),
+			"console.log(JSON.stringify(heroCoverage(" + strconv.Itoa(c.priced) + ", " + strconv.Itoa(c.total) + ")));",
+		}, "\n")
+		var got string
+		evalJSON(t, script, &got)
+		if got != c.want {
+			t.Errorf("heroCoverage(%d, %d) = %q, want %q", c.priced, c.total, got, c.want)
+		}
+	}
+
+	// The source's name has to be somewhere, and it moved to the tile's head.
+	if !strings.Contains(reportTemplate, "tile(methodLabel(m.method), decFormat(s.total), s.currency") {
+		t.Error("hero tiles no longer name the source they total")
 	}
 }
 

@@ -61,7 +61,16 @@ type bootProbe struct {
 	BannerHidden bool   `json:"bannerHidden"`
 	BannerTitle  string `json:"bannerTitle"`
 	BannerList   string `json:"bannerList"`
-	CountText    string `json:"countText"`
+	// The coverage block — one track per source — and the two halves the cost
+	// prose was split into: NoteText is what stays on the page, MoreText what
+	// moved behind the disclosure. Read separately so a test can tell "this
+	// sentence is gone" from "this sentence is one click away".
+	CoverageHidden bool   `json:"coverageHidden"`
+	CoverageText   string `json:"coverageText"`
+	NoteText       string `json:"noteText"`
+	MoreHidden     bool   `json:"moreHidden"`
+	MoreText       string `json:"moreText"`
+	CountText      string `json:"countText"`
 	// AttrLegend is the attribution bar's legend, which ends in the sentence
 	// naming what the bar is weighted by. LegendAfterMethod is the same legend
 	// read again after the drive phase switches cost source: the bar is weighted
@@ -242,6 +251,123 @@ func TestReportBootsAndDrivesWithCost(t *testing.T) {
 	if filtered.Painted >= probe.Painted {
 		t.Errorf("clicking a spend bar left %d rows painted, up from %d; the filter did nothing",
 			filtered.Painted, probe.Painted)
+	}
+}
+
+// Both sources at once, which is the whole of what a reader wants from a page
+// that has two: what AWS billed for this resource, and what the model says it
+// costs a month as configured. That used to be one column behind a toggle, so
+// the comparison took two clicks and a memory of the first number.
+//
+// The three things this pins are the three that make it a comparison rather
+// than two views. Each source has its own column, so both figures are on the
+// same row. Each column carries its own source's name, so neither is read as
+// the other. And the two never merge — no combined column, no combined total —
+// because a billed fortnight and a modelled month have no window in common and
+// adding them publishes a figure neither AWS service reported.
+func TestReportGivesEachCostSourceItsOwnColumn(t *testing.T) {
+	probe := bootReport(t, demoCostSnapshot("test"))
+
+	var billed, modelled string
+	for _, h := range probe.Headers {
+		switch {
+		case strings.HasPrefix(h, "Billed"):
+			billed = h
+		case strings.HasPrefix(h, "Modelled"):
+			modelled = h
+		}
+	}
+	if billed == "" || modelled == "" {
+		t.Fatalf("a census priced by both sources drew %d cost columns, want one each:\n%v",
+			len(billed)+len(modelled), probe.Headers)
+	}
+	if !strings.Contains(billed, "Cost Explorer") {
+		t.Errorf("the billed column does not name Cost Explorer: %q", billed)
+	}
+	if !strings.Contains(modelled, "Cost Optimization Hub") {
+		t.Errorf("the modelled column does not name Cost Optimization Hub: %q", modelled)
+	}
+	// Each column names one source and only its own. A modelled column that
+	// also said "Cost Explorer" would be the old single column wearing a new
+	// label, and the reader would have no way to tell which figure is which.
+	if strings.Contains(modelled, "Cost Explorer ") {
+		t.Errorf("the modelled column also claims Cost Explorer: %q", modelled)
+	}
+
+	// Sorting is per column, never across the two. A shared sort key would rank
+	// a fortnight of billing against a month of modelling.
+	if strings.Contains(reportTemplate, `sortKey === "_costSort"`) ||
+		strings.Contains(reportTemplate, `key === "_costSort"`) {
+		t.Error("a cost sort key with no source in it survived; the columns share an ordering")
+	}
+
+	// The coverage block leads with how much of the estate each source reached,
+	// which is the question the columns cannot answer and the one that decides
+	// how much either total is worth.
+	if probe.CoverageHidden || probe.CoverageText == "" {
+		t.Errorf("the coverage block did not render (hidden=%v, text=%q)",
+			probe.CoverageHidden, probe.CoverageText)
+	}
+	for _, want := range []string{"Cost Explorer", "Cost Optimization Hub", "priced by neither source"} {
+		if !strings.Contains(probe.CoverageText, want) {
+			t.Errorf("the coverage block never says %q:\n%s", want, probe.CoverageText)
+		}
+	}
+
+	// The standing explanation moved behind a disclosure rather than off the
+	// page. Both halves are asserted: a note that swallowed the disclosures
+	// would pass a test that only checked the note got shorter.
+	if probe.MoreHidden || probe.MoreText == "" {
+		t.Errorf("the cost disclosures are not reachable (hidden=%v, text=%q)",
+			probe.MoreHidden, probe.MoreText)
+	}
+	for _, want := range []string{
+		"does not estimate what deleting a resource returns",
+		"modelled monthly rates",
+	} {
+		if !strings.Contains(probe.MoreText, want) {
+			t.Errorf("a disclosure was dropped rather than moved — %q is nowhere:\n%s", want, probe.MoreText)
+		}
+	}
+	if strings.Contains(probe.NoteText, "does not estimate what deleting a resource returns") {
+		t.Error("the standing disclosures are still printed inline as well as behind the disclosure")
+	}
+}
+
+// One source, which is every report until Cost Optimization Hub is enrolled in.
+// It gets one column, and the control for picking a basis stays away: a toggle
+// between one thing is furniture.
+//
+// AddResourceCostOverlay is the Cost Explorer half of the fixture — the names
+// read the other way round from what they price — so this is the ordinary
+// --costs run with no hub enrollment behind it.
+func TestReportWithOneCostSourceDrawsOneColumn(t *testing.T) {
+	snap := demo.Snapshot("test")
+	snap.Cost = demo.CostReport()
+	demo.AddResourceCostOverlay(snap)
+	snap.FinalizeAt(renderClock)
+
+	probe := bootReport(t, snap)
+
+	var cost []string
+	for _, h := range probe.Headers {
+		if strings.HasPrefix(h, "Billed") || strings.HasPrefix(h, "Modelled") {
+			cost = append(cost, h)
+		}
+	}
+	if len(cost) != 1 {
+		t.Fatalf("a census priced by one source drew %d cost columns: %v", len(cost), cost)
+	}
+	if !strings.HasPrefix(cost[0], "Billed") {
+		t.Errorf("the one column is not the billed one: %q", cost[0])
+	}
+	if probe.MethodButtons != 0 {
+		t.Errorf("a basis selector appeared for %d source(s)", probe.MethodButtons)
+	}
+	// One track is still worth drawing: "Cost Explorer priced 28 of 98" is the
+	// same finding whether or not a second source exists to compare it against.
+	if probe.CoverageHidden {
+		t.Error("the coverage block hid itself because there was only one source to chart")
 	}
 }
 
@@ -804,6 +930,11 @@ setTimeout(function () {
     bannerHidden: el("cost-banner").hidden,
     bannerTitle: el("cost-banner-title").textContent,
     bannerList: el("cost-banner-list").textContent,
+    coverageHidden: el("cost-coverage").hidden,
+    coverageText: el("cost-coverage").textContent,
+    noteText: el("cost-note").textContent,
+    moreHidden: el("cost-more").hidden,
+    moreText: el("cost-more-body").textContent,
     countText: el("row-count").textContent,
     groupHeaders,
     attrLegend,
