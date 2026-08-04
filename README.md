@@ -5,8 +5,8 @@
 ### What are you running on AWS, and what does it cost?
 
 `blueprint` is a read-only census of what you are actually running on AWS —
-compute, storage, databases, networking — with **what AWS billed for it**
-attached, **entirely from your machine**.
+compute, storage, databases, networking — and, when you ask for it, **what AWS
+charged for it**, **entirely from your machine**.
 
 Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
 
@@ -20,7 +20,7 @@ Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
 
 Past a few hundred resources, nobody has ground truth on their AWS estate anymore: instances, volumes, buckets, and addresses accumulate across regions, accounts, and teams faster than any spreadsheet or wiki page keeps up, and the bill arrives as one number a month later. blueprint runs locally, calls only AWS APIs, and writes its output (terminal summary, HTML report, JSON, CSV) to your local disk. Nothing leaves your machine.
 
-Cost is the organizing principle of the report, and every figure in it is one AWS reported. blueprint never estimates a price from a rate card, never divides an account total across the resources inside it, and never projects a run rate. Where AWS has no number for something, the census says so — see [Coverage](#coverage) for exactly where those edges are.
+Cost is opt-in — `--costs`, because AWS charges for the APIs that answer — but once it is on, it is the organizing principle of the report, and every figure in it is one AWS reported. Some of those figures are billed spend and some are Cost Optimization Hub's modelled estimates, and each says which it is rather than being averaged into one number. blueprint never estimates a price from a rate card, never divides an account total across the resources inside it, and never projects a run rate. Where AWS has no number for something, the census says so — see [Coverage](#coverage) for exactly where those edges are.
 
 ## Quickstart
 
@@ -82,7 +82,7 @@ blueprint scan --no-history             # don't archive this scan or auto-diff
 blueprint scan --demo                   # render from fixture data, no AWS calls
 blueprint scan --demo --demo-scale 20000  # grow the fixture to an estate of that size
 blueprint scan --costs                  # also report last month's spend (AWS bills $0.01/request)
-blueprint scan --costs --cost-resources # also ask what AWS billed each resource (bills per service)
+blueprint scan --costs --cost-resources # also ask what AWS billed each resource (AWS bills $0.01/request, at least one per service)
 blueprint scan --metrics                # also read CloudWatch metrics (AWS bills $0.01/1,000 metrics)
 ```
 
@@ -204,7 +204,7 @@ questions, and blueprint never adds figures from different tiers together.
 | --- | --- | --- | --- | --- |
 | Service and account rollups | `--costs` | Cost Explorer `GetCostAndUsage` | what the last closed month cost, by service and by account | **$0.01 per request**; a normal run is two |
 | Per-resource estimates | `--costs` | Cost Optimization Hub | a modelled monthly rate for an individual resource | free; needs a one-off enrollment |
-| Per-resource billed spend | `--costs --cost-resources` | Cost Explorer `GetCostAndUsageWithResources` | what AWS billed each resource over the last 14 days | **$0.01 per service probed**; needs a paid account preference |
+| Per-resource billed spend | `--costs --cost-resources` | Cost Explorer `GetCostAndUsageWithResources` | what AWS billed each resource over the last 14 days | **$0.01 per request** — at least one per service probed, and one per page when an answer paginates; needs a paid account preference |
 
 Only the first works everywhere. The second needs Cost Optimization Hub
 switched on and covers the resource types AWS models — see
