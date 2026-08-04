@@ -50,7 +50,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: https://github.com/hoophq/blueprint
-    description: Read-only discovery of every AWS-managed database in your accounts
+    description: Read-only census of what you run on AWS, and what AWS charged for it
     license: MIT
     install: |
       bin.install "blueprint"
