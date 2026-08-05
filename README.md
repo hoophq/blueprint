@@ -14,13 +14,13 @@ Runs locally &nbsp;·&nbsp; Stays local &nbsp;·&nbsp; Read-only
 [![CI](https://github.com/hoophq/blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/hoophq/blueprint/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<img src="docs/assets/report.png" alt="The blueprint HTML report, cost first: 98 resources across 2 accounts and 4 regions, a spend headline beside the account total, a Cost Explorer / Cost Optimization Hub source switch, disclosures for incomplete scan coverage and partial cost coverage, an attribution score, and spend broken down by service" width="760">
+<img src="docs/assets/report.png" alt="The blueprint HTML report, cost first: 98 resources across 2 accounts and 4 regions, a spend headline beside the account total, disclosures for incomplete scan coverage and partial cost coverage, an attribution score, spend broken down by service, and a separate section of Cost Optimization Hub savings suggestions ranked by modelled monthly saving" width="760">
 
 </div>
 
 Past a few hundred resources, nobody has ground truth on their AWS estate anymore: instances, volumes, buckets, and addresses accumulate across regions, accounts, and teams faster than any spreadsheet or wiki page keeps up, and the bill arrives as one number a month later. blueprint runs locally, calls only AWS APIs, and writes its output (terminal summary, HTML report, JSON, CSV) to your local disk. Nothing leaves your machine.
 
-Cost is opt-in — `--costs`, because AWS charges for the APIs that answer — but once it is on, it is the organizing principle of the report, and every figure in it is one AWS reported. Some of those figures are billed spend and some are Cost Optimization Hub's modelled estimates, and each says which it is rather than being averaged into one number. blueprint never estimates a price from a rate card, never divides an account total across the resources inside it, and never projects a run rate. Where AWS has no number for something, the census says so — see [Coverage](#coverage) for exactly where those edges are.
+Cost is opt-in — `--costs`, because AWS charges for the APIs that answer — but once it is on, it is the organizing principle of the report, and every figure in it is one AWS reported. There is exactly one price in the report and it is Cost Explorer's: what AWS billed. Cost Optimization Hub answers a different question — what you could stop paying — and its savings suggestions get their own section rather than a second price column, because a modelled saving is not money anyone was charged and is never netted off a bill. blueprint never estimates a price from a rate card, never divides an account total across the resources inside it, and never projects a run rate. Where AWS has no number for something, the census says so — see [Coverage](#coverage) for exactly where those edges are.
 
 ## Quickstart
 
@@ -115,52 +115,56 @@ answers for RDS, Aurora, DocumentDB and Neptune alike. A "total view"
 has real per-service limits, and they belong in a table rather than in your
 inbox as a bug report. Every cell below describes what shipped.
 
-| Resource type | Enumerated | Per-resource cost | Cost Explorer rollup line |
+| Resource type | Enumerated | Savings suggestions | Cost Explorer rollup line |
 | --- | --- | --- | --- |
-| `AWS::RDS::DBInstance` | every standalone instance <sup>1</sup> | `ce` · `coh` (`RdsDbInstance`, plus `RdsDbInstanceStorage` for storage alone) | Amazon Relational Database Service |
-| `AWS::RDS::DBCluster` (Aurora) | every cluster | `ce` · `coh` (`AuroraDbClusterStorage` — **storage only**) | Amazon Relational Database Service |
-| `AWS::DocDB::DBCluster` | every cluster | `ce` · `coh` (`DocumentDBCluster`) | Amazon DocumentDB (with MongoDB compatibility) |
-| `AWS::DocDB::DBInstance` | standalone only <sup>1</sup> | `ce` | Amazon DocumentDB (with MongoDB compatibility) |
-| `AWS::Neptune::DBCluster` | every cluster | `ce` | Amazon Neptune |
-| `AWS::Neptune::DBInstance` | standalone only <sup>1</sup> | `ce` | Amazon Neptune |
-| `AWS::DynamoDB::Table` | every table | `ce` · `coh` (`DynamoDBTable`) | Amazon DynamoDB |
-| `AWS::ElastiCache::ReplicationGroup` | every group | `ce` · `coh` (`ElastiCacheCluster`) | Amazon ElastiCache |
-| `AWS::ElastiCache::CacheCluster` | standalone only <sup>2</sup> | `ce` · `coh` (`ElastiCacheCluster`) | Amazon ElastiCache |
-| `AWS::ElastiCache::ServerlessCache` | every cache | `ce` | Amazon ElastiCache |
-| `AWS::Redshift::Cluster` | every cluster | `ce` | Amazon Redshift |
-| `AWS::RedshiftServerless::Workgroup` | every workgroup | `ce` | Amazon Redshift |
-| `AWS::EC2::Instance` | every instance, stopped included | `ce` · `coh` (`Ec2Instance`) | Amazon Elastic Compute Cloud - Compute · EC2 - Other |
-| `AWS::EC2::Volume` | every volume, attached or not | `ce` · `coh` (`EbsVolume`) | Amazon Elastic Block Store · EC2 - Other |
-| `AWS::EC2::Snapshot` | this account's own <sup>3</sup> | `ce` | Amazon Elastic Block Store · EC2 - Other |
-| `AWS::Lambda::Function` | every function | `ce` · `coh` (`LambdaFunction`) | AWS Lambda |
-| `AWS::S3::Bucket` | every bucket, listed per region <sup>4</sup> | `ce` | Amazon Simple Storage Service |
-| `AWS::EC2::NatGateway` | every gateway | `ce` · `coh` (`NatGateway`) | Amazon Virtual Private Cloud · EC2 - Other |
-| `AWS::EC2::EIP` | every allocated address | `ce` | EC2 - Other |
-| `AWS::EC2::NetworkInterface` | only those holding a billable public IPv4 <sup>5</sup> | `ce` | EC2 - Other |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | every Application, Network and Gateway load balancer | `ce` | Amazon Elastic Load Balancing |
-| `AWS::ElasticLoadBalancing::LoadBalancer` | every Classic load balancer | `ce` | Amazon Elastic Load Balancing |
+| `AWS::RDS::DBInstance` | every standalone instance <sup>1</sup> | `RdsDbInstance`, plus `RdsDbInstanceStorage` for storage alone | Amazon Relational Database Service |
+| `AWS::RDS::DBCluster` (Aurora) | every cluster | `AuroraDbClusterStorage` — **storage only** | Amazon Relational Database Service |
+| `AWS::DocDB::DBCluster` | every cluster | `DocumentDBCluster` | Amazon DocumentDB (with MongoDB compatibility) |
+| `AWS::DocDB::DBInstance` | standalone only <sup>1</sup> | — | Amazon DocumentDB (with MongoDB compatibility) |
+| `AWS::Neptune::DBCluster` | every cluster | — | Amazon Neptune |
+| `AWS::Neptune::DBInstance` | standalone only <sup>1</sup> | — | Amazon Neptune |
+| `AWS::DynamoDB::Table` | every table | `DynamoDBTable` | Amazon DynamoDB |
+| `AWS::ElastiCache::ReplicationGroup` | every group | `ElastiCacheCluster` | Amazon ElastiCache |
+| `AWS::ElastiCache::CacheCluster` | standalone only <sup>2</sup> | `ElastiCacheCluster` | Amazon ElastiCache |
+| `AWS::ElastiCache::ServerlessCache` | every cache | — | Amazon ElastiCache |
+| `AWS::Redshift::Cluster` | every cluster | — | Amazon Redshift |
+| `AWS::RedshiftServerless::Workgroup` | every workgroup | — | Amazon Redshift |
+| `AWS::EC2::Instance` | every instance, stopped included | `Ec2Instance` | Amazon Elastic Compute Cloud - Compute · EC2 - Other |
+| `AWS::EC2::Volume` | every volume, attached or not | `EbsVolume` | Amazon Elastic Block Store · EC2 - Other |
+| `AWS::EC2::Snapshot` | this account's own <sup>3</sup> | — | Amazon Elastic Block Store · EC2 - Other |
+| `AWS::Lambda::Function` | every function | `LambdaFunction` | AWS Lambda |
+| `AWS::S3::Bucket` | every bucket, listed per region <sup>4</sup> | — | Amazon Simple Storage Service |
+| `AWS::EC2::NatGateway` | every gateway | `NatGateway` | Amazon Virtual Private Cloud · EC2 - Other |
+| `AWS::EC2::EIP` | every allocated address | — | EC2 - Other |
+| `AWS::EC2::NetworkInterface` | only those holding a billable public IPv4 <sup>5</sup> | — | EC2 - Other |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | every Application, Network and Gateway load balancer | — | Amazon Elastic Load Balancing |
+| `AWS::ElasticLoadBalancing::LoadBalancer` | every Classic load balancer | — | Amazon Elastic Load Balancing |
 
-**`ce`** — Cost Explorer resource-level spend (`--cost-resources`): what AWS
-billed *that* resource over the last 14 days. Every service in the table is
-asked, because AWS's own documentation contradicts itself about which services
-answer; the outcome is recorded per service, per run, in the report. A `ce`
-mark means blueprint asks, not that AWS replies.
+**Per-resource spend** is not in the table because it has no per-row answer:
+every service above is asked (`--cost-resources`), because AWS's own
+documentation contradicts itself about which services answer. What came back
+is recorded per service, per run, in the report — blueprint asking is not AWS
+replying, and the report shows which it was.
 
-**`coh`** — Cost Optimization Hub (`--costs`): a modelled monthly rate, in
-AWS's own resource-type names. The list is AWS's and is reproduced here rather
-than encoded in blueprint, which attaches whatever comes back by exact ARN and
-labels every other resource *no Cost Optimization Hub recommendation* — not
-`$0`. Twelve rows above have no `coh` mark; the notable absences are **S3 and
-load balancers**, which the hub does not model at all.
+**Savings suggestions** — Cost Optimization Hub (`--costs`), in AWS's own
+resource-type names. These are the types the hub models; the list is AWS's and
+is reproduced here rather than encoded in blueprint, which attaches whatever
+comes back by exact ARN and says of every other resource that the hub had no
+suggestion — which is a statement about advice, not about cost, and never
+lowers or raises a price. Twelve rows above have no suggestion type; the
+notable absences are **S3 and load balancers**, which the hub does not model at
+all.
 
 **Cost Explorer rollup line** — the service line (`--costs`) a row's spend
 lands on when there is no per-resource figure. *EC2 - Other* is Cost Explorer's
 catch-all, carrying EBS, NAT gateway data processing and idle public IPv4
 charges, which is why several rows name it beside their own service.
 
-A row whose only source is `ce`, in an account that has not enabled
-resource-level data, is **rollup-only**: you get the service total and the
-inventory, and no per-resource number is invented to fill the gap.
+In an account that has not enabled resource-level data, every row is
+**rollup-only**: you get the service total and the inventory, and no
+per-resource number is invented to fill the gap. Savings suggestions are
+unaffected — they are free, they come from a different API, and they are not a
+price, so they arrive whether or not anything on the page has one.
 
 <sup>1</sup> RDS, DocumentDB and Neptune cluster members are represented by
 their cluster and never listed twice. DocumentDB and Neptune are clustered in
@@ -199,17 +203,20 @@ Every resource is normalized into one model with a narrow core — CloudFormatio
 
 Cost arrives in three tiers. All of them are opt-in, they answer different
 questions, and blueprint never adds figures from different tiers together.
+Two of them are money AWS charged; the third is money AWS thinks you could
+stop being charged, and it is kept out of every total on the page.
 
 | Tier | Flag | Source | Answers | Price |
 | --- | --- | --- | --- | --- |
 | Service and account rollups | `--costs` | Cost Explorer `GetCostAndUsage` | what the last closed month cost, by service and by account | **$0.01 per request**; a normal run is two |
-| Per-resource estimates | `--costs` | Cost Optimization Hub | a modelled monthly rate for an individual resource | free; needs a one-off enrollment |
 | Per-resource billed spend | `--costs --cost-resources` | Cost Explorer `GetCostAndUsageWithResources` | what AWS billed each resource over the last 14 days | **$0.01 per request** — at least one per service probed, and one per page when an answer paginates; needs a paid account preference |
+| Savings suggestions | `--costs` | Cost Optimization Hub | what you could stop paying, per resource, if you took an action | free; needs a one-off enrollment |
 
-Only the first works everywhere. The second needs Cost Optimization Hub
-switched on and covers the resource types AWS models — see
-[Coverage](#coverage). The third needs an account-level preference that is
-itself paid, and AWS's guarantees for it start and end at EC2.
+Only the first works everywhere. The second needs an account-level preference
+that is itself paid, and AWS's guarantees for it start and end at EC2. The
+third needs Cost Optimization Hub switched on and covers the resource types AWS
+models — see [Coverage](#coverage) — and it is not a third price: a suggestion
+is a modelled saving from an action nobody has taken yet.
 
 There is deliberately no fourth tier, and in particular **no price computed
 from the AWS Pricing API**. List price is not spend. Reserved Instances,
@@ -284,47 +291,6 @@ Cost is deliberately invisible to history bucketing and to the resource diff,
 so turning `--costs` on or off never re-buckets your history or reports an
 unchanged estate as drifted.
 
-### Per-resource estimates
-
-`--costs` also asks **Cost Optimization Hub** what each individual resource
-costs. That API is free, so it adds nothing to the bill above:
-
-```
-  … cost-hub: reading per-resource estimates from Cost Optimization Hub — not billed by AWS
-  ✓ cost-hub: 38 resource(s) priced from 41 recommendation(s) in 3 call(s), no charge
-```
-
-It is the only AWS API that reports a dollar figure for one resource without
-the caller inventing an allocation, which is why blueprint uses it and why it
-never divides an account rollup across the resources in it. A per-resource
-number nobody reported per resource is a number this tool made up.
-
-The two figures answer different questions and are never added together or
-reconciled: the rollup above is what AWS billed over a closed month, while a
-Cost Optimization Hub figure is a forward-looking **monthly rate modelled from
-recent usage**. Every per-resource amount therefore carries its method
-(`coh`), an `estimated` flag, and the usage window the model ran over, so a
-stale figure is visible as one.
-
-Coverage is partial by design. Cost Optimization Hub only models resource
-types it has recommendations for — the `coh` column in [Coverage](#coverage)
-is AWS's list, and S3 and load balancers are not on it — so resources it does
-not cover simply have no cost, which is why the run reports how many resources
-were priced against how many recommendations were read. blueprint does not
-maintain a coverage list of its own: it attaches what came back and marks
-everything else *no Cost Optimization Hub recommendation*, because "the hub
-does not model this type" and "the hub had nothing to say about this resource"
-are not distinguishable from the response, and guessing between them would be
-this tool asserting something AWS did not. Where a figure covers only part of a
-resource (storage but not compute, say), that is recorded as a caveat on the
-figure rather than left for the reader to discover.
-
-Cost Optimization Hub has to be switched on, once, from its console — it is
-free and takes about a day to produce the first recommendations. Until then an
-unenrolled account returns an empty list that is indistinguishable from "no
-recommendations", so blueprint checks enrollment first and puts the answer in
-the failure ledger rather than reporting a silent absence of cost.
-
 ### Per-resource billed spend
 
 `--cost-resources` asks Cost Explorer what it actually **billed** each
@@ -372,10 +338,11 @@ service, in the report:
 | `uncensused` | it has spend but no scanner covers it, so it was not asked |
 | `skipped` | the request budget ran out before reaching it — never asked, not zero |
 
-Figures carry the method `ce` and sit alongside any `coh` figure on the same
-resource, in their own columns, because they answer different questions: `ce`
-is what AWS billed over a closed fortnight, `coh` is a modelled monthly rate
-for the period ahead. Nothing in blueprint ever adds them together.
+Figures carry the method `ce`, and it is the only method a per-resource amount
+has ever been written with in this schema — one basis for money, so a column of
+figures is a column of comparable ones. Where a resource also has a savings
+suggestion, that lands in its own fields and never beside the spend as a
+second price.
 
 The join from a Cost Explorer row to a census resource is exact — full ARN, or
 the AWS-assigned identifier at the end of one. A row matching two resources is
@@ -389,6 +356,71 @@ Two limits are disclosed rather than hidden. Cost Explorer returns at most
 5,000 resources per service **and truncates without saying so**, so a list at
 that ceiling is flagged as possibly short. And the last fortnight is data AWS
 is still restating, so these figures are marked estimated until they settle.
+
+### Savings suggestions
+
+`--costs` also asks **Cost Optimization Hub** what you could stop paying. That
+API is free, so it adds nothing to the bill above:
+
+```
+  … cost-hub: reading savings suggestions from Cost Optimization Hub — not billed by AWS
+  ✓ cost-hub: 38 resource(s) with suggestions from 41 recommendation(s) in 3 call(s), no charge
+```
+
+They render in their own section, ranked by modelled monthly saving, each with
+the action AWS suggests, how much work it grades that action, and whether it
+needs a restart:
+
+```
+  ── ways to cut this bill ── AWS Cost Optimization Hub  ·  modelled monthly, never billed
+    ranked by modelled monthly saving (USD)
+      1310.72 USD  Delete gp3  ·  vol-0d4e5f6a7b8c90093 (ebs, us-east-1)  ·  very low effort  ·  no restart  ·  not reversible
+       481.00 USD  Rightsize db.m6g.2xlarge → db.m6g.xlarge  ·  telemetry-tsdb (rds, us-west-2)  ·  medium effort  ·  restart needed  ·  reversible
+      … and 39 more (full list in the JSON and CSV output)
+      Σ 4627.51 USD across 44 suggestion(s), if every one were acted on
+    ⓘ modelled by AWS from recent usage, not amounts you were charged; nothing here is added to or subtracted from the spend above
+```
+
+**A saving is not a price.** The hub reports what a resource would cost *after*
+a change you have not made, and the figure blueprint publishes is the
+difference — the part that would go away. There is exactly one money basis in
+the report and it is Cost Explorer's. Nothing here is added to, subtracted
+from, or reconciled against the spend above; the Σ line totals the suggestions
+themselves and says out loud that it assumes every one of them was acted on,
+which nobody has. Deleting something does not make the fortnight it already
+cost disappear, and only a later scan can say what actually changed.
+
+Savings in different currencies are never summed — each currency gets its own
+ranking and its own total, and suggestions whose currency AWS did not report
+get a bucket of their own rather than being called USD. A suggestion AWS gave
+with no savings figure at all is still shown, still counted, and its saving
+column is left empty rather than filled with `0`; a reported `0.00` is a
+different thing — a change worth making that saves nothing this month — and
+survives as itself.
+
+Coverage is partial by design. The hub only models resource types it has
+recommendations for — the *Savings suggestions* column in
+[Coverage](#coverage) is AWS's list, and S3 and load balancers are not on it —
+which is why the run reports how many resources got suggestions against how
+many recommendations were read. blueprint maintains no coverage list of its
+own: it attaches what came back by exact ARN, and a resource with no suggestion
+is a resource the hub said nothing about, not a resource that costs nothing.
+"The hub does not model this type" and "the hub had nothing to say about this
+one" are not distinguishable from the response, and guessing between them would
+be this tool asserting something AWS did not.
+
+Where AWS modelled a recommendation over a window the resource did not exist
+for all of, that is recorded as a caveat on the suggestion. Recommendations
+that name no resource — Savings Plans and Reserved Instance purchases, which
+are account-level commitments rather than changes to a thing in the census —
+have nothing to attach to and are ledgered instead of being pinned to an
+arbitrary row.
+
+Cost Optimization Hub has to be switched on, once, from its console — it is
+free and takes about a day to produce the first recommendations. Until then an
+unenrolled account returns an empty list that is indistinguishable from "no
+recommendations", so blueprint checks enrollment first and puts the answer in
+the failure ledger rather than reporting a silent absence of advice.
 
 ## Metrics
 
@@ -429,7 +461,7 @@ does not, because a clock advancing is not a finding.
 - **Terminal**: a sprawl summary — total resources, distinct types/regions/accounts, a per-service breakdown, and counts of resources with no owner or environment tag.
 - **HTML**: a single self-contained file (`blueprint-YYYY-MM-DD.html`) you can open in a browser or attach to a doc. No external assets, no CDN calls. Past 5,000 resources the inventory is compressed into the page and unpacked by the browser — a 50,000-resource census lands under three megabytes instead of about nineteen — which needs Chrome or Edge 80+, Firefox 113+, or Safari 16.4+. Smaller reports stay plain text in the file and open anywhere. Separately, past 500 resources the inventory opens grouped by service and collapsed, so the first screen is a few dozen rows rather than the whole estate.
 - **JSON**: the complete snapshot (`blueprint-YYYY-MM-DD.json`) — every resource, plus the failure ledger, plus the cost report when `--costs` is on.
-- **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets. The columns are the narrow core and stay fixed as new services land; attributes and measures ride in a final `k=v;k=v` cell.
+- **CSV**: one row per resource (`blueprint-YYYY-MM-DD.csv`) for spreadsheets. The columns are the narrow core and stay fixed as new services land; attributes and measures ride in one `k=v;k=v` cell. With `--costs`, billed spend and savings suggestions get separate closed blocks of columns after it — `cost_ce_*` and `tip_*` — so a spend column stays summable and a saving is never mixed into it. A resource with several suggestions shows the largest and counts the rest in `tip_count`; the full set is in the JSON.
 
 ## Required IAM permissions
 

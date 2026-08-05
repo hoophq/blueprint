@@ -28,8 +28,7 @@ import (
 // user's diff history.
 //
 // It reads as words because it appears in a user-facing ledger next to "cost"
-// and "metrics"; the machine-readable short form is model.CostMethodCOH, which
-// is what lands in every priced resource's JSON.
+// and "metrics".
 const CostHubService = "cost-hub"
 
 // cohRegion is where Cost Optimization Hub lives. It is a global service with
@@ -42,10 +41,10 @@ const cohRegion = "us-east-1"
 // ListRecommendations is not billed, so this is a runaway guard rather than a
 // budget. Unlike the Cost Explorer rollup — where a truncated read is
 // discarded, because a total that is missing pages is a wrong total — hitting
-// the cap here keeps what was already read: each figure is independently
-// reported for one resource, so a page that never arrived means fewer
-// resources carry a cost, not that any carried cost is wrong. The gap goes in
-// the ledger so "fewer" is never mistaken for "none exist".
+// the cap here keeps what was already read: each recommendation stands on its
+// own for one resource, so a page that never arrived means fewer resources
+// carry advice, not that any carried advice is wrong. The gap goes in the
+// ledger so "fewer" is never mistaken for "none exist".
 const maxRecommendationPages = 1000
 
 // maxEnrollmentPages bounds the enrollment check.
@@ -78,30 +77,43 @@ func CostHubClient(cfg aws.Config) CostHubAPI {
 	return costoptimizationhub.NewFromConfig(c)
 }
 
-// CostHub attaches per-resource cost estimates from Cost Optimization Hub to
-// the census.
+// CostHub attaches Cost Optimization Hub's recommendations to the census: what
+// AWS says could be changed about a resource to spend less on it.
 //
-// # What this figure is, and what it is not
+// # Why this is advice and not a price
 //
-// ListRecommendations reports estimatedMonthlyCost for the resource's *current*
-// configuration — the thing a recommendation proposes changing. That makes it
-// the only AWS API that hands back a per-resource dollar figure without the
-// caller inventing an allocation, which is why it is the source here. It is
-// still a model: a forward-looking monthly rate extrapolated from a usage
-// lookback, not an amount anyone was invoiced. It is therefore recorded with
-// Method "coh" and Estimated true, and it is never summed with, reconciled
-// against, or substituted for the billed Cost Explorer rollup in
-// Snapshot.Cost.
+// ListRecommendations is a recommendations API. Per resource it returns an
+// action, a recommended replacement, an estimated monthly saving, an
+// implementation effort, and whether the change needs a restart or can be
+// rolled back. It also returns estimatedMonthlyCost — and this stage used to
+// read that field, and only that field, and record it as a per-resource price
+// with Method "coh".
+//
+// That was the wrong reading. estimatedMonthlyCost is the *"before" baseline of
+// a recommendation*: what the resource is modelled to cost per month as
+// configured today, extrapolated forward from a usage lookback. Nobody was ever
+// invoiced it. Published beside Cost Explorer's billed figure it did not read as
+// a different question — it read as two AWS services disagreeing about one
+// number, and the reader was left to reconcile a modelled month against a
+// billed fortnight.
+//
+// So the census now takes from this API the field that is actually actionable
+// and throws away the one that looked like money. Cost Explorer answers what you
+// paid. Cost Optimization Hub answers what you could stop paying. The two are
+// never added, subtracted, or reconciled: a saving is not spend, and a saving
+// that has not been acted on is not even a saving yet.
 //
 // # Coverage is partial by construction
 //
-// Cost Optimization Hub only models resource types it has recommendations for
-// (roughly two dozen: EC2, EBS, Lambda, NAT gateways, and most managed
-// databases — not S3, not load balancers). A resource it does not cover comes
-// away with no cost at all, which is the honest answer; the alternative,
-// spreading an account rollup across resources, is the fabricated number the
-// guardrails forbid. The meter reports how many resources were priced so the
-// gap is visible rather than implied.
+// Cost Optimization Hub only models resource types it has advice for (roughly
+// two dozen: EC2, EBS, Lambda, NAT gateways, and most managed databases — not
+// S3, not load balancers). A resource it does not cover comes away with no
+// recommendation, and under the old reading that was a reportable absence,
+// because a missing price invites being read as zero. It is not one now: having
+// no advice is the ordinary state of a well-configured resource, and annotating
+// most of an estate with "no recommendation" would be noise dressed as a
+// finding. The meter reports how many resources were tipped so the coverage is
+// visible rather than implied.
 //
 // # Threading
 //
@@ -141,10 +153,21 @@ type CostHubMeter struct {
 	Requests int
 	// Recommendations is how many rows were read across all pages.
 	Recommendations int
-	// Priced is how many census resources came away with a cost. Read against
-	// Recommendations it is the coverage figure: a run where thousands of
-	// recommendations priced nothing is an ARN mismatch, not an empty estate.
-	Priced int
+	// Tipped is how many census resources came away with at least one
+	// recommendation. Read against Recommendations it is the coverage figure: a
+	// run where thousands of recommendations tipped nothing is an ARN mismatch,
+	// not a well-configured estate.
+	//
+	// It counts resources rather than recommendations because one resource can
+	// carry several, and "20 of 98 resources have advice" is the coverage
+	// question a reader is asking.
+	Tipped int
+	// Unattached is how many recommendations named a resource this census does
+	// not hold — a scanner gap or an account-level suggestion, not an error.
+	// Kept separate from Recommendations so the two halves of a mismatch stay
+	// distinguishable: advice that arrived and found nothing to land on is a
+	// different problem from advice that never arrived.
+	Unattached int
 }
 
 // Meter returns the tally so far. Safe to call once Enrich has returned.
@@ -168,15 +191,12 @@ func (h *CostHub) now() time.Time {
 	return time.Now().UTC()
 }
 
-// figure is one recommendation reduced to the fields the census keeps.
-type figure struct {
-	amount   string
-	currency string
-	from     *time.Time
-	to       *time.Time
-	// resType is Cost Optimization Hub's own resource type name, kept only to
-	// decide whether the amount covers the whole resource (see partialScope).
-	resType string
+// tip is one recommendation reduced to the fields the census keeps, before it
+// is attached to a resource. It is model.Recommendation minus the caveats,
+// which are derived at attach time from what the census knows about the
+// resource the tip lands on.
+type tip struct {
+	rec model.Recommendation
 }
 
 // Enrich implements scan.Enricher.
@@ -207,8 +227,7 @@ func (h *CostHub) Enrich(ctx context.Context, req scan.Enrichment) []model.Failu
 		return failures
 	}
 
-	figures, complete := h.recommendations(ctx, api, accounts, report)
-	h.attach(req.Resources, figures, complete)
+	h.attach(req.Resources, h.recommendations(ctx, api, accounts, report))
 	return failures
 }
 
@@ -341,7 +360,7 @@ func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []strin
 			// strength of a check that did not finish.
 			report(h.Account, "", "coh_enrollment_unknown: gave up checking Cost Optimization Hub enrollment after %d "+
 				"pages of member accounts without reaching the scanned one(s); recommendations were read anyway, so "+
-				"an empty result below may mean the service is not enabled rather than that nothing was found",
+				"an empty result below may mean the service is not enabled rather than that there is nothing to act on",
 				maxEnrollmentPages)
 			return true
 		case len(inactiveScanned) == len(accounts), !otherActive:
@@ -350,9 +369,9 @@ func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []strin
 			// case where an empty result can be explained rather than merely
 			// observed.
 			report(h.Account, "", "coh_not_enrolled: Cost Optimization Hub is not enabled for the %d scanned "+
-				"account(s), so no per-resource cost estimates were collected — opt in from the Cost Optimization "+
+				"account(s), so no cost-cutting recommendations were collected — opt in from the Cost Optimization "+
 				"Hub console (it is free, and AWS takes about 24 hours to produce the first recommendations); "+
-				"until then account-level spend from --costs is the only cost figure available", len(accounts))
+				"spend figures are unaffected, they come from Cost Explorer", len(accounts))
 			return false
 		default:
 			// The hub is on for accounts outside the census and the scanned
@@ -362,59 +381,77 @@ func (h *CostHub) enrolled(ctx context.Context, api CostHubAPI, accounts []strin
 			report(h.Account, "", "coh_enrollment_unconfirmed: Cost Optimization Hub is enabled in this organization, "+
 				"but the enrollment list never named the %d scanned account(s), so their status is unknown; "+
 				"recommendations were read anyway, and an empty result may mean those accounts are not enrolled "+
-				"rather than that nothing was found", len(accounts))
+				"rather than that there is nothing to act on", len(accounts))
 			return true
 		}
 	}
 
 	if len(inactiveScanned) > 0 {
 		report(h.Account, "", "coh_account_not_enrolled: Cost Optimization Hub is not enabled for %d of the %d "+
-			"scanned account(s), so their resources come away with no cost estimate while the rest are priced "+
+			"scanned account(s), so their resources come away with no recommendations while the rest are covered "+
 			"— opt those accounts in from the Cost Optimization Hub console", len(inactiveScanned), len(accounts))
 	}
 	// A payer enrolled for itself alone still answers ListRecommendations, but
 	// only about its own resources, so every other scanned account comes away
-	// unpriced for a reason that is a settings choice rather than a property
-	// of the estate.
+	// with no advice for a reason that is a settings choice rather than a
+	// property of the estate.
 	if len(accounts) > 1 && includeMembers != nil && !*includeMembers {
 		report(h.Account, "", "coh_member_accounts_excluded: Cost Optimization Hub is enrolled for this "+
 			"account only, not for the organization, so resources in the other %d scanned account(s) "+
-			"come away with no cost estimate — enable member accounts in the Cost Optimization Hub "+
+			"come away with no recommendations — enable member accounts in the Cost Optimization Hub "+
 			"console from the management account", len(accounts)-1)
 	}
 	return true
 }
 
-// recommendations reads the whole list and reduces it to one figure per ARN.
-func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts []string, report reporter) (map[string]figure, bool) {
-	figures := map[string]figure{}
-	// complete records that the hub was read all the way to its last page. Only
-	// then does a resource's absence from figures mean the hub has nothing for
-	// it; on any early exit the absence means the read stopped, and saying
-	// otherwise would turn a truncated list into a statement about resources
-	// that were never reached.
-	complete := false
-	// conflicting holds ARNs two recommendations disagreed about; they are
-	// dropped rather than resolved, so nothing is published that cannot be
-	// defended. Tracked separately from figures so a conflict discovered on a
-	// later page still suppresses the earlier value.
-	conflicting := map[string]bool{}
+// recommendations reads the whole list and groups it by ARN.
+//
+// One ARN can map to several tips. The hub reasons about resources more finely
+// than the census does — a database's compute and its storage are separate
+// recommendations — and both are true at once, so they are kept as a list
+// rather than reconciled into one.
+// A short read is not distinguished from an exhausted one in the return value.
+// It used to be: while the hub was a price source, a resource missing from the
+// answer was stamped "the hub named no price for this", and that sentence is
+// only true if the whole list was read. Nothing is stamped now, so the
+// distinction has no consumer — a truncated read means fewer tips, which the
+// ledger already says out loud.
+func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts []string, report reporter) map[string][]tip {
+	tips := map[string][]tip{}
+	// unnamed counts recommendations that arrived without an ARN. They are
+	// account-level suggestions — buy a Savings Plan, buy Reserved Instances —
+	// which are real advice with nothing in a resource census to attach to.
+	// Counted rather than dropped in silence: they are often the largest
+	// savings AWS is offering, and a reader who sees none of them should be
+	// told they existed.
+	unnamed := 0
+	// seen holds the recommendation ids already stored, so a row that arrives
+	// twice is stored once. See the append below for why that is the only
+	// de-duplication this stage does.
+	seen := map[string]bool{}
 
 	var token *string
 	for page := 0; ; page++ {
 		if ctx.Err() != nil {
-			return nil, false
+			return nil
 		}
 		if page >= maxRecommendationPages {
 			report(h.Account, "", "coh_pagination_incomplete: stopped reading Cost Optimization Hub after %d pages, "+
-				"so resources on the pages not read come away with no cost estimate; the figures already "+
+				"so resources on the pages not read come away with no recommendations; the ones already "+
 				"attached are unaffected", maxRecommendationPages)
 			break
 		}
 		out, err := api.ListRecommendations(ctx, &costoptimizationhub.ListRecommendationsInput{
-			// De-duped by resource: one row per resource is exactly the shape
-			// a per-resource cost wants, and every recommendation for a given
-			// resource reports the same current cost anyway.
+			// De-duped by resource, which is AWS's own choice of the best
+			// suggestion per resource rather than every option it weighed.
+			//
+			// Asking for all of them would return alternatives — rightsize this
+			// instance *or* migrate it to Graviton — that are mutually
+			// exclusive, so no total over them could be honest and a reader
+			// would see three tips where there is one decision. The
+			// de-duplication is by resource id, not by ARN, so the case that
+			// actually matters still arrives in full: a database's compute and
+			// its storage have separate ids and come back as separate tips.
 			IncludeAllRecommendations: false,
 			// Restricted to the accounts the census covers, so a management
 			// account scanning one member does not page through the whole
@@ -425,7 +462,7 @@ func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts 
 		})
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return figures, false
+				return tips
 			}
 			report(h.Account, "", "%s", h.classify(fmt.Sprintf("reading Cost Optimization Hub recommendations (page %d)", page+1), err))
 			break
@@ -435,142 +472,163 @@ func (h *CostHub) recommendations(ctx context.Context, api CostHubAPI, accounts 
 
 		for _, rec := range out.Items {
 			arn := aws.ToString(rec.ResourceArn)
-			if arn == "" || conflicting[arn] {
+			if arn == "" {
+				unnamed++
 				continue
 			}
-			f, ok := h.reduce(rec, report)
+			t, ok := h.reduce(rec, report)
 			if !ok {
 				continue
 			}
-			prev, seen := figures[arn]
-			if !seen {
-				figures[arn] = f
-				continue
+			// Appended, never merged. Two recommendations for one ARN are two
+			// things to do, not two answers to one question — the case this
+			// used to treat as a conflict and drop both halves of.
+			//
+			// One row arriving twice under the same recommendation id is the
+			// exception, and it is not an exception to that rule so much as an
+			// application of it: by AWS's own identifier those are not two
+			// things to do, they are one thing listed twice. Keeping both would
+			// print the suggestion twice and count its saving twice in the
+			// per-currency total. A row AWS gave no id is kept as it came —
+			// telling two of those apart would need a similarity rule this tool
+			// would be inventing, and inventing one risks dropping real advice
+			// to avoid printing a duplicate.
+			if t.rec.ID != "" {
+				if seen[t.rec.ID] {
+					continue
+				}
+				seen[t.rec.ID] = true
 			}
-			if prev.amount == f.amount && prev.currency == f.currency {
-				continue
-			}
-			// Two rows, two different prices, no way to tell which is the
-			// resource's cost — and summing them would assume they cover
-			// disjoint parts of it, which nothing in the response says.
-			delete(figures, arn)
-			conflicting[arn] = true
-			report(h.Account, "", "coh_conflicting_amounts: Cost Optimization Hub reported different costs for %s "+
-				"(%s %s as %s, %s %s as %s), so neither was attached rather than picking one arbitrarily",
-				arn, prev.currency, prev.amount, prev.resType, f.currency, f.amount, f.resType)
+			tips[arn] = append(tips[arn], t)
 		}
 
 		if out.NextToken == nil || *out.NextToken == "" {
-			complete = true
 			break
 		}
 		token = out.NextToken
 	}
-	return figures, complete
+
+	if unnamed > 0 {
+		report(h.Account, "", "coh_account_level_recommendations: Cost Optimization Hub returned %d recommendation(s) "+
+			"that name no resource — commitment purchases such as Savings Plans and Reserved Instances apply to an "+
+			"account rather than to anything in this census, so they are not listed here; see them in the Cost "+
+			"Optimization Hub console", unnamed)
+	}
+	return tips
 }
 
-// reduce turns one recommendation into a storable figure, or reports why it
-// could not be stored.
-func (h *CostHub) reduce(rec cohtypes.Recommendation, report reporter) (figure, bool) {
-	// Pointer presence is the test, never the value: a resource genuinely
-	// modelled at zero dollars a month is a real finding, and treating it as
-	// "not reported" would be the same bug as filtering measures on > 0.
-	if rec.EstimatedMonthlyCost == nil {
-		return figure{}, false
+// reduce turns one recommendation into a storable tip.
+//
+// It never rejects a recommendation for saying too little. A row with an action
+// and no savings figure is advice AWS gave and the reader can act on; dropping
+// it because the money is missing would suppress the tip and report nothing in
+// its place. Only an amount that cannot be written down as a decimal is
+// dropped, and that goes to the ledger.
+func (h *CostHub) reduce(rec cohtypes.Recommendation, report reporter) (tip, bool) {
+	out := model.Recommendation{
+		ID:                         aws.ToString(rec.RecommendationId),
+		ActionType:                 aws.ToString(rec.ActionType),
+		Currency:                   aws.ToString(rec.CurrencyCode),
+		CurrentResourceType:        aws.ToString(rec.CurrentResourceType),
+		RecommendedResourceType:    aws.ToString(rec.RecommendedResourceType),
+		CurrentResourceSummary:     aws.ToString(rec.CurrentResourceSummary),
+		RecommendedResourceSummary: aws.ToString(rec.RecommendedResourceSummary),
+		ImplementationEffort:       aws.ToString(rec.ImplementationEffort),
+		RestartNeeded:              rec.RestartNeeded,
+		RollbackPossible:           rec.RollbackPossible,
 	}
-	amount, ok := formatAmount(*rec.EstimatedMonthlyCost)
-	if !ok {
-		report(aws.ToString(rec.AccountId), aws.ToString(rec.Region),
-			"coh_unusable_amount: Cost Optimization Hub reported a cost for %s that is not a finite number (%v), "+
-				"so it was dropped rather than rendered as a figure",
-			aws.ToString(rec.ResourceArn), *rec.EstimatedMonthlyCost)
-		return figure{}, false
+	out.ObservedFrom, out.ObservedTo = observedWindow(rec)
+
+	// Pointer presence is the test, never the value. A recommendation modelled
+	// to save exactly zero dollars a month is a real answer — a change worth
+	// making that pays for nothing — and filtering on > 0 would reclassify it
+	// as "AWS said nothing", which is the recurring bug the measure setters
+	// exist to prevent.
+	if rec.EstimatedMonthlySavings != nil {
+		amount, ok := formatAmount(*rec.EstimatedMonthlySavings)
+		if !ok {
+			report(aws.ToString(rec.AccountId), aws.ToString(rec.Region),
+				"coh_unusable_savings: Cost Optimization Hub reported a saving for %s that is not a finite number (%v), "+
+					"so the figure was dropped; the recommendation itself is still listed, without one",
+				aws.ToString(rec.ResourceArn), *rec.EstimatedMonthlySavings)
+		} else {
+			out.EstimatedMonthlySavings = amount
+		}
 	}
-	from, to := observedWindow(rec)
-	return figure{
-		amount:   amount,
-		currency: aws.ToString(rec.CurrencyCode),
-		from:     from,
-		to:       to,
-		resType:  aws.ToString(rec.CurrentResourceType),
-	}, true
+	if rec.EstimatedSavingsPercentage != nil {
+		pct, ok := formatPercent(*rec.EstimatedSavingsPercentage)
+		if !ok {
+			report(aws.ToString(rec.AccountId), aws.ToString(rec.Region),
+				"coh_unusable_savings_percentage: Cost Optimization Hub reported a savings percentage for %s that is "+
+					"not a finite number (%v), so it was dropped; the recommendation itself is still listed",
+				aws.ToString(rec.ResourceArn), *rec.EstimatedSavingsPercentage)
+		} else {
+			out.EstimatedSavingsPercentage = pct
+		}
+	}
+	return tip{rec: out}, true
 }
 
-// attach writes the figures onto the census, matching by ARN.
+// attach writes the tips onto the census, matching by ARN.
 //
 // The match is exact. A looser one — case-insensitive, or on the resource ID
-// alone — would let a figure land on the wrong resource, and a wrong price is
-// worse than none. A systematic mismatch is not hidden by that strictness: the
-// meter reports how many resources were priced against how many
-// recommendations were read, so "thousands read, none matched" is visible.
-func (h *CostHub) attach(resources []model.Resource, figures map[string]figure, complete bool) {
+// alone — would let advice land on the wrong resource, and telling someone to
+// downsize a database that is not the one AWS meant is worse than telling them
+// nothing. A systematic mismatch is not hidden by that strictness: the meter
+// reports how many resources were tipped and how many recommendations found no
+// resource at all, so "thousands read, none matched" is visible.
+//
+// A resource with no tip is left untouched. Under the old reading this stage
+// stamped an explicit "no figure here" on every unmatched resource, because a
+// blank cost cell invites being read as zero. A blank tip does not: the hub
+// having no advice about a resource is the ordinary case, and writing it down
+// on most of an estate would turn silence into noise.
+func (h *CostHub) attach(resources []model.Resource, tips map[string][]tip) {
+	matched := map[string]bool{}
 	for i := range resources {
 		r := &resources[i]
-		f, ok := figures[r.ARN]
+		found, ok := tips[r.ARN]
 		if !ok {
-			// The hub answered in full and named no price for this resource.
-			// That is a reportable absence, so it is written down rather than
-			// left as a blank a reader could take for zero. It deliberately
-			// does not distinguish "resource type the hub does not model" from
-			// "modelled but no recommendation": the response says only that
-			// nothing came back, and a coverage list maintained here would be
-			// this tool asserting something AWS did not.
-			if complete {
-				r.CostUnavailable = costUnavailableNoRecommendation
-			}
 			continue
 		}
-		r.AddCost(model.ResourceCost{
-			Amount:       f.amount,
-			Currency:     f.currency,
-			Method:       model.CostMethodCOH,
-			Estimated:    true,
-			ObservedFrom: f.from,
-			ObservedTo:   f.to,
-			Caveats:      caveats(r, f),
-			// No MatchKey: the hub reports ARNs and the match above is exact, so
-			// there is nothing about the join to disclose.
-		})
-		h.meter.Priced++
+		matched[r.ARN] = true
+		for _, t := range found {
+			rec := t.rec
+			rec.Caveats = caveats(r, &rec)
+			r.AddRecommendation(rec)
+		}
+		h.meter.Tipped++
+	}
+	for arn, found := range tips {
+		if !matched[arn] {
+			h.meter.Unattached += len(found)
+		}
 	}
 }
 
-// costUnavailableNoRecommendation is what this stage can honestly say about a
-// resource it looked up and found no figure for. It is phrased as a statement
-// about the hub's answer, not about the resource: "no recommendation" is a fact
-// the response supports, whereas "this resource is free" or "this type is not
-// covered" are conclusions it does not.
-const costUnavailableNoRecommendation = "no Cost Optimization Hub recommendation for this resource"
-
-// partialScope names Cost Optimization Hub resource types whose
-// estimatedMonthlyCost covers one component of a resource rather than all of
-// it — the hub models an RDS instance's compute and its storage as separate
-// recommendations. Attaching a storage figure to a database without saying so
-// would understate it by whatever the compute costs.
-var partialScope = map[string]string{
-	"RdsDbInstanceStorage":   "storage",
-	"AuroraDbClusterStorage": "storage",
-}
-
-// caveats derives the per-resource disclosures that qualify one figure.
+// caveats derives the disclosures that qualify one recommendation.
 //
-// Both conditions here are read off what the source said about this specific
-// resource. Statements true of every Cost Optimization Hub figure — that it is
-// modelled, that it is a forward-looking rate — are carried by Method and
-// Estimated instead of repeated on every row.
-func caveats(r *model.Resource, f figure) []string {
+// The condition here is read off what the source said about this specific
+// recommendation. Statements true of every Cost Optimization Hub row — that the
+// saving is modelled, that it is a forward-looking monthly rate — belong in
+// model.Recommendation's documentation and in the report's standing note, not
+// repeated on every row of the artifact.
+//
+// Scope is deliberately not a caveat. The hub models a database's compute and
+// its storage separately, and under the old reading that had to be disclosed,
+// because a storage price attached to a database understates it. A storage
+// saving attached to a database is simply a saving on its storage:
+// CurrentResourceType says so on the tip itself, and a sentence repeating it
+// would be explaining the data rather than qualifying it.
+func caveats(r *model.Resource, rec *model.Recommendation) []string {
 	var out []string
-	if part, ok := partialScope[f.resType]; ok {
-		out = append(out, fmt.Sprintf("covers %s only (Cost Optimization Hub resource type %s); "+
-			"other charges for this resource are not included", part, f.resType))
-	}
-	// A resource younger than the window the model ran over has a monthly rate
-	// extrapolated from a partial period, which reads as a settled run rate
+	// A resource younger than the window the model ran over has its saving
+	// extrapolated from a partial period, which reads as a settled monthly rate
 	// unless it is said out loud.
-	if r.CreatedAt != nil && f.from != nil && r.CreatedAt.After(*f.from) {
-		out = append(out, fmt.Sprintf("created %s, after this figure's usage period began on %s — "+
-			"the monthly rate extrapolates a partial period",
-			r.CreatedAt.UTC().Format("2006-01-02"), f.from.Format("2006-01-02")))
+	if r.CreatedAt != nil && rec.ObservedFrom != nil && r.CreatedAt.After(*rec.ObservedFrom) {
+		out = append(out, fmt.Sprintf("created %s, after this recommendation's usage period began on %s — "+
+			"the monthly saving extrapolates a partial period",
+			r.CreatedAt.UTC().Format("2006-01-02"), rec.ObservedFrom.Format("2006-01-02")))
 	}
 	return out
 }
@@ -636,6 +694,37 @@ func formatAmount(v float64) (string, bool) {
 	return s, true
 }
 
+// formatPercent renders a savings percentage as a decimal string.
+//
+// It is formatAmount without the money in it, and the difference is the whole
+// reason it exists separately. atLeastCents pads to two places because that is
+// what an amount of money looks like; a percentage padded the same way claims a
+// precision AWS did not report and dresses a proportion up as a currency. So
+// this shares the float64 description (shortest digits that read back exactly,
+// no exponent) and the non-finite rejection, and skips the padding.
+//
+// cost.ValidDecimal is reused as the grammar check rather than re-derived: it
+// tests that a string is a plain decimal number and caps no number of places,
+// so it fits a percentage exactly as well as it fits an amount.
+func formatPercent(v float64) (string, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "", false
+	}
+	if v == 0 {
+		// A recommendation AWS models as saving 0% is a real reading and is
+		// kept. FormatFloat renders negative zero as "-0", which is not a
+		// proportion anyone should read in an artifact.
+		return "0", true
+	}
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	if !cost.ValidDecimal(s) {
+		// Unreachable for a finite float64 formatted with 'f', and kept for the
+		// same reason as its twin in formatAmount.
+		return "", false
+	}
+	return s, true
+}
+
 // atLeastCents pads a decimal string out to two places so an amount reads like
 // money. It only ever appends zeros, so it can lose no precision and change no
 // value: "1.5" becomes "1.50", and "0.30000000000000004" is left alone.
@@ -665,7 +754,7 @@ func (h *CostHub) classify(what string, err error) string {
 			"statement from docs/iam-policy.json to the credentials blueprint is using (%v)", what, err)
 	case code == "ThrottlingException", code == "TooManyRequestsException", code == "LimitExceededException":
 		return fmt.Sprintf("coh_throttled: %s: Cost Optimization Hub throttled the request after retries, so "+
-			"some resources come away with no cost estimate — re-run to try again (%v)", what, err)
+			"some resources come away with no recommendations — re-run to try again (%v)", what, err)
 	case code == "ValidationException" && strings.Contains(lower, "token"):
 		return fmt.Sprintf("coh_pagination_incomplete: %s: Cost Optimization Hub rejected the pagination token, "+
 			"so only the pages read before it failed were used (%v)", what, err)

@@ -130,6 +130,12 @@ type resourceTable struct {
 	// untouched; columnarising them would buy little and add a second place
 	// money could be reshaped. Absent for a census nobody priced.
 	Costs [][]model.ResourceCost `json:"costs,omitempty"`
+	// Tips rides alongside Costs, in the same dense shape and for the same
+	// reasons, and separately from it for one more: these are not money the
+	// account was charged. Keeping them in their own array means no code path
+	// on the page can reach a saving while it thinks it is reading a cost.
+	// Absent for a census the hub had nothing to say about.
+	Tips [][]model.Recommendation `json:"tips,omitempty"`
 }
 
 // stringColumn is a dictionary-encoded column. Idx holds one entry per row: an
@@ -341,6 +347,8 @@ func buildTable(resources []model.Resource) (resourceTable, error) {
 
 	var costs [][]model.ResourceCost
 	priced := false
+	var tips [][]model.Recommendation
+	tipped := false
 
 	for i := range resources {
 		r := &resources[i]
@@ -395,11 +403,18 @@ func buildTable(resources []model.Resource) (resourceTable, error) {
 		if len(r.Costs) > 0 {
 			priced = true
 		}
+		tips = append(tips, r.Recommendations)
+		if len(r.Recommendations) > 0 {
+			tipped = true
+		}
 	}
 
 	table := resourceTable{N: n, Str: str, Num: num, Bool: bl}
 	if priced {
 		table.Costs = costs
+	}
+	if tipped {
+		table.Tips = tips
 	}
 	// A column short or long by one cell would not fail loudly — it would shift
 	// every row after the gap and attach one resource's value to another, which
@@ -430,6 +445,9 @@ func (t resourceTable) checkLengths() error {
 	}
 	if t.Costs != nil && len(t.Costs) != t.N {
 		return fmt.Errorf("payload: cost column has %d cells for %d resources", len(t.Costs), t.N)
+	}
+	if t.Tips != nil && len(t.Tips) != t.N {
+		return fmt.Errorf("payload: tip column has %d cells for %d resources", len(t.Tips), t.N)
 	}
 	return nil
 }

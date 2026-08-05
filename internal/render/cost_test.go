@@ -125,6 +125,19 @@ func TestPartialSuffix(t *testing.T) {
 	}
 }
 
+// modelledMethod is a per-resource cost source this build does not have.
+//
+// It stands in for one, because the spend renderer is method-generic: figures
+// are grouped by (method, currency, qualified), ranked only within a group, and
+// never pooled across one. Pinning that against the single method the census
+// produces today would pin nothing — one bucket cannot be shown not to leak into
+// another when there is only one bucket. Cost Optimization Hub used to be the
+// second source here and is no longer a price source at all, so the name is
+// deliberately not one AWS or this tool uses: what these tests need is a method
+// the code has never heard of, which is also the case that reaches a user first,
+// when a census written by a later build is rendered by this one.
+const modelledMethod = "modelled"
+
 // priced builds a resource with one figure on it, for the ranking tests.
 func priced(name, amount, currency, method string, estimated bool) model.Resource {
 	r := model.Resource{
@@ -160,8 +173,8 @@ func names(g spenderGroup) []string {
 // calling one bigger than the other.
 func TestGroupSpendersSeparatesMethodAndCurrency(t *testing.T) {
 	groups := groupSpenders(figures(
-		priced("a", "10.00", "USD", model.CostMethodCOH, true),
-		priced("b", "9999.00", "EUR", model.CostMethodCOH, true),
+		priced("a", "10.00", "USD", modelledMethod, true),
+		priced("b", "9999.00", "EUR", modelledMethod, true),
 		priced("c", "20.00", "USD", model.CostMethodCE, false),
 	))
 	if len(groups) != 3 {
@@ -174,7 +187,7 @@ func TestGroupSpendersSeparatesMethodAndCurrency(t *testing.T) {
 			t.Errorf("group %q holds %d figures, want 1", g.label, len(g.figures))
 		}
 	}
-	want := []string{"ce, USD", "coh, estimated, EUR", "coh, estimated, USD"}
+	want := []string{"ce, USD", "modelled, estimated, EUR", "modelled, estimated, USD"}
 	for i, w := range want {
 		if labels[i] != w {
 			t.Errorf("group %d label = %q, want %q (full: %v)", i, labels[i], w, labels)
@@ -187,10 +200,10 @@ func TestGroupSpendersSeparatesMethodAndCurrency(t *testing.T) {
 // notice and disbelieve.
 func TestGroupSpendersRanksNumerically(t *testing.T) {
 	groups := groupSpenders(figures(
-		priced("small", "9.00", "USD", model.CostMethodCOH, true),
-		priced("large", "100.00", "USD", model.CostMethodCOH, true),
-		priced("zero", "0.00", "USD", model.CostMethodCOH, true),
-		priced("credit", "-5.00", "USD", model.CostMethodCOH, true),
+		priced("small", "9.00", "USD", modelledMethod, true),
+		priced("large", "100.00", "USD", modelledMethod, true),
+		priced("zero", "0.00", "USD", modelledMethod, true),
+		priced("credit", "-5.00", "USD", modelledMethod, true),
 	))
 	if len(groups) != 1 {
 		t.Fatalf("got %d groups, want 1: %v", len(groups), groups)
@@ -206,7 +219,7 @@ func TestGroupSpendersRanksNumerically(t *testing.T) {
 
 // Equal amounts must not swap places between two runs over one snapshot.
 func TestGroupSpendersTieBreaksOnARN(t *testing.T) {
-	same := func(name string) model.Resource { return priced(name, "10.00", "USD", model.CostMethodCOH, true) }
+	same := func(name string) model.Resource { return priced(name, "10.00", "USD", modelledMethod, true) }
 	for _, in := range [][]model.Resource{
 		{same("ccc"), same("aaa"), same("bbb")},
 		{same("bbb"), same("ccc"), same("aaa")},
@@ -223,8 +236,8 @@ func TestGroupSpendersTieBreaksOnARN(t *testing.T) {
 // holding one billed figure has not earned it.
 func TestEstimatedLabelIsUnanimous(t *testing.T) {
 	mixed := figures(
-		priced("a", "1.00", "USD", model.CostMethodCOH, true),
-		priced("b", "2.00", "USD", model.CostMethodCOH, false),
+		priced("a", "1.00", "USD", modelledMethod, true),
+		priced("b", "2.00", "USD", modelledMethod, false),
 	)
 	if estimatedGroup(mixed) {
 		t.Error("a group with one billed figure is labelled estimated")
@@ -252,9 +265,9 @@ func TestResourceCostSectionNamesCoverageGap(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	resourceCostSection(&buf, []model.Resource{
-		priced("db", "10.00", "USD", model.CostMethodCOH, true),
-		unpriced("t1", "no recommendation"),
-		unpriced("t2", "no recommendation"),
+		priced("db", "10.00", "USD", modelledMethod, true),
+		unpriced("t1", "the cost pass reported nothing for this resource"),
+		unpriced("t2", "the cost pass reported nothing for this resource"),
 		unpriced("t3", "unsupported resource type"),
 		// Nothing looked at this one: not a coverage gap, just no question
 		// asked, so it must not inflate either count.
@@ -262,7 +275,7 @@ func TestResourceCostSectionNamesCoverageGap(t *testing.T) {
 	})
 	out := buf.String()
 
-	if !strings.Contains(out, "⚠ cost unavailable for 2 of 4 resources — no recommendation") {
+	if !strings.Contains(out, "⚠ cost unavailable for 2 of 4 resources — the cost pass reported nothing") {
 		t.Errorf("missing rolled-up coverage caveat:\n%s", out)
 	}
 	if !strings.Contains(out, "⚠ cost unavailable for 1 of 4 resources — unsupported resource type") {
@@ -270,7 +283,7 @@ func TestResourceCostSectionNamesCoverageGap(t *testing.T) {
 	}
 	// Most common reason first, so one dominant gap does not read as several
 	// small ones.
-	if strings.Index(out, "no recommendation") > strings.Index(out, "unsupported resource type") {
+	if strings.Index(out, "the cost pass reported nothing") > strings.Index(out, "unsupported resource type") {
 		t.Errorf("reasons not ordered by count:\n%s", out)
 	}
 }
@@ -280,7 +293,7 @@ func TestResourceCostSectionNamesCoverageGap(t *testing.T) {
 // it. This is the `> 0` bug in renderer form.
 func TestResourceCostSectionKeepsReportedZero(t *testing.T) {
 	var buf bytes.Buffer
-	resourceCostSection(&buf, []model.Resource{priced("idle", "0.00", "USD", model.CostMethodCOH, true)})
+	resourceCostSection(&buf, []model.Resource{priced("idle", "0.00", "USD", modelledMethod, true)})
 	out := buf.String()
 	if !strings.Contains(out, "0.00 USD  idle (rds, us-east-1)") {
 		t.Errorf("reported zero dropped or reformatted:\n%s", out)
@@ -295,7 +308,7 @@ func TestResourceCostSectionKeepsReportedZero(t *testing.T) {
 func TestResourceCostSectionCapsTheList(t *testing.T) {
 	var resources []model.Resource
 	for i := range maxSpendersListed + 3 {
-		resources = append(resources, priced(string(rune('a'+i)), "10.00", "USD", model.CostMethodCOH, true))
+		resources = append(resources, priced(string(rune('a'+i)), "10.00", "USD", modelledMethod, true))
 	}
 	var buf bytes.Buffer
 	resourceCostSection(&buf, resources)
@@ -327,7 +340,7 @@ func TestTerminalSaysNothingAboutCostWhenNoneCollected(t *testing.T) {
 func TestTerminalCostSectionsStaySeparate(t *testing.T) {
 	estimated := true
 	snap := &model.Snapshot{
-		Resources: []model.Resource{priced("db", "1000.00", "USD", model.CostMethodCOH, true)},
+		Resources: []model.Resource{priced("db", "1000.00", "USD", modelledMethod, true)},
 		Cost: &model.CostReport{
 			Window: model.CostWindow{Start: "2026-06-01", End: "2026-07-01", Label: "2026-06"},
 			Metric: "AmortizedCost", Estimated: &estimated,
@@ -352,7 +365,7 @@ func TestTerminalCostSectionsStaySeparate(t *testing.T) {
 		"unattributed: Tax 10.00 USD",
 		"ⓘ 2 Cost Explorer request(s) — AWS charged $0.02",
 		"── per-resource cost ──",
-		"top spend (coh, estimated, USD)",
+		"top spend (modelled, estimated, USD)",
 		"1000.00 USD  db (rds, us-east-1)",
 	} {
 		if !strings.Contains(out, want) {
@@ -382,11 +395,11 @@ func TestReportSectionSilentWithoutCurrencies(t *testing.T) {
 }
 
 // qualified returns a priced resource whose figure carries the caveats its
-// source attached — the shape the Cost Optimization Hub enricher produces when
-// it prices a component (storage, say) rather than a whole resource.
+// source attached — the shape a source produces when it prices a component
+// (storage, say) rather than a whole resource.
 func qualified(name, amount string, caveats ...string) model.Resource {
-	r := priced(name, amount, "USD", model.CostMethodCOH, true)
-	r.CostBy(model.CostMethodCOH).Caveats = caveats
+	r := priced(name, amount, "USD", modelledMethod, true)
+	r.CostBy(modelledMethod).Caveats = caveats
 	return r
 }
 
@@ -397,7 +410,7 @@ func qualified(name, amount string, caveats ...string) model.Resource {
 func TestGroupSpendersSeparatesQualifiedFigures(t *testing.T) {
 	groups := groupSpenders(figures(
 		qualified("storage-only", "2000.00", "covers storage only"),
-		priced("whole", "1620.00", "USD", model.CostMethodCOH, true),
+		priced("whole", "1620.00", "USD", modelledMethod, true),
 	))
 	if len(groups) != 2 {
 		t.Fatalf("got %d groups, want the qualified figure separated: %v", len(groups), groups)
@@ -427,7 +440,7 @@ func TestQualifiedFiguresNeverPrintAsBareSpend(t *testing.T) {
 	var buf bytes.Buffer
 	resourceCostSection(&buf, []model.Resource{
 		qualified("storage-only", "2000.00",
-			"covers storage only (Cost Optimization Hub resource type RdsDbInstanceStorage)"),
+			"covers storage only; other charges for this resource are not included"),
 	})
 	out := buf.String()
 	for _, line := range strings.Split(out, "\n") {
@@ -438,7 +451,7 @@ func TestQualifiedFiguresNeverPrintAsBareSpend(t *testing.T) {
 	if !strings.Contains(out, "lower bound") {
 		t.Errorf("heading does not say the figure is a floor:\n%s", out)
 	}
-	if !strings.Contains(out, "covers storage only (Cost Optimization Hub resource type RdsDbInstanceStorage)") {
+	if !strings.Contains(out, "covers storage only; other charges for this resource are not included") {
 		t.Errorf("caveat text not reproduced verbatim:\n%s", out)
 	}
 }
@@ -493,7 +506,7 @@ func TestCaveatOverflowIsCounted(t *testing.T) {
 func TestUnqualifiedFiguresPrintNoCaveatLine(t *testing.T) {
 	var buf bytes.Buffer
 	resourceCostSection(&buf, []model.Resource{
-		priced("plain", "10.00", "USD", model.CostMethodCOH, true),
+		priced("plain", "10.00", "USD", modelledMethod, true),
 	})
 	if out := buf.String(); strings.Contains(out, "ⓘ") {
 		t.Errorf("caveat marker printed for a figure with no caveats:\n%s", out)

@@ -62,12 +62,17 @@ type bootProbe struct {
 	BannerTitle  string `json:"bannerTitle"`
 	BannerList   string `json:"bannerList"`
 	CountText    string `json:"countText"`
+	// TipsHidden is the savings section's hidden flag, TipRows the number of
+	// suggestion rows it painted, and TipsSub/TipsNote its subtitle and closing
+	// disclosure. The section is a sibling of the spend one rather than a child,
+	// so its visibility is a separate fact and is read separately.
+	TipsHidden bool   `json:"tipsHidden"`
+	TipRows    int    `json:"tipRows"`
+	TipsSub    string `json:"tipsSub"`
+	TipsNote   string `json:"tipsNote"`
 	// AttrLegend is the attribution bar's legend, which ends in the sentence
-	// naming what the bar is weighted by. LegendAfterMethod is the same legend
-	// read again after the drive phase switches cost source: the bar is weighted
-	// by money, so a new source has to reweight it, and the two must differ.
-	AttrLegend        string `json:"attrLegend"`
-	LegendAfterMethod string `json:"legendAfterMethod"`
+	// naming what the bar is weighted by.
+	AttrLegend string `json:"attrLegend"`
 	// SortedBy is the header text of the column the table opened sorted on, and
 	// SortAria that column's aria-sort. Empty when the table opened unsorted.
 	SortedBy string `json:"sortedBy"`
@@ -78,10 +83,9 @@ type bootProbe struct {
 	// all — and the only one that can show what a header says about a group no
 	// source priced.
 	GroupHeaders []string `json:"groupHeaders"`
-	// SpendBars, MethodButtons and SortableColumns count the controls the page
-	// wired up — the click targets the drive phase then exercises.
+	// SpendBars and SortableColumns count the controls the page wired up — the
+	// click targets the drive phase then exercises.
 	SpendBars       int `json:"spendBars"`
-	MethodButtons   int `json:"methodButtons"`
 	SortableColumns int `json:"sortableColumns"`
 	// Drove records one entry per interaction the harness performed, in order.
 	Drove []droveStep `json:"drove"`
@@ -177,8 +181,23 @@ func TestReportBootsAndDrivesWithCost(t *testing.T) {
 	if probe.SpendBars == 0 {
 		t.Error("no spend bars were wired up")
 	}
-	if probe.MethodButtons == 0 {
-		t.Error("no cost method buttons were wired up")
+
+	// The other half of the page's answer, and the half a spend-only assertion
+	// cannot see. initTips runs in the decode continuation like initCost, so an
+	// empty section here means the second boot pass never reached it.
+	if probe.TipsHidden || probe.TipRows == 0 {
+		t.Errorf("the census carries suggestions and the savings section painted "+
+			"none: hidden=%v rows=%d", probe.TipsHidden, probe.TipRows)
+	}
+	if !strings.Contains(probe.TipsSub, "suggestion") {
+		t.Errorf("the savings section's subtitle says nothing about what it holds: %q",
+			probe.TipsSub)
+	}
+	// The one sentence the section exists for. A page that ranks savings beside
+	// a bill without saying the two are different questions is the report this
+	// whole change replaced.
+	if !strings.Contains(probe.TipsNote, "added to or subtracted from the spend above") {
+		t.Errorf("the savings section does not disclaim its own arithmetic: %q", probe.TipsNote)
 	}
 
 	// The Cost column exists, and its header names the source and the window.
@@ -218,15 +237,6 @@ func TestReportBootsAndDrivesWithCost(t *testing.T) {
 		t.Errorf("the attribution bar names nothing as its weight: %q", probe.AttrLegend)
 	}
 
-	// And it re-weights when the reader switches source. The two methods price
-	// different resources for different amounts, so a bar that reads the same
-	// after the switch is a bar still drawn from the old source's money while
-	// the legend underneath it, the table and the hero all name the new one.
-	if probe.MethodButtons > 1 && probe.LegendAfterMethod == probe.AttrLegend {
-		t.Errorf("switching cost source left the attribution bar untouched: %q",
-			probe.AttrLegend)
-	}
-
 	// Clicking a spend bar filters the table, so the row count has to move. If
 	// it does not, setSpendFilter reached rebuild and rebuild did nothing —
 	// which is what a silently swallowed filter looks like.
@@ -259,6 +269,14 @@ func TestReportBootsWithoutCost(t *testing.T) {
 	if !probe.CostHidden || !probe.SpendHidden {
 		t.Errorf("nothing is priced but the overlay is showing: cost=%v spend=%v",
 			probe.CostHidden, probe.SpendHidden)
+	}
+	// And nothing was advised either. An empty savings section is a heading over
+	// blank space that reads like a page still loading, so it hides itself
+	// rather than announcing that AWS had no suggestions — which on a run where
+	// the stage never executed would not even be true.
+	if !probe.TipsHidden || probe.TipRows != 0 {
+		t.Errorf("nothing was advised but the savings section is showing: hidden=%v rows=%d",
+			probe.TipsHidden, probe.TipRows)
 	}
 	if probe.EnginesHidden {
 		t.Error("no spend panel replaced it, so the engines section should still be showing")
@@ -327,7 +345,7 @@ func compressedCostSnapshot(t *testing.T) *model.Snapshot {
 	t.Helper()
 	snap := demo.SnapshotN("test", compressAbove+1)
 	snap.Cost = demo.CostReport()
-	demo.AddResourceCosts(snap)
+	demo.AddRecommendations(snap)
 	demo.AddResourceCostOverlay(snap)
 	snap.FinalizeAt(renderClock)
 	return snap
@@ -768,7 +786,10 @@ setTimeout(function () {
     if (a && a !== "none") { sortedBy = th.textContent; sortAria = a; }
   });
   const spendBars = el("spend-rows").children;
-  const methodButtons = el("cost-method").children;
+  // Only the suggestion rows. The container also holds the per-currency
+  // headings, the "and N more" line, the totals and the caveats, and counting
+  // those would let a section that painted nothing but furniture pass.
+  const tipRows = el("tips-rows").children.filter((d) => d.className === "rr-tip");
   const sortable = el("head-row").children
     .map((th) => th.children[0])
     .filter((b) => b && (b.listeners.click || []).length);
@@ -777,15 +798,6 @@ setTimeout(function () {
   // default sort on a priced report, so clicking it twice walks it through
   // both directions and back off.
   sortable.slice(0, 3).forEach((b, i) => drive("click header " + i, () => { b.click(); b.click(); }));
-  // The last button is the source that is not currently selected, since
-  // initCost defaults to the one that priced the most.
-  let legendAfterMethod = "";
-  if (methodButtons.length) {
-    drive("click method button", () => {
-      methodButtons[methodButtons.length - 1].click();
-      legendAfterMethod = el("attr-legend").textContent;
-    });
-  }
   // Last, because it narrows the table and the row count afterwards is the
   // assertion that the filter reached the body.
   if (spendBars.length) drive("click spend bar", () => spendBars[0].click());
@@ -805,13 +817,15 @@ setTimeout(function () {
     bannerTitle: el("cost-banner-title").textContent,
     bannerList: el("cost-banner-list").textContent,
     countText: el("row-count").textContent,
+    tipsHidden: el("tips-section").hidden,
+    tipRows: tipRows.length,
+    tipsSub: el("tips-sub").textContent,
+    tipsNote: el("tips-note").textContent,
     groupHeaders,
     attrLegend,
-    legendAfterMethod,
     sortedBy,
     sortAria,
     spendBars: spendBars.length,
-    methodButtons: methodButtons.length,
     sortableColumns: sortable.length,
     drove,
   }));

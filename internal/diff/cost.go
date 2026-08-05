@@ -47,13 +47,20 @@ const (
 // file — so gating an exit code on it would gate it on AWS's billing pipeline
 // rather than on the estate.
 //
-// Every comparison in here is made *within* one attribution method. A resource
-// can carry a billed Cost Explorer figure and a modelled Cost Optimization Hub
-// rate at the same time, and the two are not two readings of one quantity:
-// subtracting last scan's modelled rate from this scan's billed window, or
-// summing the two into one net, produces a number that answers no question. So
-// figures are matched on (ARN, method) rather than ARN, and every total the
-// section prints belongs to exactly one method.
+// Every comparison in here is made *within* one attribution method. Two figures
+// from different methods are not two readings of one quantity — they are
+// answers to different questions, taken over different windows by different
+// means — so subtracting one from the other, or summing them into one net,
+// produces a number that answers neither. Only one method reports spend today,
+// which makes the rule invisible rather than unnecessary: figures are matched on
+// (ARN, method) rather than ARN, and every total the section prints belongs to
+// exactly one method.
+//
+// Cost Optimization Hub suggestions are not diffed at all. They are not spend,
+// so they cannot drift; a suggestion appearing or disappearing between two scans
+// says AWS's model changed its mind, which is a fact about AWS's model and not
+// about this estate. Putting it in a section headed by dollar movements would
+// invite exactly the subtraction the paragraph above refuses.
 type CostDrift struct {
 	// Billed compares the account-level rollups. Nil when neither census
 	// collected one, so there is nothing to say either way.
@@ -157,10 +164,6 @@ type CostNet struct {
 	Changed string
 	// Net is Added − Removed + Changed.
 	Net string
-	// Methods are the distinct attribution methods behind these figures. More
-	// than one means amounts answering different questions were added
-	// together, which the writer discloses rather than hides.
-	Methods []string
 }
 
 // BilledChange compares the two account-level cost rollups.

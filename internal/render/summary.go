@@ -61,6 +61,16 @@ type reportSummary struct {
 	// every figure was unreadable, and would therefore hide the column on
 	// exactly the run whose cost data most needs looking at.
 	Costed bool `json:"costed"`
+	// Tipped says whether any resource carries a Cost Optimization Hub
+	// suggestion. It is the twin of Costed and answers a different question:
+	// Costed decides whether the report has spend to show, Tipped decides
+	// whether it has advice to show. A run can have either, both, or neither —
+	// the hub is enrolment-gated and covers a couple of dozen resource types,
+	// so an estate with a full bill and no suggestions at all is ordinary.
+	//
+	// Nothing about it is arithmetic. It gates a section of the page and is
+	// never a term in a total; savings and spend are not summed anywhere.
+	Tipped bool `json:"tipped"`
 }
 
 // summaryPlatform is one row of the platform chart: the software a set of
@@ -98,23 +108,22 @@ type summaryGroup struct {
 
 // groupCost is one group's spend as one source reported it.
 //
-// Method and currency are part of the identity, not decoration. A Cost
-// Explorer figure is what AWS billed over a closed window and a Cost
-// Optimization Hub figure is a forward-looking monthly rate modelled from
-// recent usage; adding them produces a number that answers no question, and
-// adding across currencies needs an exchange rate this tool does not have and
-// will not invent. So a group carries one total per (method, currency) pair,
-// each with the count of members it covers, and the page prints one at a time:
-// the pair the reader has selected as the report's source.
+// Method and currency are part of the identity, not decoration. Adding across
+// currencies needs an exchange rate this tool does not have and will not
+// invent, and adding across methods would combine figures billed over different
+// windows by different means into a number that answers no question. Only one
+// method reports spend today, so in practice a group carries one total per
+// currency — but the pair stays the key, because the day a second billed source
+// lands is not the day to discover the totals were being merged.
 type groupCost struct {
 	Method   string `json:"method"`
 	Currency string `json:"currency"`
 	Amount   string `json:"amount"`
 	// Priced is how many of the group's members this bucket priced. The
 	// header prints it against the group's full membership, so it has to be
-	// this bucket's reach rather than the group's: a Cost Explorer total over
-	// two of twelve resources is not made whole by ten of them having a Cost
-	// Optimization Hub estimate instead.
+	// this bucket's reach rather than the group's: a total in one currency over
+	// two of twelve resources is not made whole by ten of them being priced in
+	// another.
 	Priced int `json:"priced"`
 	// Qualified marks a total that includes at least one figure whose source
 	// attached a caveat — "storage only", say. Such a figure prices a component
@@ -201,6 +210,9 @@ func buildSummary(snap *model.Snapshot) reportSummary {
 		}
 		if len(r.Costs) > 0 {
 			sum.Costed = true
+		}
+		if len(r.Recommendations) > 0 {
+			sum.Tipped = true
 		}
 	}
 	sum.Types = len(types)

@@ -112,12 +112,12 @@ func TestResourceCostAbsentRatherThanNull(t *testing.T) {
 // found nothing, while a blank cost with no reason says nothing looked.
 func TestResourceCostUnavailableIsWrittenWhenNamed(t *testing.T) {
 	r := Resource{ARN: "arn:aws:dynamodb:us-east-1:1:table/x"}
-	r.CostUnavailable = "no Cost Optimization Hub recommendation for this resource"
+	r.CostUnavailable = "the cost pass looked and AWS reported nothing for this resource"
 	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(data), `"cost_unavailable":"no Cost Optimization Hub`) {
+	if !strings.Contains(string(data), `"cost_unavailable":"the cost pass looked`) {
 		t.Errorf("named absence missing from JSON: %s", data)
 	}
 	if strings.Contains(string(data), `"costs"`) {
@@ -130,7 +130,7 @@ func TestResourceCostUnavailableIsWrittenWhenNamed(t *testing.T) {
 // which zero it is.
 func TestResourceCostZeroSurvivesMarshalling(t *testing.T) {
 	r := Resource{ARN: "arn:aws:rds:us-east-1:1:db:x"}
-	r.AddCost(ResourceCost{Amount: "0.00", Currency: "USD", Method: CostMethodCOH})
+	r.AddCost(ResourceCost{Amount: "0.00", Currency: "USD", Method: CostMethodCE})
 	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -157,7 +157,7 @@ func TestResourceCostCaveatsKeepSourceOrder(t *testing.T) {
 	for range 2 {
 		r := Resource{ARN: "arn:aws:rds:us-east-1:1:db:x"}
 		r.AddCost(ResourceCost{
-			Amount: "1.00", Currency: "USD", Method: CostMethodCOH, Estimated: true,
+			Amount: "1.00", Currency: "USD", Method: CostMethodCE,
 			ObservedFrom: &from, ObservedTo: &to, Caveats: caveats,
 		})
 		data, err := json.Marshal(r)

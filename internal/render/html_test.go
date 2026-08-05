@@ -672,16 +672,29 @@ func TestHTMLCostOverlayShipsItsVocabulary(t *testing.T) {
 	html := renderDemoCosts(t)
 	for _, needle := range []string{
 		// Structure the JS renders into.
-		`id="cost-section"`, `id="cost-banner"`, `id="cost-hero"`, `id="cost-method"`,
+		`id="cost-section"`, `id="cost-banner"`, `id="cost-hero"`,
 		`id="cost-note"`, `id="cost-recon"`, `id="cost-recon-body"`,
 		`id="spend-section"`, `id="spend-title"`, `id="spend-sub"`, `id="spend-rows"`,
+		// The advice, which is its own top-level section rather than a panel
+		// inside the spend one. Nesting it there would hide every suggestion on
+		// a run that got no per-resource spend, which is the run they are most
+		// worth reading on.
+		`id="tips-section"`, `id="tips-sub"`, `id="tips-rows"`, `id="tips-note"`,
 		// The overlay's own behaviour.
 		"function methodBasis", "function renderCostHero", "function renderSpend",
 		"function costCell", "function nullRank", "function coverageIssues",
 		"_costSort",
+		"function initTips", "function renderTips", "function tipAction",
+		"function effortLabel",
 		// Vocabulary the rulings depend on.
 		"Untagged ", "carry no ", " figure", "modelled monthly rate",
 		"is not the same as costing nothing",
+		// The two sentences the whole section exists to keep apart. A saving is
+		// a modelled monthly figure for a month that has not happened; spend is
+		// what AWS billed. Neither is the other's arithmetic.
+		"Ways to cut this bill", "Ranked by modelled monthly saving",
+		"not an amount anyone was charged",
+		"nothing here is added to or subtracted from the spend above",
 	} {
 		if !strings.Contains(html, needle) {
 			t.Errorf("cost overlay is missing %q", needle)

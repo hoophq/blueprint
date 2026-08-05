@@ -136,20 +136,21 @@ type NamedAmount struct {
 
 // Cost attribution methods, used in ResourceCost.Method.
 //
-// The method travels with every per-resource amount because figures from
-// different sources answer different questions. A Cost Explorer figure is what
-// AWS billed over a closed month; a Cost Optimization Hub figure is a
-// forward-looking monthly rate modelled from recent usage. Adding one to the
-// other, or ranking resources priced by different sources against each other,
-// produces a number that means nothing — so the source is never dropped, and a
-// reader can always tell which question a figure answers.
+// There is exactly one, and the constant survives a set of one on purpose. The
+// method travels with every per-resource amount so that a second billed source
+// added later cannot be quietly summed into this one: figures from different
+// sources answer different questions, and a reader can always tell which
+// question a figure answers only if the answer is written down at the point the
+// figure is.
+//
+// Cost Optimization Hub used to be the second method here. It is not a pricing
+// API and no longer reports a price — what it reports is advice, which lands on
+// Resource.Recommendations instead. See Recommendation for why a modelled saving
+// may not travel as a ResourceCost.
 const (
 	// CostMethodCE is Cost Explorer's GetCostAndUsageWithResources: what AWS
 	// actually billed for one resource over a closed window in the recent past.
 	CostMethodCE = "ce"
-	// CostMethodCOH is Cost Optimization Hub's estimatedMonthlyCost for a
-	// resource's current configuration.
-	CostMethodCOH = "coh"
 )
 
 // CostMethods lists every attribution method, in a fixed order.
@@ -160,7 +161,7 @@ const (
 // alphabetical rather than by preference so adding a method has one obvious
 // answer instead of an argument.
 func CostMethods() []string {
-	return []string{CostMethodCE, CostMethodCOH}
+	return []string{CostMethodCE}
 }
 
 // ResourceCost is what one resource costs, according to one source.
@@ -175,13 +176,13 @@ func CostMethods() []string {
 // (account-level rollups) and this type stay separate and are never reconciled
 // against each other.
 //
-// Two figures for one resource are two answers to two different questions, not
-// a disagreement to be resolved. Cost Explorer says what a resource was billed
-// over a window that has closed; Cost Optimization Hub says what its current
-// configuration is modelled to cost going forward. Keeping both is the point —
-// picking a winner would discard the one the reader happened to want, and
-// summing them would double-count. Consumers group by Method and never add
-// across it.
+// The census has exactly one money source, and this type is where it lands.
+// Anything modelled, forecast, or merely recoverable is not spend and does not
+// belong here — a saving that reached Resource.Costs would be in front of every
+// consumer that sums figures, and each of them would fold a hypothetical into a
+// bill. That is what Recommendation exists to prevent. Consumers still group by
+// Method and never add across it, so a second billed source added later cannot
+// be summed into Cost Explorer's total by a renderer that has forgotten to ask.
 type ResourceCost struct {
 	// Amount is a decimal string, for the same reason every other amount in
 	// this package is: binary floating point cannot hold a decimal amount
@@ -230,6 +231,127 @@ type ResourceCost struct {
 	// something the reader can check: if the wrong resource was priced, the
 	// evidence is in the artifact rather than in this tool's source.
 	MatchKey string `json:"match_key,omitempty"`
+}
+
+// Recommendation is one thing AWS says could be changed about a resource to
+// spend less on it, as reported by Cost Optimization Hub's ListRecommendations.
+//
+// It is deliberately not a ResourceCost, and that distinction is the whole
+// reason the type exists. A ResourceCost is money that moved against this
+// resource as it is configured today. A Recommendation is money AWS models as
+// recoverable if the configuration changes — nobody has been invoiced it, and
+// nobody will be unless someone acts. Putting a saving in Resource.Costs would
+// put it in front of every consumer that adds figures up: the report's group
+// totals, the diff's net drift, the CSV's summable columns. Each of them would
+// fold a hypothetical into a bill, and the error would run in the direction
+// that gets things deleted.
+//
+// So: a saving is never added to, subtracted from, or reconciled against
+// anything in Resource.Costs or Snapshot.Cost. "Your bill would be $X" is not a
+// sentence this tool can support, because the two figures come from different
+// methods over different windows and neither was measured against the other.
+//
+// # What one recommendation covers
+//
+// The hub reasons about resources more finely than the census does. A database
+// is one census row, but its compute and its storage are separate
+// recommendations with separate savings — so one ARN can legitimately carry
+// several of these, and they are complements rather than contradictions.
+// CurrentResourceType is what tells them apart: a saving on
+// "RdsDbInstanceStorage" is a saving on storage, and reading it as the
+// database's saving overstates it.
+//
+// blueprint asks ListRecommendations to de-duplicate by resource, so what
+// arrives is AWS's own best suggestion per resource rather than every option it
+// considered. That matters for what may be totalled. Alternatives — rightsize
+// this instance *or* migrate it to Graviton — are mutually exclusive, and
+// adding them would count the same dollars twice; AWS ships a separately
+// de-duplicated total on another operation precisely because the naive sum is
+// wrong. The de-duplicated set this tool reads does not have that overlap, so a
+// total over it is defensible as long as it is labelled for what it is:
+// modelled, monthly, per currency, and not money anyone will be refunded.
+//
+// # Verbatim
+//
+// Every string here is what AWS sent. ActionType, ImplementationEffort and the
+// two resource types arrive as *string on ListRecommendations — they are typed
+// enums only on the request filter — so a value AWS adds after this SDK pin is
+// still real advice and must reach the report unchanged rather than being
+// dropped by an allow-list this tool maintains.
+type Recommendation struct {
+	// ID is AWS's own recommendation identifier. Empty means it reported none.
+	//
+	// It is kept because it is the only field that can tell two otherwise
+	// identical rows apart, which makes it the tie-break that holds the JSON
+	// artifact stable. It is emphatically not an identity across runs: AWS
+	// documents it as valid for about 24 hours because recommendations are
+	// regenerated daily, so matching on it between two censuses would fabricate
+	// drift on every scan.
+	ID string `json:"id,omitempty"`
+	// ActionType is what AWS says to do — "Rightsize", "Stop", "Delete",
+	// "MigrateToGraviton" and so on. Stored as the raw string and never mapped
+	// onto a local enum: an action this build does not recognize is still advice
+	// AWS gave, and a closed list would silently drop it.
+	ActionType string `json:"action_type,omitempty"`
+	// EstimatedMonthlySavings is a decimal string, for the same reason every
+	// other amount in this package is one. Empty means AWS reported no savings
+	// figure; "0.00" means it reported zero — a change worth making that saves
+	// nothing this month — which is a real answer and must survive to the
+	// renderers. The two are never collapsed into each other.
+	//
+	// Unlike ResourceCost.Amount this is omitempty, because a recommendation can
+	// exist with an action and no figure, whereas a ResourceCost exists only
+	// when there is an amount.
+	EstimatedMonthlySavings string `json:"estimated_monthly_savings,omitempty"`
+	// Currency is the unit AWS named for the savings ("USD"). Empty means it
+	// named none, and it is never filled in with a default. Savings in different
+	// currencies are never summed, and one whose currency AWS did not report
+	// gets its own bucket — the rule CostByCurrency follows for spend.
+	Currency string `json:"currency,omitempty"`
+	// EstimatedSavingsPercentage is a decimal string too, but it is not money
+	// and is not padded to cents. AWS states it relative to the total cost over
+	// the lookback period, so it is carried as a number AWS stated and never
+	// multiplied against a spend figure to back out a dollar amount. Empty means
+	// unreported; "0" means AWS said zero.
+	EstimatedSavingsPercentage string `json:"estimated_savings_percentage,omitempty"`
+	// CurrentResourceType and RecommendedResourceType are Cost Optimization
+	// Hub's own type names ("RdsDbInstance", "Ec2Instance"), not CloudFormation
+	// types, and they are how a reader tells a whole-resource recommendation
+	// from one that covers a component.
+	CurrentResourceType     string `json:"current_resource_type,omitempty"`
+	RecommendedResourceType string `json:"recommended_resource_type,omitempty"`
+	// CurrentResourceSummary and RecommendedResourceSummary are AWS's own
+	// free-text descriptions of the before and after shape, passed through
+	// unedited. Paraphrasing them would be this tool restating a recommendation
+	// it did not make.
+	CurrentResourceSummary     string `json:"current_resource_summary,omitempty"`
+	RecommendedResourceSummary string `json:"recommended_resource_summary,omitempty"`
+	// ImplementationEffort is AWS's own grading — "VeryLow" through "VeryHigh".
+	// Stored raw, for the same reason as ActionType. Any ordering this tool
+	// imposes on it is a local table rather than the SDK's enum order, which the
+	// generated code does not promise to keep stable.
+	ImplementationEffort string `json:"implementation_effort,omitempty"`
+	// RestartNeeded and RollbackPossible are tri-state, and the third state is
+	// the useful one. nil means AWS did not say; a pointer to false is a
+	// positive statement — "this needs no restart" is exactly what makes a
+	// change safe to schedule — and collapsing the two into a bare bool would
+	// tell a reader no restart is required when AWS never said so.
+	RestartNeeded    *bool `json:"restart_needed,omitempty"`
+	RollbackPossible *bool `json:"rollback_possible,omitempty"`
+	// ObservedFrom and ObservedTo bound the usage AWS modelled this
+	// recommendation from, in UTC: the refresh timestamp and the lookback it ran
+	// over. A monthly saving with no window attached cannot be judged for
+	// staleness — the problem AsOfSuffix solves for metrics — and a
+	// recommendation is a perishable thing. Either may be nil when the
+	// recommendation did not report enough to place the window.
+	ObservedFrom *time.Time `json:"observed_from,omitempty"`
+	ObservedTo   *time.Time `json:"observed_to,omitempty"`
+	// Caveats are disclosures derived from what the source said about this
+	// specific recommendation — that it was modelled over a period the resource
+	// did not exist for all of, for instance. Blanket truths about every Cost
+	// Optimization Hub recommendation belong in this type's documentation, not
+	// repeated on every row of the artifact.
+	Caveats []string `json:"caveats,omitempty"`
 }
 
 // CostMeter records what the cost lookup itself cost.

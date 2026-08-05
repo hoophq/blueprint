@@ -809,14 +809,20 @@ func TestReportProbeSentenceMirrorsGo(t *testing.T) {
 	}
 }
 
-// methodBasis is the one place that decides what a figure from the active
-// source actually is, and this is the regression that made it necessary: the
-// hero, the header, the attribution bar, and the section heading each read Cost
-// Explorer's window and metric straight off resource_cost, so switching to Cost
-// Optimization Hub stamped a real billed period onto a modelled monthly rate
-// that never covered it. A wrong period on a right-looking number is worse than
-// no period, because it survives being checked.
-func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
+// methodBasis is the one place that decides what the figures on this page
+// actually are, and everything that prints a period — the hero, the column
+// header, the attribution bar, the section heading — reads it rather than
+// resource_cost. That indirection is what a second source once broke through:
+// each of them read the billed window directly, so a modelled monthly rate got
+// stamped with a real billed period it never covered. A wrong period on a
+// right-looking number is worse than no period, because it survives being
+// checked.
+//
+// One source reports spend now, so the noun is fixed and the interesting cases
+// are the ones where the pass recorded less than a full answer. A report with
+// no window must produce an unlabelled figure rather than a figure wearing a
+// period nobody observed.
+func TestReportMethodBasisStatesOnlyWhatThePassRecorded(t *testing.T) {
 	const report = `{"metric":"AmortizedCost","window":{"start":"2026-07-17","end":"2026-07-31","label":"2026-07-17→2026-07-30"}}`
 
 	type basis struct {
@@ -850,12 +856,6 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 			want:   basis{Noun: "spend", Metric: "AmortizedCost", Window: "2026-06-26→2026-07-09"},
 		},
 		{
-			// The regression: not Cost Explorer's window, not its metric, and not
-			// the word "spend" for something nothing has been billed for yet.
-			name: "Cost Optimization Hub borrows neither", method: "coh", report: report,
-			want: basis{Noun: "modelled cost", Metric: "modelled monthly rate", Monthly: true},
-		},
-		{
 			name: "no resource-level pass ran", method: "ce", report: "null",
 			want: basis{Noun: "spend"},
 		},
@@ -887,66 +887,598 @@ func TestReportMethodBasisNeverBorrowsAnotherSourcesWindow(t *testing.T) {
 	}
 }
 
-// A modelled rate carries the lookback the model read, per figure. One window
-// can be stated as a fact about the whole set; a mixture cannot be collapsed
-// into one without claiming coverage no single figure has, so the summary says
-// nothing and the rows keep their own.
-func TestReportModelledWindowIsOnlyStatedWhenEveryFigureAgrees(t *testing.T) {
-	const a = `{"method":"coh","observed_from":"2026-06-01T00:00:00Z","observed_to":"2026-07-01T00:00:00Z"}`
-	const b = `{"method":"coh","observed_from":"2026-05-01T00:00:00Z","observed_to":"2026-06-01T00:00:00Z"}`
-	const ce = `{"method":"ce","observed_from":"2026-07-17T00:00:00Z","observed_to":"2026-07-31T00:00:00Z"}`
-	const bare = `{"method":"coh"}`
-	const toOnly = `{"method":"coh","observed_to":"2026-07-01T00:00:00Z"}`
-	const fromOnly = `{"method":"coh","observed_from":"2026-06-01T00:00:00Z"}`
+// A modelled saving carries the lookback the model read, per suggestion. One
+// window can be stated as a fact about the whole set; a mixture cannot be
+// collapsed into one without claiming coverage no single figure has, so the
+// section's note says nothing and the suggestions keep their own.
+//
+// This is the JS half of render.sharedWindow, and it is held to the same rule
+// for the same reason.
+func TestReportSharedWindowIsOnlyStatedWhenEveryRecordAgrees(t *testing.T) {
+	const a = `{"observed_from":"2026-06-01T00:00:00Z","observed_to":"2026-07-01T00:00:00Z"}`
+	const b = `{"observed_from":"2026-05-01T00:00:00Z","observed_to":"2026-06-01T00:00:00Z"}`
+	const bare = `{}`
+	const toOnly = `{"observed_to":"2026-07-01T00:00:00Z"}`
+	const fromOnly = `{"observed_from":"2026-06-01T00:00:00Z"}`
 
 	cases := []struct {
-		name      string
-		resources string // JSON
-		unread    bool   // COST.counted is false: nobody has read these rows
-		want      string // JSON: the window, or null
+		name    string
+		records string // JSON
+		want    string // JSON: the window, or null
 	}{
-		{"one window", `[{"costs":[` + a + `]},{"costs":[` + a + `]}]`, false,
+		{"one window", `[` + a + `,` + a + `]`,
 			`{"from":"2026-06-01T00:00:00Z","to":"2026-07-01T00:00:00Z"}`},
-		{"a mixture states none", `[{"costs":[` + a + `]},{"costs":[` + b + `]}]`, false, "null"},
-		{"another source's window is not borrowed", `[{"costs":[` + ce + `]}]`, false, "null"},
-		{"figures with no window at all", `[{"costs":[` + bare + `]}]`, false, "null"},
-		{"one dated and one bare still disagree", `[{"costs":[` + a + `]},{"costs":[` + bare + `]}]`, false, "null"},
+		{"a mixture states none", `[` + a + `,` + b + `]`, "null"},
+		{"records with no window at all", `[` + bare + `]`, "null"},
+		{"one dated and one bare still disagree", `[` + a + `,` + bare + `]`, "null"},
 		// Half a window is not a window. Joining the two ends into one key hides
 		// this: "|2026-07-01T00:00:00Z" is a perfectly good key that no other
-		// figure matches, so a lone half-placed figure passed as agreement and
+		// record matches, so a lone half-placed one passed as agreement and
 		// rendered "from  up to 2026-07-01 UTC" — a stated end with an origin
 		// the source never gave. Go's sharedWindow bails on either end being nil.
-		{"an end with no start", `[{"costs":[` + toOnly + `]}]`, false, "null"},
-		{"a start with no end", `[{"costs":[` + fromOnly + `]}]`, false, "null"},
-		{"a half-placed figure spoils an otherwise agreed window",
-			`[{"costs":[` + a + `]},{"costs":[` + toOnly + `]}]`, false, "null"},
-		{"nothing priced", `[{"costs":[]},{}]`, false, "null"},
+		{"an end with no start", `[` + toOnly + `]`, "null"},
+		{"a start with no end", `[` + fromOnly + `]`, "null"},
+		{"a half-placed record spoils an otherwise agreed window",
+			`[` + a + `,` + toOnly + `]`, "null"},
+		// No records is not a window either, and it is the state the panels are
+		// in at boot and again after a failed decode. Returning the last one
+		// seen, or an empty pair, would stamp a period onto a section that has
+		// nothing in it.
+		{"nothing at all", `[]`, "null"},
+	}
 
-		// The window is a fact about rows, and the panels that print it now run
-		// at boot, before any row exists, and again from failCensus. There are
-		// two decode failures and only one of them clears the rows: the
-		// continuation assigns resources before it checks their number against
-		// the summary's, so a census that contradicts its own summary arrives at
-		// failCensus fully populated and perfectly foldable. Folding it would
-		// stamp a census-derived window onto the panel directly under a banner
-		// that says the inventory could not be read and the trail beneath it
-		// "comes from the report's metadata, which read fine" — and it would do
-		// it on one of the two failures, which is worse than on both.
-		{"an unread census states no window, however well its rows agree",
-			`[{"costs":[` + a + `]},{"costs":[` + a + `]}]`, true, "null"},
-		{"nor at boot, before the rows are there at all", "null", true, "null"},
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			script := jsFunc(t, "sharedWindow") + "\n" +
+				"console.log(JSON.stringify(sharedWindow(" + c.records + ")));"
+			if got := evalReportJS(t, script); got != c.want {
+				t.Errorf("sharedWindow(%s) = %s, want %s", c.records, got, c.want)
+			}
+		})
+	}
+}
+
+// The section that prints that window is the savings one, and it is a fact
+// about rows: initTips folds it out of the census. The panels that paint it run
+// at boot, before any row exists, and again from failCensus.
+//
+// There are two decode failures and only one of them clears the rows: the
+// continuation assigns resources before it checks their number against the
+// summary's, so a census that contradicts its own summary arrives at failCensus
+// fully populated and perfectly foldable. Folding it would put a page of
+// suggestions, ranked and totalled, directly under a banner saying the
+// inventory could not be read — and it would do it on one of the two failures,
+// which is worse than on both. The guard is that initTips only ever runs in the
+// success path, so TIPS stays at its declared zero and the section hides.
+func TestReportTipsStayEmptyUntilTheCensusIsRead(t *testing.T) {
+	var got struct {
+		Count  int  `json:"count"`
+		Hidden bool `json:"hidden"`
+	}
+	script := strings.Join([]string{
+		// The declared state, untouched — exactly what renderTips sees when the
+		// decode never reached initTips.
+		jsVar(t, "TIPS"),
+		jsVar(t, "MAX_TIPS_LISTED"),
+		`var sections = {};`,
+		`function fakeEl() { return { hidden: false, textContent: "", replaceChildren: function () {} }; }`,
+		`var document = { getElementById: function (id) {`,
+		`  return sections[id] || (sections[id] = fakeEl());`,
+		`}, createDocumentFragment: function () { return { appendChild: function () {} }; } };`,
+		jsFunc(t, "renderTips"),
+		`renderTips();`,
+		`console.log(JSON.stringify({ count: TIPS.count, hidden: sections["tips-section"].hidden }));`,
+	}, "\n")
+	evalJSON(t, script, &got)
+
+	if got.Count != 0 {
+		t.Errorf("TIPS.count = %d before initTips ran, want 0", got.Count)
+	}
+	if !got.Hidden {
+		t.Error("the savings section showed itself on a census nobody folded")
+	}
+}
+
+// tipRec is one suggestion as the page sees it. The amount is a raw JS
+// expression rather than a Go string so a case can hand it the three different
+// things a decoded census can hold there — a quoted decimal, null, or nothing
+// at all — which is the distinction initTips is built to keep.
+func tipRec(id, amountJS, currency, extra string) string {
+	return `{id: ` + strconv.Quote(id) +
+		`, estimated_monthly_savings: ` + amountJS +
+		`, currency: ` + strconv.Quote(currency) + extra + `}`
+}
+
+// tipRes wraps suggestions in the row they hang off. Only arn, the identity the
+// sort's tie-break reads, varies between cases.
+func tipRes(arn string, recs ...string) string {
+	return `{arn: ` + strconv.Quote(arn) + `, name: "orders", service: "rds", ` +
+		`region: "us-east-1", recommendations: [` + strings.Join(recs, ", ") + `]}`
+}
+
+// tipFold is what initTips leaves behind, flattened to the parts a reader ends
+// up seeing: which currencies got a group, in what order the suggestions sit
+// inside each, and what the group total came to.
+type tipFold struct {
+	Count        int `json:"count"`
+	Resources    int `json:"resources"`
+	Unquantified int `json:"unquantified"`
+	Window       *struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	} `json:"window"`
+	Groups []struct {
+		Currency string   `json:"currency"`
+		Tips     []string `json:"tips"`
+		Total    *string  `json:"total"`
+		Caveats  []string `json:"caveats"`
+	} `json:"groups"`
+}
+
+// foldTips runs initTips over a hand-built census.
+func foldTips(t *testing.T, rows ...string) tipFold {
+	t.Helper()
+	script := strings.Join([]string{
+		`var resources = [` + strings.Join(rows, ", ") + `];`,
+		jsVar(t, "DEC_RE"),
+		jsFunc(t, "pow10"),
+		jsFunc(t, "decParse"),
+		jsFunc(t, "decAlign"),
+		jsFunc(t, "decAdd"),
+		jsFunc(t, "decCmp"),
+		jsFunc(t, "decSum"),
+		jsFunc(t, "decFormat"),
+		jsFunc(t, "sharedWindow"),
+		jsVar(t, "TIPS"),
+		jsFunc(t, "initTips"),
+		`initTips();`,
+		`console.log(JSON.stringify({`,
+		`  count: TIPS.count, resources: TIPS.resources,`,
+		`  unquantified: TIPS.unquantified, window: TIPS.window,`,
+		`  groups: TIPS.groups.map(function (g) {`,
+		`    return { currency: g.currency, caveats: g.caveats,`,
+		`             tips: g.tips.map(function (t) { return t.rec.id; }),`,
+		`             total: g.total ? decFormat(g.total) : null };`,
+		`  })`,
+		`}));`,
+	}, "\n")
+
+	var got tipFold
+	evalJSON(t, script, &got)
+	return got
+}
+
+// Two currencies are two answers, and the page may not add them. The Go side of
+// this rule is groupTips; this is the half that runs in the browser, and it has
+// to partition the same way or the totals under the two lists would be the same
+// number counted twice.
+func TestReportInitTipsRanksWithinACurrencyAndNeverAcrossThem(t *testing.T) {
+	got := foldTips(t,
+		tipRes("arn:a", tipRec("usd-small", `"5.00"`, "USD", "")),
+		tipRes("arn:b", tipRec("eur-big", `"900.00"`, "EUR", "")),
+		tipRes("arn:c", tipRec("usd-big", `"40.00"`, "USD", "")),
+		// No currency at all is its own bucket rather than a guess at the
+		// account's. It sorts first because "" does, which puts the least
+		// interpretable figures where they cannot be mistaken for the ranking.
+		tipRes("arn:d", tipRec("bare", `"7.00"`, "", "")),
+	)
+
+	if len(got.Groups) != 3 {
+		t.Fatalf("got %d currency groups, want 3: %+v", len(got.Groups), got.Groups)
+	}
+	for i, want := range []struct {
+		currency string
+		tips     []string
+		total    string
+	}{
+		{"", []string{"bare"}, "7.00"},
+		{"EUR", []string{"eur-big"}, "900.00"},
+		// Ranked by amount, not by the order the census happened to hold them.
+		{"USD", []string{"usd-big", "usd-small"}, "45.00"},
+	} {
+		g := got.Groups[i]
+		if g.Currency != want.currency {
+			t.Errorf("group %d is %q, want %q", i, g.Currency, want.currency)
+		}
+		if !reflect.DeepEqual(g.Tips, want.tips) {
+			t.Errorf("group %q ranked %v, want %v", g.Currency, g.Tips, want.tips)
+		}
+		if g.Total == nil || *g.Total != want.total {
+			t.Errorf("group %q totals %v, want %s", g.Currency, g.Total, want.total)
+		}
+	}
+	if got.Count != 4 || got.Resources != 4 {
+		t.Errorf("count/resources = %d/%d, want 4/4", got.Count, got.Resources)
+	}
+}
+
+// A saving AWS priced at nothing is an answer: the change is worth making and
+// pays for nothing this month. It ranks last and it stays in the total. The
+// suggestion AWS named without pricing is the other thing entirely, and it is
+// counted aside rather than ranked at zero — which is the `> 0` filter this
+// codebase keeps having to refuse, one layer further out.
+func TestReportInitTipsSeparatesAPricedZeroFromAnUnpricedChange(t *testing.T) {
+	got := foldTips(t,
+		tipRes("arn:a", tipRec("priced-zero", `"0.00"`, "USD", "")),
+		tipRes("arn:b", tipRec("priced", `"3.00"`, "USD", "")),
+		// The three shapes an absent amount arrives in: never set, set to null
+		// by a decoder, and an empty string.
+		tipRes("arn:c",
+			tipRec("missing", `undefined`, "USD", ""),
+			tipRec("nulled", `null`, "USD", ""),
+			tipRec("empty", `""`, "USD", "")),
+	)
+
+	if len(got.Groups) != 1 {
+		t.Fatalf("got %d groups, want one USD group: %+v", len(got.Groups), got.Groups)
+	}
+	g := got.Groups[0]
+	if want := []string{"priced", "priced-zero"}; !reflect.DeepEqual(g.Tips, want) {
+		t.Errorf("ranked %v, want %v — a reported zero belongs in the list", g.Tips, want)
+	}
+	if g.Total == nil || *g.Total != "3.00" {
+		t.Errorf("total = %v, want 3.00", g.Total)
+	}
+	if got.Unquantified != 3 {
+		t.Errorf("unquantified = %d, want 3", got.Unquantified)
+	}
+	// Every suggestion is counted, priced or not — the count is what AWS said,
+	// and the ranking is only the part of it that can be ordered.
+	if got.Count != 5 {
+		t.Errorf("count = %d, want 5", got.Count)
+	}
+	// And the row carrying only unpriced advice is still a resource with advice.
+	if got.Resources != 3 {
+		t.Errorf("resources = %d, want 3", got.Resources)
+	}
+}
+
+// A sum that silently omits a term is worse than no sum, because nothing on the
+// page says a term is missing. One amount the page cannot read voids its group's
+// total and leaves every other currency's intact.
+func TestReportInitTipsVoidsOnlyTheTotalItCannotCompute(t *testing.T) {
+	got := foldTips(t,
+		tipRes("arn:a", tipRec("readable", `"8.00"`, "USD", "")),
+		// A string that is not a decimal: present, so not unquantified, but
+		// nothing decParse will take.
+		tipRes("arn:b", tipRec("garbled", `"about ten dollars"`, "USD", "")),
+		tipRes("arn:c", tipRec("other", `"2.00"`, "EUR", "")),
+	)
+
+	if len(got.Groups) != 2 {
+		t.Fatalf("got %d groups, want 2: %+v", len(got.Groups), got.Groups)
+	}
+	eur, usd := got.Groups[0], got.Groups[1]
+	if eur.Currency != "EUR" || eur.Total == nil || *eur.Total != "2.00" {
+		t.Errorf("the readable currency lost its total: %+v", eur)
+	}
+	if usd.Total != nil {
+		t.Errorf("USD totalled %v over an amount it could not read", *usd.Total)
+	}
+	// The unreadable one sinks instead of reordering the rest, so the ranking
+	// above it still means what it says.
+	if want := []string{"readable", "garbled"}; !reflect.DeepEqual(usd.Tips, want) {
+		t.Errorf("USD ranked %v, want %v", usd.Tips, want)
+	}
+	if got.Unquantified != 0 {
+		t.Errorf("unquantified = %d; an unparseable amount is present, not absent", got.Unquantified)
+	}
+}
+
+// Equal savings are common — the hub models a database's compute and its storage
+// apart and can price both the same — so the order below the amount has to come
+// from the data rather than from the sort's internals. sort() is not stable in
+// every engine this file has to run in, and an unstable tie would reorder the
+// list between two loads of one report.
+func TestReportInitTipsBreaksTiesTheWayTheModelDoes(t *testing.T) {
+	rows := []string{
+		tipRes("arn:zzz", tipRec("z-first", `"10.00"`, "USD", "")),
+		tipRes("arn:aaa",
+			tipRec("storage", `"10.00"`, "USD", ""),
+			tipRec("compute", `"10.00"`, "USD", "")),
+	}
+	want := []string{"compute", "storage", "z-first"}
+
+	// Both input orders, because a tie-break that only works one way is the sort
+	// order leaking through.
+	for _, in := range [][]string{rows, {rows[1], rows[0]}} {
+		got := foldTips(t, in...)
+		if len(got.Groups) != 1 {
+			t.Fatalf("got %d groups, want 1: %+v", len(got.Groups), got.Groups)
+		}
+		if !reflect.DeepEqual(got.Groups[0].Tips, want) {
+			t.Errorf("ranked %v, want %v", got.Groups[0].Tips, want)
+		}
+	}
+}
+
+// The window is a fact about the whole section, so it is folded over every
+// suggestion the census carries — including the ones with no figure, which are
+// still suggestions AWS modelled over a period. Folding only the rankable ones
+// would let a page state a lookback that part of its own contents does not
+// share.
+func TestReportInitTipsReadsTheWindowOffEverySuggestion(t *testing.T) {
+	const june = `, observed_from: "2026-06-01T00:00:00Z", observed_to: "2026-07-01T00:00:00Z"`
+	const may = `, observed_from: "2026-05-01T00:00:00Z", observed_to: "2026-06-01T00:00:00Z"`
+
+	agreed := foldTips(t,
+		tipRes("arn:a", tipRec("a", `"1.00"`, "USD", june)),
+		tipRes("arn:b", tipRec("b", `"2.00"`, "USD", june)),
+	)
+	if agreed.Window == nil {
+		t.Fatal("two suggestions over one window state none")
+	}
+	if agreed.Window.From != "2026-06-01T00:00:00Z" || agreed.Window.To != "2026-07-01T00:00:00Z" {
+		t.Errorf("window = %+v, want the June one", *agreed.Window)
+	}
+
+	// The unpriced one never reaches a ranking, and it still gets a vote here.
+	mixed := foldTips(t,
+		tipRes("arn:a", tipRec("a", `"1.00"`, "USD", june)),
+		tipRes("arn:b", tipRec("b", `null`, "USD", may)),
+	)
+	if mixed.Window != nil {
+		t.Errorf("window = %+v; an unranked suggestion over a different period "+
+			"still disagrees", *mixed.Window)
+	}
+}
+
+// A caveat is per suggestion and the group prints one line each. Two rows
+// carrying the same wording are one thing to tell the reader; two rows carrying
+// different wording are two.
+func TestReportInitTipsCollectsGroupCaveatsWithoutRepeatingThem(t *testing.T) {
+	const young = `, caveats: ["created after the window began"]`
+	const both = `, caveats: ["created after the window began", "covered by a Savings Plan"]`
+	got := foldTips(t,
+		tipRes("arn:a", tipRec("a", `"3.00"`, "USD", young)),
+		tipRes("arn:b", tipRec("b", `"2.00"`, "USD", both)),
+		tipRes("arn:c", tipRec("c", `"1.00"`, "EUR", young)),
+	)
+
+	if len(got.Groups) != 2 {
+		t.Fatalf("got %d groups, want 2: %+v", len(got.Groups), got.Groups)
+	}
+	eur, usd := got.Groups[0], got.Groups[1]
+	if want := []string{"created after the window began", "covered by a Savings Plan"}; !reflect.DeepEqual(usd.Caveats, want) {
+		t.Errorf("USD caveats = %v, want %v", usd.Caveats, want)
+	}
+	// Scoped to the group, not shared across the page: a caveat about a EUR row
+	// is not a caveat about the dollar ranking.
+	if want := []string{"created after the window began"}; !reflect.DeepEqual(eur.Caveats, want) {
+		t.Errorf("EUR caveats = %v, want %v", eur.Caveats, want)
+	}
+}
+
+// AWS's effort rating is a closed enum of five, and lower-casing one of those is
+// presentation. Anything else is a value from a later API than this build knows,
+// and rephrasing it would be inventing a claim — so it is printed as it came.
+// The Go half is render.effortLabel, held to the same rule.
+func TestReportEffortLabelRephrasesOnlyWhatItRecognises(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`"VeryLow"`, "very low effort"},
+		{`"Low"`, "low effort"},
+		{`"Medium"`, "medium effort"},
+		{`"High"`, "high effort"},
+		{`"VeryHigh"`, "very high effort"},
+		// Unsaid is unsaid, in all three shapes it can arrive in. A blank here
+		// drops the whole clause from the meta line rather than printing an
+		// effort nobody graded.
+		{`""`, ""},
+		{`null`, ""},
+		{`undefined`, ""},
+		// A grade from a later API, quoted rather than described.
+		{`"Extreme"`, "Extreme effort"},
+	}
+
+	in := make([]string, len(cases))
+	for i, c := range cases {
+		in[i] = c.in
+	}
+	script := jsFunc(t, "effortLabel") + "\n" +
+		"console.log(JSON.stringify([" + strings.Join(in, ", ") + "].map(effortLabel)));"
+
+	var got []string
+	evalJSON(t, script, &got)
+	if len(got) != len(cases) {
+		t.Fatalf("got %d labels, want %d", len(got), len(cases))
+	}
+	for i, c := range cases {
+		if got[i] != c.want {
+			t.Errorf("effortLabel(%s) = %q, want %q", c.in, got[i], c.want)
+		}
+	}
+}
+
+// tipDOMShim is the DOM tipAction touches: el's createElement, plus the text
+// nodes it appends around the arrow.
+const tipDOMShim = `
+var document = {
+  createElement: function (tag) {
+    return { tag: tag, className: "", textContent: "", children: [],
+             appendChild: function (c) { this.children.push(c); } };
+  },
+  createTextNode: function (s) {
+    return { tag: "#text", className: "", textContent: s, children: [] };
+  }
+};
+function tipText(n) {
+  return (n.textContent || "") + n.children.map(tipText).join("");
+}
+function tipArrows(n) {
+  return n.children.filter(function (c) { return c.className === "rr-tip-arrow"; }).length;
+}`
+
+// The action cell is the whole point of the section: a saving with no stated
+// change is a number a reader cannot act on. Every part of it is AWS's own
+// wording, and the arrow only appears when there are two different things to put
+// on either side of it.
+func TestReportTipActionStatesTheChangeWithoutInventingOne(t *testing.T) {
+	cases := []struct {
+		name   string
+		rec    string
+		want   string
+		arrows int
+	}{
+		{
+			name: "the readable summaries win",
+			rec: `{action_type: "Rightsize", current_resource_type: "RdsDbInstance",
+			       current_resource_summary: "db.r5.xlarge",
+			       recommended_resource_type: "RdsDbInstance",
+			       recommended_resource_summary: "db.r5.large"}`,
+			want: "Rightsize db.r5.xlarge → db.r5.large", arrows: 1,
+		},
+		{
+			// The types are the fallback, and they carry real information: a
+			// suggestion about a database's storage and one about its compute
+			// are otherwise the same row twice.
+			name: "types stand in when there is no summary",
+			rec: `{action_type: "Rightsize", current_resource_type: "AuroraDbClusterStorage",
+			       recommended_resource_type: "AuroraDbClusterStorage"}`,
+			want: "Rightsize AuroraDbClusterStorage", arrows: 0,
+		},
+		{
+			name: "a different target type is worth an arrow",
+			rec: `{action_type: "MigrateToGraviton", current_resource_type: "Ec2Instance",
+			       recommended_resource_type: "Ec2InstanceGraviton"}`,
+			want: "MigrateToGraviton Ec2Instance → Ec2InstanceGraviton", arrows: 1,
+		},
+		{
+			// Stopping or deleting something has no "after" shape. An arrow
+			// pointing at nothing reads as a rendering fault.
+			name: "an action with no target",
+			rec:  `{action_type: "Stop", current_resource_type: "Ec2Instance"}`,
+			want: "Stop Ec2Instance", arrows: 0,
+		},
+		{
+			// AWS repeating the summary on both sides is not a change to show.
+			name: "the same thing on both sides",
+			rec: `{action_type: "Upgrade", current_resource_summary: "gp2",
+			       recommended_resource_summary: "gp2"}`,
+			want: "Upgrade gp2", arrows: 0,
+		},
+		{
+			name: "no action named, only a shape",
+			rec:  `{current_resource_summary: "db.t3.micro"}`,
+			want: "db.t3.micro", arrows: 0,
+		},
+		{
+			// Nothing to say is said with nothing. The row still carries its
+			// amount and its meta line.
+			name: "an entirely silent suggestion",
+			rec:  `{}`,
+			want: "", arrows: 0,
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			script := strings.Join([]string{
-				"var resources = " + c.resources + ";",
-				"var COST = { counted: " + strconv.FormatBool(!c.unread) + " };",
-				jsFunc(t, "methodWindow"),
-				`console.log(JSON.stringify(methodWindow("coh")));`,
+				tipDOMShim,
+				jsFunc(t, "el"),
+				jsFunc(t, "tipAction"),
+				`var box = tipAction(` + c.rec + `);`,
+				`console.log(JSON.stringify([tipText(box), tipArrows(box), box.className]));`,
 			}, "\n")
-			if got := evalReportJS(t, script); got != c.want {
-				t.Errorf("methodWindow(\"coh\") = %s, want %s", got, c.want)
+
+			var got []any
+			evalJSON(t, script, &got)
+			if len(got) != 3 {
+				t.Fatalf("harness returned %d values, want 3", len(got))
+			}
+			if got[0] != c.want {
+				t.Errorf("action reads %q, want %q", got[0], c.want)
+			}
+			if n, _ := got[1].(float64); int(n) != c.arrows {
+				t.Errorf("drew %v arrows, want %d", got[1], c.arrows)
+			}
+			if got[2] != "rr-tip-action" {
+				t.Errorf("action cell class = %v", got[2])
+			}
+		})
+	}
+}
+
+// The meta line is what acting on the suggestion takes. Both flags are
+// tri-state, and all three states print: "AWS did not say whether this needs a
+// restart" is something whoever plans the change has to know, and printing
+// nothing for it is indistinguishable from a stated no.
+func TestReportTipMetaPrintsEveryStateAWSReports(t *testing.T) {
+	const res = `{name: "orders", arn: "arn:aws:rds:us-east-1:1:db:orders", service: "rds", region: "us-east-1"}`
+	cases := []struct {
+		name, rec, want string
+	}{
+		{
+			name: "everything stated",
+			rec:  `{implementation_effort: "Low", restart_needed: true, rollback_possible: true}`,
+			want: "orders (rds, us-east-1)  ·  low effort  ·  restart needed  ·  reversible",
+		},
+		{
+			// The negatives are statements, not absences, and read differently
+			// from silence.
+			name: "stated negatives",
+			rec:  `{implementation_effort: "VeryHigh", restart_needed: false, rollback_possible: false}`,
+			want: "orders (rds, us-east-1)  ·  very high effort  ·  no restart  ·  not reversible",
+		},
+		{
+			name: "AWS said nothing about any of it",
+			rec:  `{}`,
+			want: "orders (rds, us-east-1)",
+		},
+		{
+			// null is what a decoded census holds for an unsaid flag, and it has
+			// to fall through both branches rather than matching the false one.
+			name: "nulls are silence, not no",
+			rec:  `{implementation_effort: "", restart_needed: null, rollback_possible: null}`,
+			want: "orders (rds, us-east-1)",
+		},
+		{
+			name: "one flag stated and one not",
+			rec:  `{restart_needed: false}`,
+			want: "orders (rds, us-east-1)  ·  no restart",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			script := strings.Join([]string{
+				jsFunc(t, "tipResourceLabel"),
+				jsFunc(t, "effortLabel"),
+				jsFunc(t, "tipMeta"),
+				`console.log(JSON.stringify(tipMeta({r: ` + res + `, rec: ` + c.rec + `})));`,
+			}, "\n")
+
+			var got string
+			evalJSON(t, script, &got)
+			if got != c.want {
+				t.Errorf("meta reads %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A resource is pointed at the way a reader would find it. A namesake in another
+// region is a different resource, and a row that names neither leaves whoever is
+// reading with an amount and nowhere to spend the effort.
+func TestReportTipResourceLabelCarriesEnoughToFindTheRow(t *testing.T) {
+	cases := []struct{ name, res, want string }{
+		{"named and scoped", `{name: "orders", service: "rds", region: "us-east-1"}`,
+			"orders (rds, us-east-1)"},
+		{"a global resource has no region", `{name: "assets", service: "s3"}`, "assets (s3)"},
+		// The ARN is the fallback identity, because a resource AWS named nothing
+		// is still one the reader has to be able to look up.
+		{"no name at all", `{arn: "arn:aws:ec2:us-east-1:1:instance/i-1", service: "ec2", region: "us-east-1"}`,
+			"arn:aws:ec2:us-east-1:1:instance/i-1 (ec2, us-east-1)"},
+		{"nothing but a name", `{name: "orders"}`, "orders"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			script := jsFunc(t, "tipResourceLabel") + "\n" +
+				"console.log(JSON.stringify(tipResourceLabel(" + c.res + ")));"
+			var got string
+			evalJSON(t, script, &got)
+			if got != c.want {
+				t.Errorf("label = %q, want %q", got, c.want)
 			}
 		})
 	}
@@ -1055,33 +1587,37 @@ func TestReportCostTextNeverPrintsZeroForAbsence(t *testing.T) {
 			want: cell{Dim: true, Title: "No Cost Explorer figure for this resource."},
 		},
 		{
-			// The only reason string any collector writes, and the one that
-			// exposed the bug: Cost Explorer's resource-level pass deliberately
-			// records none, so a reason sitting on a row under Cost Explorer was
-			// written by the *other* source. Joining the two with an em dash made
-			// a Hub sentence answer for Cost Explorer's silence. The reason is
-			// quoted and attributed to "the cost pass" instead, which is what the
-			// coverage banner has always called it.
+			// The reason is quoted rather than spliced in after an em dash, and
+			// that is the bug this pins. cost_unavailable is written by whichever
+			// pass had something to say, which need not be the source the reader
+			// is looking through — an em dash made one source's sentence read as
+			// the explanation for another's silence: "No Cost Explorer figure —
+			// no recommendation for this resource". Quoting it and attributing it
+			// to "the cost pass" makes no claim about which pass that was.
 			//
-			// A fixture reason no collector can produce is how this passed for a
-			// while: the corpus said "Cost Explorer returned no rows for this
-			// resource", which reads fine after an em dash and never occurs.
+			// No collector writes one today, so the string here is a fixture. It
+			// is deliberately one that could be written rather than one that
+			// reads well after an em dash: the corpus used to say "Cost Explorer
+			// returned no rows for this resource", which flowed nicely and never
+			// occurred, and the test passed on it for a while.
 			name:     "no figure, with the reason a pass recorded",
-			resource: `{"cost_unavailable":"no Cost Optimization Hub recommendation for this resource"}`,
+			resource: `{"cost_unavailable":"the cost pass looked and AWS reported nothing for this resource"}`,
 			want: cell{Dim: true,
 				Title: "No Cost Explorer figure for this resource. The cost pass recorded: " +
-					"no Cost Optimization Hub recommendation for this resource"},
+					"the cost pass looked and AWS reported nothing for this resource"},
 		},
 		{
-			// The same row under the source that wrote the reason. Still quoted:
-			// one wording covers both, and neither claims the reason came from
-			// whichever source the reader happens to be looking through.
-			name:     "the source that recorded the reason is not privileged",
-			method:   "coh",
-			resource: `{"cost_unavailable":"no Cost Optimization Hub recommendation for this resource"}`,
+			// The same row read through a source this build has never heard of,
+			// which is what a census written by a later build looks like to this
+			// one. The name is passed through as it came — a method the report
+			// cannot label is not one it may rename, and printing "undefined"
+			// there would be the page inventing an answer about its own data.
+			name:     "an unrecognized source is named as it came",
+			method:   modelledMethod,
+			resource: `{"cost_unavailable":"the cost pass looked and AWS reported nothing for this resource"}`,
 			want: cell{Dim: true,
-				Title: "No Cost Optimization Hub figure for this resource. The cost pass recorded: " +
-					"no Cost Optimization Hub recommendation for this resource"},
+				Title: "No " + modelledMethod + " figure for this resource. The cost pass recorded: " +
+					"the cost pass looked and AWS reported nothing for this resource"},
 		},
 		{
 			name:     "a reported zero is a figure",
@@ -1097,12 +1633,17 @@ func TestReportCostTextNeverPrintsZeroForAbsence(t *testing.T) {
 		},
 		{
 			// A modelled figure's window is the lookback the model read, not the
-			// period the amount covers, and the wording keeps the two apart.
+			// period the amount covers, and the wording keeps the two apart. No
+			// source in this build sets estimated on a per-resource figure — the
+			// one that did is now advice rather than a price — but the branch is
+			// what stands between a modelled number and a reader who reads every
+			// number on the page as an invoice line, so it is held, not deleted.
 			name: "a modelled rate says what its window is",
-			resource: `{"_cost":{"amount":"40.00","currency":"USD","method":"coh","estimated":true,` +
+			resource: `{"_cost":{"amount":"40.00","currency":"USD","method":"` + modelledMethod +
+				`","estimated":true,` +
 				`"observed_from":"2026-06-01T00:00:00Z","observed_to":"2026-07-01T00:00:00Z"}}`,
 			want: cell{Text: "40.00 USD",
-				Title: "Modelled monthly rate from Cost Optimization Hub rather than a billed amount. " +
+				Title: "Modelled monthly rate from " + modelledMethod + " rather than a billed amount. " +
 					"Modelled from usage that covers usage from 2026-06-01 up to 2026-07-01, UTC."},
 		},
 		{
@@ -1196,48 +1737,41 @@ func TestReportCostTextNeverPrintsZeroForAbsence(t *testing.T) {
 }
 
 // The commitment disclosure has to describe the figure actually in front of the
-// reader, because each one is wrong about a resource in a different direction:
-// amortized spreads a commitment over what it covered, unblended leaves it on
-// the account, and Cost Optimization Hub has not billed anything at all. The
-// last one was reached by handing the note an empty metric, which selects the
-// branch for a Cost Explorer figure whose metric went unrecorded and ends "what
-// a resource was charged" — a sentence about a charge that never happened.
-// Whichever source is active, the note may not turn a cost into a saving: this
-// tool cannot see rate plans or what else would move onto the commitment, so it
-// has no basis for the claim and never makes it.
+// reader, because each accounting treatment is wrong about a resource in a
+// different direction: amortized spreads a commitment over what it covered,
+// unblended leaves it on the account, blended averages rates across the
+// organization. Whichever it is, the note may not turn a cost into a saving:
+// this tool cannot see rate plans or what else would move onto the commitment,
+// so it has no basis for the claim and never makes it.
+//
+// The savings section makes the opposite claim on purpose, and it is the reason
+// this one has to hold. Everything the hub suggests is a modelled figure for a
+// change that has not happened; everything the note describes is money already
+// billed. A page carrying both must never let the second read as the first.
 func TestReportCommitmentNoteNeverPromisesASaving(t *testing.T) {
-	cases := []struct {
-		Metric string `json:"metric"`
-		Method string `json:"method"`
-	}{
-		{Metric: "AmortizedCost"}, {Metric: "NetAmortizedCost"},
-		{Metric: "UnblendedCost"}, {Metric: "NetUnblendedCost"},
-		{Metric: "BlendedCost"}, {Metric: "UsageQuantity"},
-		{Metric: ""}, {Metric: "a metric AWS has not shipped yet"},
-		// Cost Optimization Hub carries no metric, and carries one anyway if a
-		// Cost Explorer pass also ran: neither may pull the note onto a branch
-		// that speaks about billed amounts.
-		{Metric: "", Method: "coh"},
-		{Metric: "AmortizedCost", Method: "coh"},
+	metrics := []string{
+		"AmortizedCost", "NetAmortizedCost",
+		"UnblendedCost", "NetUnblendedCost",
+		"BlendedCost", "UsageQuantity",
+		"", "a metric AWS has not shipped yet",
 	}
 
-	in, err := json.Marshal(cases)
+	in, err := json.Marshal(metrics)
 	if err != nil {
 		t.Fatalf("encoding cases: %v", err)
 	}
 	script := jsFunc(t, "commitmentNote") + "\n" +
-		"console.log(JSON.stringify((" + string(in) + ").map(function (c) " +
-		"{ return commitmentNote(c.metric, c.method); })));"
+		"console.log(JSON.stringify((" + string(in) + ").map(commitmentNote)));"
 
 	var got []string
 	evalJSON(t, script, &got)
-	if len(got) != len(cases) {
-		t.Fatalf("got %d notes, want %d", len(got), len(cases))
+	if len(got) != len(metrics) {
+		t.Fatalf("got %d notes, want %d", len(got), len(metrics))
 	}
-	for i, c := range cases {
-		note, name := got[i], c.Metric+"/"+c.Method
+	for i, metric := range metrics {
+		note := got[i]
 		if note == "" {
-			t.Errorf("%s gets no commitment disclosure at all", name)
+			t.Errorf("%q gets no commitment disclosure at all", metric)
 			continue
 		}
 		// The amortized note uses "saving" to deny one, so the bar is the claim
@@ -1248,19 +1782,7 @@ func TestReportCommitmentNoteNeverPromisesASaving(t *testing.T) {
 			"estimated saving", "savings if deleted", "save by deleting",
 		} {
 			if strings.Contains(strings.ToLower(note), claim) {
-				t.Errorf("%s: disclosure makes a savings claim (%q):\n  %s", name, claim, note)
-			}
-		}
-		// A modelled rate is a price this tool computed for a configuration, not
-		// a line on an invoice, and no wording may report it as one.
-		if c.Method == "coh" {
-			for _, charged := range []string{"was charged", "AWS billed on the day", "this account was charged"} {
-				if strings.Contains(note, charged) {
-					t.Errorf("the modelled-rate disclosure describes a charge (%q):\n  %s", charged, note)
-				}
-			}
-			if !strings.Contains(note, "modelled to cost") {
-				t.Errorf("the modelled-rate disclosure does not say the figure is modelled:\n  %s", note)
+				t.Errorf("%q: disclosure makes a savings claim (%q):\n  %s", metric, claim, note)
 			}
 		}
 	}
@@ -1273,18 +1795,46 @@ func TestReportCommitmentNoteNeverPromisesASaving(t *testing.T) {
 	if !strings.Contains(got[7], "a metric AWS has not shipped yet") {
 		t.Errorf("an unrecognized metric is not named in its own disclosure:\n  %s", got[7])
 	}
-	// And a metric name left over from a Cost Explorer pass is not repeated as a
-	// description of a Cost Optimization Hub figure.
-	if strings.Contains(got[9], "AmortizedCost") {
-		t.Errorf("a Cost Explorer metric is described over a modelled rate:\n  %s", got[9])
+}
+
+// The disclosure the savings section owes its reader is the mirror of the one
+// above, and it is the sentence this whole change exists to be able to print.
+// Cost Optimization Hub models a month that has not happened; Cost Explorer
+// reports a window that has. A page showing both has to say so, or the two
+// numbers sit near each other and invite an arithmetic neither supports.
+func TestReportTipNoteKeepsSavingsOutOfTheBill(t *testing.T) {
+	// The note is built inline in renderTips rather than by a function of its
+	// own, so the template text is what there is to read. That is a weaker seam
+	// than lifting a function and it is the right one here: the alternative is a
+	// helper that exists only to be testable, and the risk being guarded is the
+	// wording changing, not the wording being computed wrongly.
+	for _, want := range []string{
+		"not an amount anyone was charged",
+		"nothing here is added to or subtracted from the spend above",
+		// Truncated mid-sentence because the source wraps there: the needles are
+		// read out of the template, not out of the rendered page, so a string
+		// split across two JS lines has to be matched on one of them.
+		"no figure on this page is a share of the",
+		"only a later scan can say by how much",
+		// Commitments cut the other way here: a covered resource keeps costing
+		// the account after it is gone, so a modelled saving can overstate what
+		// the next bill actually drops by. AWS models it; this tool reports what
+		// AWS said and adjusts nothing.
+		"keeps costing the account after it is gone",
+	} {
+		if !strings.Contains(reportTemplate, want) {
+			t.Errorf("the savings section no longer says %q", want)
+		}
 	}
-	// The branch above only exists if the caller says which source it is holding.
-	// Dropping the argument is silent — the parameter goes undefined, the note
-	// falls through to the Cost Explorer wording, and every case here still
-	// passes because they all call the function directly. So the one call site
-	// is pinned too.
-	if !strings.Contains(reportTemplate, "commitmentNote(metric, COST.method)") {
-		t.Error("renderCostNote no longer tells the disclosure which source the figure came from")
+	// And the claims it may not make. A modelled monthly figure is not a
+	// forecast of the next invoice and not a subtraction from the last one.
+	for _, banned := range []string{
+		"your bill will be", "next month's bill will",
+		"net spend after savings", "spend minus savings",
+	} {
+		if strings.Contains(reportTemplate, banned) {
+			t.Errorf("the report reconciles a modelled saving against a bill: %q", banned)
+		}
 	}
 }
 
@@ -1303,9 +1853,14 @@ func TestReportHeroNamesTheSourceItsCoverageGapBelongsTo(t *testing.T) {
 			want: "across 28 of 98 resources · 70 carry no Cost Explorer figure in USD",
 		},
 		{
-			name:   "the other source is named when it is the active one",
-			priced: 4, total: 98, method: "coh", currency: "USD",
-			want: "across 4 of 98 resources · 94 carry no Cost Optimization Hub figure in USD",
+			// A source this build has no label for is named as AWS named it. The
+			// gap belongs to that source and has to say so, and the tile has no
+			// business rewriting a token it does not recognize — that is a census
+			// from a later build, and inventing prose for it is inventing a claim
+			// about data this build cannot read.
+			name:   "an unrecognized source is named as it came",
+			priced: 4, total: 98, method: modelledMethod, currency: "USD",
+			want: "across 4 of 98 resources · 94 carry no " + modelledMethod + " figure in USD",
 		},
 		{
 			// No currency was settled on, so none is claimed; the source still is.

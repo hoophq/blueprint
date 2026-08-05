@@ -430,10 +430,10 @@ type Resource struct {
 	// currency, method, and window that qualify it, and those must travel
 	// together or not at all. See ResourceCost.
 	//
-	// It is a slice rather than one slot because the sources answer different
-	// questions and a resource can legitimately have both a billed figure and a
-	// modelled one. Keeping both means neither renderer nor reader has to guess
-	// which the other wanted; nothing ever sums across methods.
+	// It stays a slice, though only one source reports spend today, so that a
+	// second billed source can arrive without changing the representation of
+	// every priced resource in the artifact — and so nothing ever sums across
+	// methods by having nowhere else to put the second figure.
 	Costs []ResourceCost `json:"costs,omitempty"`
 	// CostUnavailable names why no source priced this resource, when a source
 	// looked and came back empty. It is the absence made explicit: a blank cost
@@ -444,13 +444,27 @@ type Resource struct {
 	// it. Only a source that actually queried for this resource may set it, and
 	// only to something that source can support; render never invents one.
 	//
-	// Only Cost Optimization Hub writes it. Cost Explorer's resource-level pass
-	// deliberately does not: an absent row there is indistinguishable from a
-	// service that reports no resource-level data, a resource with no usage in
-	// the window, and an opt-in switched on too late to cover it. Naming one of
-	// those would be a guess, so the per-service outcomes go to
-	// Snapshot.ResourceCost instead, where the ambiguity survives intact.
+	// No source writes it today. Cost Optimization Hub used to, back when it
+	// reported a price and could therefore fail to report one; it now reports
+	// advice, and having no advice for a resource says nothing about whether
+	// that resource was priced. Cost Explorer's resource-level pass has never
+	// written it and deliberately does not: an absent row there is
+	// indistinguishable from a service that reports no resource-level data, a
+	// resource with no usage in the window, and an opt-in switched on too late
+	// to cover it. Naming one of those would be a guess, so the per-service
+	// outcomes go to Snapshot.ResourceCost instead, where the ambiguity
+	// survives intact. The field stays because the statement it makes is still
+	// one a future per-resource source could honestly make, and every reader
+	// already handles it being empty.
 	CostUnavailable string `json:"cost_unavailable,omitempty"`
+	// Recommendations is what Cost Optimization Hub says could be changed about
+	// this resource to spend less on it. Empty means the hub named nothing for
+	// it, which is the ordinary case and not a finding: the hub only models the
+	// resource types it has advice for, and having no advice is not the same as
+	// having no cost. A resource can carry several — the hub models a database's
+	// compute and its storage separately — and they are complements, not rival
+	// answers. See Recommendation, and note that nothing here is spend.
+	Recommendations []Recommendation `json:"recommendations,omitempty"`
 
 	Attributes map[string]string `json:"attributes,omitempty"`
 	Measures   map[string]int64  `json:"measures,omitempty"`
@@ -605,6 +619,57 @@ func (r *Resource) CostBy(method string) *ResourceCost {
 // Priced reports whether any source put a figure on this resource.
 func (r *Resource) Priced() bool { return len(r.Costs) > 0 }
 
+// AddRecommendation records one thing AWS suggests doing to this resource.
+//
+// It appends, which is the opposite of AddCost and deliberately so. Two figures
+// under one cost method would let a caller count the same spend twice, so the
+// second replaces the first. Two recommendations for one resource are two
+// different things AWS suggests doing to it — rightsizing its compute and
+// rightsizing its storage — and dropping either would hide advice the hub
+// actually gave.
+func (r *Resource) AddRecommendation(rec Recommendation) {
+	r.Recommendations = append(r.Recommendations, rec)
+}
+
+// Tipped reports whether the hub named anything for this resource.
+func (r *Resource) Tipped() bool { return len(r.Recommendations) > 0 }
+
+// SortRecommendations orders a resource's recommendations so the JSON artifact
+// is byte-for-byte stable however AWS happened to page them back.
+//
+// The cascade ends in ID because sort.Slice is unstable and nothing above ID is
+// unique: the hub can return two recommendations for one resource that agree on
+// action, on both resource types and on the saving — a compute and a storage
+// rightsizing of the same shape — and without a unique final key they would
+// swap places between two runs over one snapshot. Same reason Snapshot.Sort
+// tie-breaks on ARN. When AWS reports no id the two rows are genuinely
+// indistinguishable and the order between them cannot matter.
+//
+// The savings comparison is a string compare on purpose. This is a tie-break
+// for determinism, not a ranking — ranking by money goes through big.Rat in the
+// renderer, where "9.00" and "10.00" sort the way a reader expects.
+func (r *Resource) SortRecommendations() {
+	if len(r.Recommendations) < 2 {
+		return
+	}
+	sort.Slice(r.Recommendations, func(i, j int) bool {
+		a, b := &r.Recommendations[i], &r.Recommendations[j]
+		if a.ActionType != b.ActionType {
+			return a.ActionType < b.ActionType
+		}
+		if a.CurrentResourceType != b.CurrentResourceType {
+			return a.CurrentResourceType < b.CurrentResourceType
+		}
+		if a.RecommendedResourceType != b.RecommendedResourceType {
+			return a.RecommendedResourceType < b.RecommendedResourceType
+		}
+		if a.EstimatedMonthlySavings != b.EstimatedMonthlySavings {
+			return a.EstimatedMonthlySavings < b.EstimatedMonthlySavings
+		}
+		return a.ID < b.ID
+	})
+}
+
 // SortCosts orders a resource's figures by method so the JSON artifact is
 // byte-for-byte stable regardless of which source ran first.
 //
@@ -649,14 +714,24 @@ type Failure struct {
 // schema versions is refused: field representation changes (schema 2 moved
 // engine/class/storage into the attribute bag and replaced kind with a
 // CloudFormation type name; schema 3 replaced a resource's single "cost" object
-// with a "costs" list, one entry per source) would otherwise surface as
-// fabricated resource drift on every row.
+// with a "costs" list, one entry per source; schema 4 withdrew the "coh" entry
+// from that list) would otherwise surface as fabricated resource drift on every
+// row.
 //
 // Schema 3 is why every existing --compare baseline and history bucket is
 // incomparable for one run. Reading a schema-2 "cost" object as an empty
 // schema-3 list would report every priced resource as having lost its price —
 // spend drift that never happened.
-const SchemaVersion = 3
+//
+// Schema 4 is the same hazard from the other direction. Cost Optimization Hub
+// stopped reporting a price and started reporting advice, so a schema-3
+// baseline carries a "coh" cost entry on every hub-modelled resource that
+// schema 4 never writes. Diffed across the boundary, every one of those rows
+// reads as having lost its price — again, spend drift that never happened.
+// Gaining the "recommendations" field would not on its own warrant a bump (a
+// new field is not a changed representation, which is why Failure.Time did not
+// need one); withdrawing the cost entries does.
+const SchemaVersion = 4
 
 // Snapshot is the complete result of one scan run — the unit all renderers
 // consume and the JSON artifact written to disk.
@@ -799,6 +874,7 @@ func (s *Snapshot) FinalizeAt(now time.Time) {
 		s.Resources[i].DeriveEnvOwner()
 		s.Resources[i].DeriveEOL(now)
 		s.Resources[i].SortCosts()
+		s.Resources[i].SortRecommendations()
 	}
 	s.Sort()
 	s.SortFailures()

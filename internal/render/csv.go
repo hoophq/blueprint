@@ -3,6 +3,7 @@ package render
 import (
 	"encoding/csv"
 	"maps"
+	"math/big"
 	"os"
 	"sort"
 	"strconv"
@@ -28,15 +29,23 @@ import (
 // pre-existing column keeps the index it has always had.
 //
 // There is one block of cost columns per attribution method, not one shared
-// block with a "cost_method" cell naming which source won. A resource can be
-// priced by more than one source — Cost Explorer bills a closed window, Cost
-// Optimization Hub models a monthly rate — and a single block would have to
-// pick one figure and drop the other, or join both into one cell. A joined cell
-// is worse than it looks: a spreadsheet SUM silently skips exactly the rows that
-// carry two figures, so the estate's total would be wrong in a way that shows no
-// error. Separate columns keep every figure summable and keep the two methods
-// from ever landing in the same column, which is the one arithmetic nobody
-// should be able to do by accident.
+// block with a "cost_method" cell naming which source won. Only one method
+// reports spend today, so the shape looks like an over-provision — but a single
+// block is not a smaller version of this, it is a different guarantee. It would
+// have to pick one figure and drop the other the day a second billed source
+// lands, or join both into one cell, and a joined cell is worse than it looks:
+// a spreadsheet SUM silently skips exactly the rows that carry two figures, so
+// the estate's total would be wrong in a way that shows no error. Separate
+// columns keep every figure summable and keep two methods from ever landing in
+// the same column, which is the one arithmetic nobody should be able to do by
+// accident.
+//
+// The tip columns at the end are the other half of that rule and the reason
+// they are not cost columns. A Cost Optimization Hub saving is not spend: it is
+// a modelled monthly figure for money the account is still paying, and summing
+// a tip column against a cost column is a subtraction nobody may make by
+// dragging across two ranges. Their names share no prefix with the cost block
+// for exactly that reason.
 var csvHeader = buildCSVHeader()
 
 // coreColumns are the narrow core of model.Resource, in fixed order.
@@ -57,8 +66,26 @@ var costColumns = []string{
 	"caveats", "match_key",
 }
 
+// tipColumns describe the Cost Optimization Hub suggestion on a resource row.
+//
+// One suggestion, not all of them. A resource can carry several — the hub
+// models a database's compute and its storage separately — and a CSV row is one
+// resource, so the row reports the largest saving and says how many there were.
+// tip_count is what keeps that honest: a reader who sees 2 knows the row is a
+// summary and that the full set is in the JSON. Packing every suggestion into
+// one cell was the alternative and it loses the thing the CSV is for, which is
+// a column a spreadsheet can sort and sum.
+//
+// tip_savings is deliberately not called anything with "cost" in it. It is
+// money the account is still spending, modelled forward over a month; the cost
+// columns are money AWS billed over a closed window. Nothing about the two is
+// addable.
+var tipColumns = []string{
+	"tip_action", "tip_savings", "tip_currency", "tip_effort", "tip_restart", "tip_count",
+}
+
 func buildCSVHeader() []string {
-	h := make([]string, 0, len(coreColumns)+len(model.CostMethods())*len(costColumns)+1)
+	h := make([]string, 0, len(coreColumns)+len(model.CostMethods())*len(costColumns)+1+len(tipColumns))
 	h = append(h, coreColumns...)
 	for _, m := range model.CostMethods() {
 		for _, c := range costColumns {
@@ -68,7 +95,8 @@ func buildCSVHeader() []string {
 	// One shared column, not one per method: the reason is written by whichever
 	// source looked a resource up and could not price it, and it names its own
 	// source in the sentence.
-	return append(h, "cost_unavailable_reason")
+	h = append(h, "cost_unavailable_reason")
+	return append(h, tipColumns...)
 }
 
 // CSV writes one row per resource for spreadsheet/script consumption.
@@ -129,7 +157,88 @@ func csvRow(r model.Resource) []string {
 		boolPtrCell(r.Encrypted),
 		guardFormula(joinAttributes(r)),
 	}
-	return append(row, costCells(r)...)
+	row = append(row, costCells(r)...)
+	return append(row, tipCells(r)...)
+}
+
+// tipCells renders the resource's headline Cost Optimization Hub suggestion.
+//
+// Every cell is empty when the hub said nothing about this resource, tip_count
+// included. A "0" there would claim the hub looked and found nothing, which is
+// only one of the reasons a row can be silent — the hub covers a couple of
+// dozen resource types, an account can be unenrolled, and the stage may not
+// have run at all. The blank makes no claim; the run's own output says which it
+// was.
+//
+// A saving of "0.00" is the opposite case and is written out. AWS modelling a
+// change as saving nothing is a real answer, and blanking it would turn a
+// reported zero into an absence — the recurring bug this file's cost cells
+// already guard against, on a new column.
+func tipCells(r model.Resource) []string {
+	rec := headlineTip(r)
+	if rec == nil {
+		return make([]string, len(tipColumns))
+	}
+	return []string{
+		guardFormula(rec.ActionType),
+		// Unguarded for the same reason cost amounts are: the column is
+		// numeric, amounts are validated as plain decimals at ingest, and a
+		// leading quote would make a spreadsheet treat it as text.
+		rec.EstimatedMonthlySavings,
+		guardFormula(rec.Currency),
+		// AWS's own token — "VeryLow", "Medium" — not the phrase the terminal
+		// prints. A script filtering this column should be matching what the
+		// API returned, not this tool's rewording of it.
+		guardFormula(rec.ImplementationEffort),
+		boolPtrCell(rec.RestartNeeded),
+		strconv.Itoa(len(r.Recommendations)),
+	}
+}
+
+// headlineTip picks the suggestion a resource's row reports: the one modelled
+// to save the most.
+//
+// Ranking stops at the currency boundary. Two amounts in different currencies
+// cannot be compared without an exchange rate this tool does not have, so when
+// a resource's suggestions do not agree on one, the row reports the first in
+// the census's own deterministic order rather than crowning a number that only
+// looks larger. In practice the hub reports one currency per account and the
+// branch never fires; it exists so that the day it does, the CSV is wrong about
+// nothing rather than wrong about which tip is biggest.
+//
+// A suggestion AWS did not price never wins over one it did. It is still
+// counted in tip_count, and it still appears in full in the JSON.
+func headlineTip(r model.Resource) *model.Recommendation {
+	if len(r.Recommendations) == 0 {
+		return nil
+	}
+	best := &r.Recommendations[0]
+	var bestAmount *big.Rat
+	currency, mixed := "", false
+	for i := range r.Recommendations {
+		rec := &r.Recommendations[i]
+		if rec.EstimatedMonthlySavings == "" {
+			continue
+		}
+		if bestAmount != nil && rec.Currency != currency {
+			mixed = true
+		}
+		amount, ok := parseDecimal(rec.EstimatedMonthlySavings)
+		if !ok {
+			continue
+		}
+		if bestAmount == nil {
+			best, bestAmount, currency = rec, amount, rec.Currency
+			continue
+		}
+		if amount.Cmp(bestAmount) > 0 {
+			best, bestAmount = rec, amount
+		}
+	}
+	if mixed {
+		return &r.Recommendations[0]
+	}
+	return best
 }
 
 // costCells renders one block of cost columns per method, then the shared
@@ -148,10 +257,12 @@ func csvRow(r model.Resource) []string {
 // survives to the artifact.
 //
 // The unavailable reason is written even for a resource some other method
-// priced. With more than one source, "Cost Optimization Hub does not model this
-// resource type" stays true whether or not Cost Explorer billed it, and blanking
-// it on the strength of an unrelated figure would hide a real coverage gap
-// behind an answer to a different question.
+// priced, because a source's statement that it could not price something stays
+// true whether or not a different source did, and blanking it on the strength
+// of an unrelated figure would hide a real coverage gap behind an answer to a
+// different question. No source writes it today — see Resource.CostUnavailable
+// — so the column is in practice empty; it stays because a reader's parser
+// should not have to change the day one does.
 func costCells(r model.Resource) []string {
 	methods := model.CostMethods()
 	cells := make([]string, 0, len(methods)*len(costColumns)+1)

@@ -39,6 +39,12 @@ var (
 	budgetClock = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
+// ptrTo takes the address of a literal, for the tri-state fields a fixture has
+// to be able to set to false rather than leave unsaid. The distinction is the
+// point of the pointer, and a test that could only express "true" and "absent"
+// could not pin it.
+func ptrTo[T any](v T) *T { return &v }
+
 // demoSnapshot returns the storyboard fixture, judged at renderClock.
 //
 // Neither constructor takes a testing.TB: there is nothing here that can fail,
@@ -60,17 +66,20 @@ func demoSnapshotN(version string, n int) *model.Snapshot {
 	return snap
 }
 
-// demoCostSnapshot returns the storyboard with every cost tier attached, judged
-// at renderClock like its uncosted sibling.
+// demoCostSnapshot returns the storyboard with the money overlay attached —
+// the rollup, the billed per-resource figures, and the hub's advice — judged at
+// renderClock like its uncosted sibling.
 //
 // The plain fixture carries no cost data at all, which is the right default for
 // the rest of the suite and useless for testing the overlay. The order here is
 // the order the scan performs and is not interchangeable: AddResourceCostOverlay
-// reads snap.Cost.Metric, so the rollup has to exist before it runs.
+// reads snap.Cost.Metric, so the rollup has to exist before it runs, and the
+// advice lands first so that the rows carrying both a billed figure and a
+// suggestion are built the way a real run builds them.
 func demoCostSnapshot(version string) *model.Snapshot {
 	snap := demo.Snapshot(version)
 	snap.Cost = demo.CostReport()
-	demo.AddResourceCosts(snap)
+	demo.AddRecommendations(snap)
 	demo.AddResourceCostOverlay(snap)
 	snap.FinalizeAt(renderClock)
 	return snap
@@ -82,7 +91,7 @@ func demoCostSnapshot(version string) *model.Snapshot {
 func demoCostSnapshotN(version string, n int) *model.Snapshot {
 	snap := demo.SnapshotN(version, n)
 	snap.Cost = demo.CostReport()
-	demo.AddResourceCosts(snap)
+	demo.AddRecommendations(snap)
 	demo.AddResourceCostOverlay(snap)
 	snap.FinalizeAt(budgetClock)
 	return snap
