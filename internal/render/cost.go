@@ -623,7 +623,13 @@ func tipsSection(w io.Writer, resources []model.Resource) {
 			fmt.Fprintf(w, "      %s  %s\n", FormatMoney(amount, t.rec.Currency), tipLine(t))
 		}
 		if len(g.tips) > shown {
-			fmt.Fprintf(w, "      … and %d more (full list in the JSON and CSV output)\n", len(g.tips)-shown)
+			// Where the tail actually is, stated exactly. The CSV is one row per
+			// resource and reports that resource's largest saving, so a resource
+			// the hub gave two suggestions puts only one of them in a cell —
+			// naming the CSV here without that qualifier would send a reader to
+			// an artifact that does not have what they were sent for.
+			fmt.Fprintf(w, "      … and %d more (full list in the JSON output; the CSV carries each resource's "+
+				"largest saving and a tip_count)\n", len(g.tips)-shown)
 		}
 		if g.total != "" {
 			// The sum of the suggestions in this group, and nothing more. It is
@@ -726,19 +732,30 @@ func tipLine(t resourceTip) string {
 	// because "AWS did not say whether this needs a restart" is a thing a
 	// reader planning the change has to know, and printing nothing for it is
 	// indistinguishable from printing "no".
-	if t.rec.RestartNeeded != nil {
-		if *t.rec.RestartNeeded {
-			parts = append(parts, "restart needed")
-		} else {
-			parts = append(parts, "no restart")
-		}
+	//
+	// This is a "  ·  "-joined sentence rather than a table, which is why the
+	// silence has to be named here and does not in the CSV: a blank cell under a
+	// fixed header is unambiguous, a missing clause in prose is just a terse
+	// row. The reader most at risk is the one scanning for a low-risk change,
+	// and an unsaid restart reads to them as reassurance.
+	//
+	// Effort is deliberately not treated the same way. An unstated grade does
+	// not invert a risk judgment; an unstated restart does.
+	switch {
+	case t.rec.RestartNeeded == nil:
+		parts = append(parts, "restart not stated")
+	case *t.rec.RestartNeeded:
+		parts = append(parts, "restart needed")
+	default:
+		parts = append(parts, "no restart")
 	}
-	if t.rec.RollbackPossible != nil {
-		if *t.rec.RollbackPossible {
-			parts = append(parts, "reversible")
-		} else {
-			parts = append(parts, "not reversible")
-		}
+	switch {
+	case t.rec.RollbackPossible == nil:
+		parts = append(parts, "reversibility not stated")
+	case *t.rec.RollbackPossible:
+		parts = append(parts, "reversible")
+	default:
+		parts = append(parts, "not reversible")
 	}
 	return strings.Join(parts, "  ·  ")
 }

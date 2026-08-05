@@ -1420,21 +1420,28 @@ func TestReportTipMetaPrintsEveryStateAWSReports(t *testing.T) {
 			want: "orders (rds, us-east-1)  ·  very high effort  ·  no restart  ·  not reversible",
 		},
 		{
+			// undefined is what an omitempty key leaves behind. Effort drops out
+			// — an unstated grade does not change what the change costs to make —
+			// but both flags are named, because a line that says nothing about a
+			// restart is read as one that does not need one.
 			name: "AWS said nothing about any of it",
 			rec:  `{}`,
-			want: "orders (rds, us-east-1)",
+			want: "orders (rds, us-east-1)  ·  restart not stated  ·  reversibility not stated",
 		},
 		{
 			// null is what a decoded census holds for an unsaid flag, and it has
 			// to fall through both branches rather than matching the false one.
-			name: "nulls are silence, not no",
+			name: "nulls are named, not dropped",
 			rec:  `{implementation_effort: "", restart_needed: null, rollback_possible: null}`,
-			want: "orders (rds, us-east-1)",
+			want: "orders (rds, us-east-1)  ·  restart not stated  ·  reversibility not stated",
 		},
 		{
+			// The half-answered line, which is the one the tri-state rule exists
+			// for: dropping the unsaid flag leaves a line that looks complete and
+			// answers only half the operational question.
 			name: "one flag stated and one not",
 			rec:  `{restart_needed: false}`,
-			want: "orders (rds, us-east-1)  ·  no restart",
+			want: "orders (rds, us-east-1)  ·  no restart  ·  reversibility not stated",
 		},
 	}
 
@@ -2387,6 +2394,122 @@ func TestReportCoverageTitleDoesNotBorrowTheWordForCostRecordCaveats(t *testing.
 		t.Error("the † lower-bound line no longer counts a cost record's caveats; " +
 			"the banner title gave up the word for it")
 	}
+}
+
+// Cost Optimization Hub used to be the advice under a missing per-resource
+// figure: enrol in the hub and the gap fills in. That was true only while the
+// hub's estimate was written as a second per-resource price. It reports
+// savings now, so the instruction survives as an afternoon of enrolment work
+// that returns no spend figure at all — a remedy that cannot produce what it
+// promises, which is worse than no remedy, because the reader spends the
+// afternoon before finding out.
+//
+// The hub may still be named in a remedy, and in one place it is: to say it
+// does not fill the gap, so a reader who already knows it exists does not go
+// looking. What it may never do is read as a source of the missing money. The
+// rule this pins is therefore not "never say the words" but "never say them
+// without saying the hub reports savings rather than spend".
+func TestReportNoRemedySendsAReaderToTheHubForSpend(t *testing.T) {
+	// Every outcome probeLine words, plus one it does not, so the default arm
+	// is covered too. A remedy that appears only for an unlisted outcome would
+	// otherwise slip through.
+	outcomes := []string{"rows", "empty", "unsupported", "denied", "skipped", "uncensused", "failed", "wat"}
+
+	var fixes []string
+	{
+		script := strings.Join([]string{
+			jsFunc(t, "probeFix"),
+			`console.log(JSON.stringify(` + jsArray(outcomes) + `.map(probeFix)));`,
+		}, "\n")
+		var got []string
+		evalJSON(t, script, &got)
+		if len(got) != len(outcomes) {
+			t.Fatalf("probeFix answered %d of %d outcomes", len(got), len(outcomes))
+		}
+		fixes = append(fixes, got...)
+	}
+
+	// And the coverage banner's own remedies, which is where the enrolment
+	// advice actually lived. Two states are enough to reach every fix string
+	// the hub could be named in: the gap itself, and a probe that came back
+	// with nothing.
+	type issue struct{ Text, Fix string }
+	states := []struct {
+		name, setup string
+		wantFix     string
+	}{
+		{
+			// No resource-level figure reached any resource — the gap the hub
+			// was once offered for. Cost Explorer is the only thing that can
+			// close it, so that is what the remedy has to say.
+			name: "no per-resource figure at all",
+			setup: `var costReport = null, censusUnreadable = false, total = 3, probes = [];` +
+				`var COST = {attempted: true, counted: true, active: false};` +
+				`var resources = [];`,
+			wantFix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources.",
+		},
+		{
+			// A service Cost Explorer would not break down. The reader is told
+			// what the hub is not, rather than sent to it.
+			name: "a probe that returned nothing",
+			setup: `var costReport = null, censusUnreadable = false, total = 3;` +
+				`var COST = {attempted: true, counted: true, active: true, priced: 3};` +
+				`var resources = [], probes = [{service: "s3", outcome: "empty"}];`,
+		},
+	}
+
+	for _, s := range states {
+		t.Run(s.name, func(t *testing.T) {
+			script := strings.Join([]string{
+				s.setup,
+				jsFunc(t, "probeLine"),
+				jsFunc(t, "probeFix"),
+				jsFunc(t, "coverageIssues"),
+				`console.log(JSON.stringify(coverageIssues().map(function (i) {` +
+					` return {Text: i.text, Fix: i.fix}; })));`,
+			}, "\n")
+
+			var got []issue
+			evalJSON(t, script, &got)
+			if len(got) != 1 {
+				t.Fatalf("the banner raised %d issues, want exactly 1: %+v", len(got), got)
+			}
+			if s.wantFix != "" && got[0].Fix != s.wantFix {
+				t.Errorf("remedy reads\n  %q\nwant\n  %q", got[0].Fix, s.wantFix)
+			}
+			fixes = append(fixes, got[0].Fix, got[0].Text)
+		})
+	}
+
+	for _, f := range fixes {
+		if f == "" {
+			continue
+		}
+		// The enrolment instruction by any spelling. It is the specific
+		// sentence that was withdrawn, and the one most likely to come back.
+		if low := strings.ToLower(f); strings.Contains(low, "enrol") || strings.Contains(low, "enroll") {
+			t.Errorf("a remedy asks the reader to enrol in something:\n  %q", f)
+		}
+		if !strings.Contains(f, "Cost Optimization Hub") {
+			continue
+		}
+		// Named, so it has to be named as what it is. Without this clause the
+		// mention reads as a pointer at the missing money.
+		if !strings.Contains(f, "savings rather than spend") {
+			t.Errorf("a remedy names the hub without saying it reports savings rather than "+
+				"spend, so it reads as a source of the missing figure:\n  %q", f)
+		}
+	}
+}
+
+// jsArray renders a Go string slice as a JS array literal, escaping through
+// Go's own quoting so a value can never break out of the script.
+func jsArray(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = strconv.Quote(v)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // The decoder in report.html.tmpl is the only one a reader ever runs, and

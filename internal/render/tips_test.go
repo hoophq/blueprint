@@ -226,8 +226,12 @@ func TestTipsSectionCapsTheListWithoutShorteningTheTotal(t *testing.T) {
 	if got := strings.Count(out, "10.00 USD  Rightsize"); got != maxTipsListed {
 		t.Errorf("listed %d suggestions, want the cap at %d:\n%s", got, maxTipsListed, out)
 	}
-	if !strings.Contains(out, "… and 3 more (full list in the JSON and CSV output)") {
-		t.Errorf("cap applied silently:\n%s", out)
+	// And it says where the rest actually are. The CSV keeps one suggestion per
+	// resource, so pointing at it without that qualifier would send a reader
+	// after rows it does not contain.
+	if !strings.Contains(out, "… and 3 more (full list in the JSON output; the CSV carries each "+
+		"resource's largest saving and a tip_count)") {
+		t.Errorf("cap applied silently, or the tail names the wrong artifact:\n%s", out)
 	}
 	if !strings.Contains(out, "Σ 80.00 USD across 8 suggestion(s)") {
 		t.Errorf("total covers only the printed rows:\n%s", out)
@@ -271,11 +275,14 @@ func TestTipLineStatesWhatItTakesInEveryStateAWSReports(t *testing.T) {
 				"no restart  ·  not reversible",
 		},
 		{
-			// Nothing about effort or restarts. The row shrinks to what AWS
-			// said instead of filling the gaps with defaults.
+			// Nothing about effort or restarts. Effort drops out of the sentence
+			// — an unstated grade does not change what the change costs to make
+			// — but the two flags are named, because a row that says nothing
+			// about a restart reads as one that does not need one.
 			name: "action only",
 			rec:  model.Recommendation{ActionType: "Stop"},
-			want: "Stop  ·  orders (rds, us-east-1)",
+			want: "Stop  ·  orders (rds, us-east-1)  ·  restart not stated  ·  " +
+				"reversibility not stated",
 		},
 		{
 			// No action either. The change itself is still nameable from the
@@ -284,7 +291,8 @@ func TestTipLineStatesWhatItTakesInEveryStateAWSReports(t *testing.T) {
 			rec: model.Recommendation{
 				CurrentResourceType: "RdsDbInstance", RecommendedResourceType: "RdsDbInstanceStorage",
 			},
-			want: "RdsDbInstance → RdsDbInstanceStorage  ·  orders (rds, us-east-1)",
+			want: "RdsDbInstance → RdsDbInstanceStorage  ·  orders (rds, us-east-1)  ·  " +
+				"restart not stated  ·  reversibility not stated",
 		},
 		{
 			// AWS names the same type on both sides for an in-place change;
@@ -294,7 +302,21 @@ func TestTipLineStatesWhatItTakesInEveryStateAWSReports(t *testing.T) {
 				ActionType:          "MigrateToGraviton",
 				CurrentResourceType: "Ec2Instance", RecommendedResourceType: "Ec2Instance",
 			},
-			want: "MigrateToGraviton Ec2Instance  ·  orders (rds, us-east-1)",
+			want: "MigrateToGraviton Ec2Instance  ·  orders (rds, us-east-1)  ·  " +
+				"restart not stated  ·  reversibility not stated",
+		},
+		{
+			// The half-answered row, which is the one the tri-state rule exists
+			// for: AWS stated the restart and said nothing about the rollback. A
+			// renderer that drops the unsaid one leaves a row that looks complete
+			// and answers only half the operational question.
+			name: "one flag stated and one not",
+			rec: model.Recommendation{
+				ActionType: "Upgrade", CurrentResourceType: "EbsVolume",
+				RestartNeeded: ptrTo(false),
+			},
+			want: "Upgrade EbsVolume  ·  orders (rds, us-east-1)  ·  no restart  ·  " +
+				"reversibility not stated",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

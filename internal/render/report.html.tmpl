@@ -1481,16 +1481,23 @@
   // nothing. Outcomes with no action behind them get no sentence rather than a
   // filler one, and every IAM action named here is one docs/iam-policy.json
   // already grants.
+  //
+  // A probe is a Cost Explorer probe and nothing else, so Cost Optimization Hub
+  // is not offered as a remedy for one. It used to be, back when the hub's
+  // estimate was written as a second per-resource price; it reports savings
+  // now, so enrolling would cost the reader an afternoon and return no figure
+  // at all. An instruction that cannot produce what it promises is worse than
+  // no instruction.
   function probeFix(outcome) {
     switch (outcome) {
       case "denied":
-        return "Grant ce:GetCostAndUsageWithResources, or cost-optimization-hub:ListEnrollmentStatuses and " +
-          "cost-optimization-hub:ListRecommendations, and check the account is opted in to that service.";
+        return "Grant ce:GetCostAndUsageWithResources and check resource-level data is switched on in Billing " +
+          "preferences.";
       case "empty":
       case "unsupported":
         return "Resource-level Cost Explorer data has to be switched on in Billing preferences and reaches back " +
-          "about 14 days. For services Cost Explorer will not break down, enroll the account in Cost Optimization " +
-          "Hub and rerun with --costs --cost-resources.";
+          "about 14 days. For services Cost Explorer will not break down, AWS reports no per-resource spend at " +
+          "all — Cost Optimization Hub does not fill this gap, because it reports savings rather than spend.";
       case "skipped":
         return "Raise the request budget or narrow the scan so the remaining services get asked.";
       case "uncensused":
@@ -2045,8 +2052,10 @@
       issues.push({
         text: "No resource-level figure reached any resource, so spend cannot be ranked per resource, attributed to " +
           "an owner, or split by service. The account total above, where present, is all AWS reported.",
-        fix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources, or " +
-          "enroll the account in Cost Optimization Hub (cost-optimization-hub:ListRecommendations)."
+        // Cost Explorer is the only thing that can fill this gap. The hub is
+        // not an alternative source of the missing figure — it answers the
+        // other question, and it is offered in its own section.
+        fix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources."
       });
     } else if (COST.priced < total) {
       issues.push({
@@ -2254,8 +2263,8 @@
 
   // How many suggestions one currency lists before the tail is summarised. The
   // page holds every one of them — the count and the group total below the list
-  // are over the whole group, and the JSON and CSV outputs carry them all — so
-  // this bounds the reading, never the data.
+  // are over the whole group, and the JSON carries them all, the CSV each
+  // resource's largest — so this bounds the reading, never the data.
   var MAX_TIPS_LISTED = 25;
 
   var TIPS = {
@@ -2395,14 +2404,21 @@
   // Both flags are tri-state and all three states render, because "AWS did not
   // say whether this needs a restart" is something a reader planning the change
   // has to know, and printing nothing for it is indistinguishable from "no".
+  // The bare else catches both shapes an unsaid flag arrives in: null from a
+  // decoded census, undefined from a key omitempty left out.
+  //
+  // Effort is deliberately not treated the same way. An unstated grade does not
+  // invert a risk judgment; an unstated restart does.
   function tipMeta(t) {
     var bits = [tipResourceLabel(t.r)];
     var effort = effortLabel(t.rec.implementation_effort);
     if (effort) bits.push(effort);
     if (t.rec.restart_needed === true) bits.push("restart needed");
     else if (t.rec.restart_needed === false) bits.push("no restart");
+    else bits.push("restart not stated");
     if (t.rec.rollback_possible === true) bits.push("reversible");
     else if (t.rec.rollback_possible === false) bits.push("not reversible");
+    else bits.push("reversibility not stated");
     return bits.join("  ·  ");
   }
 
@@ -2432,9 +2448,13 @@
         frag.appendChild(row);
       });
       if (g.tips.length > MAX_TIPS_LISTED) {
+        // The CSV is qualified rather than named flatly: it holds one row per
+        // resource carrying that resource's largest saving, so a second
+        // suggestion on the same resource is in the JSON only.
         frag.appendChild(el("div", "rr-tip-more", "… and " +
           plural(g.tips.length - MAX_TIPS_LISTED, "more suggestion") +
-          " in this currency, listed in full in the JSON and CSV output"));
+          " in this currency, listed in full in the JSON output; the CSV carries each resource's largest " +
+          "saving and a tip_count"));
       }
       if (g.total) {
         // What AWS's own figures add up to, and nothing more. Not a forecast of
