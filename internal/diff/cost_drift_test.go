@@ -18,12 +18,25 @@ var (
 	jul1 = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 )
 
-// usd is the ordinary case: a Cost Optimization Hub modelled monthly rate, the
-// only per-resource figure the census produces today.
+// modelledMethod is a per-resource cost source this build does not have.
+//
+// It stands in for one, because everything in this file is method-generic: the
+// figures are matched on (ARN, method), netted per method and never pooled, and
+// a modelled amount is never reconciled with a billed one. Pinning that against
+// the single method the census produces today would pin nothing — one bucket
+// cannot be shown not to leak into another. Cost Optimization Hub used to be
+// the second source and is no longer a price source at all, so the name here is
+// deliberately not one AWS or this tool uses: what the tests need is a method
+// the code has never heard of, which is also the case that reaches a user
+// first, when a census written by a later build is diffed by this one.
+const modelledMethod = "modelled"
+
+// usd is the ordinary case in this file: a modelled monthly rate, from the
+// hypothetical source above.
 func usd(amount string) *model.ResourceCost {
 	return &model.ResourceCost{
 		Amount: amount, Currency: "USD",
-		Method: model.CostMethodCOH, Estimated: true,
+		Method: modelledMethod, Estimated: true,
 		ObservedFrom: &jun1, ObservedTo: &jul1,
 	}
 }
@@ -51,10 +64,10 @@ func costRes(name string, cs ...*model.ResourceCost) model.Resource {
 	return r
 }
 
-// ce is the other figure a resource can carry: what Cost Explorer billed over a
-// closed window, as opposed to what the hub models it will cost. Tests use it to
-// put two figures on one resource, which is the case every consumer of this
-// package has to get right.
+// ce is the figure the census actually produces: what Cost Explorer billed over
+// a closed window, as opposed to what a model expects a month to cost. Tests
+// use it to put two figures on one resource, which is the case every consumer
+// of this package has to get right.
 func ce(amount string) *model.ResourceCost {
 	return &model.ResourceCost{
 		Amount: amount, Currency: "USD",
@@ -188,7 +201,7 @@ func TestCostDriftCoverageIsNotSpend(t *testing.T) {
 	})
 
 	t.Run("lost, with the source's own reason", func(t *testing.T) {
-		const reason = "no Cost Optimization Hub recommendation for this resource"
+		const reason = "the cost pass looked and AWS returned nothing for this resource"
 		gone := costRes("orders", nil)
 		gone.CostUnavailable = reason
 		d := costDrift(costCensus(costRes("orders", usd("412.50"))), costCensus(gone))
@@ -238,7 +251,7 @@ func TestCostDriftAddedAndRemoved(t *testing.T) {
 	if n.Net != "-250.00" {
 		t.Errorf("Net = %q, want %q", n.Net, "-250.00")
 	}
-	if n.Method != model.CostMethodCOH {
+	if n.Method != modelledMethod {
 		t.Errorf("Method = %q, want the attribution method disclosed", n.Method)
 	}
 	if d.Priced != 2 {
@@ -315,14 +328,14 @@ func TestCostDriftReportsAMethodChangeAsCoverage(t *testing.T) {
 		t.Errorf("Moved = %+v, want nothing: no method's figure moved", d.Moved)
 	}
 	if len(d.Coverage) != 2 {
-		t.Fatalf("Coverage = %+v, want the hub's figure lost and Cost Explorer's gained", d.Coverage)
+		t.Fatalf("Coverage = %+v, want the modelled figure lost and the billed one gained", d.Coverage)
 	}
 	// Sorted by ARN then method, and both share an ARN, so "ce" comes first.
 	if got := d.Coverage[0]; got.Method != model.CostMethodCE || !got.Gained {
 		t.Errorf("Coverage[0] = %+v, want ce gained", got)
 	}
-	if got := d.Coverage[1]; got.Method != model.CostMethodCOH || got.Gained {
-		t.Errorf("Coverage[1] = %+v, want coh lost", got)
+	if got := d.Coverage[1]; got.Method != modelledMethod || got.Gained {
+		t.Errorf("Coverage[1] = %+v, want the modelled figure lost", got)
 	}
 	if len(d.Net) != 0 {
 		t.Errorf("Net = %+v, want nothing: coverage moving between methods is not spend moving", d.Net)
@@ -343,8 +356,8 @@ func TestCostDriftNetsEachMethodSeparately(t *testing.T) {
 	if n := d.Net[0]; n.Method != model.CostMethodCE || n.Net != "-10.00" {
 		t.Errorf("Net[0] = %+v, want ce at -10.00", n)
 	}
-	if n := d.Net[1]; n.Method != model.CostMethodCOH || n.Net != "50.00" {
-		t.Errorf("Net[1] = %+v, want coh at 50.00", n)
+	if n := d.Net[1]; n.Method != modelledMethod || n.Net != "50.00" {
+		t.Errorf("Net[1] = %+v, want the modelled source at 50.00", n)
 	}
 	// One resource, two figures. The net counts figures; this counts resources.
 	if d.Priced != 1 {
@@ -740,7 +753,7 @@ func TestWriteCostRendersEverySection(t *testing.T) {
 	eur := usd("100.00")
 	eur.Currency = "EUR"
 	dark := costRes("unpriced", nil)
-	dark.CostUnavailable = "not modelled by Cost Optimization Hub"
+	dark.CostUnavailable = "the cost pass looked and AWS returned nothing"
 
 	var buf bytes.Buffer
 	costDrift(
@@ -751,9 +764,9 @@ func TestWriteCostRendersEverySection(t *testing.T) {
 
 	for _, want := range []string{
 		"~ moves (rds, us-east-1): 100.00 → 141.00  (+41.00, +41.0%)",
-		"· unpriced (rds, us-east-1): no longer priced, was 70.00 USD (not modelled by Cost Optimization Hub)",
+		"· unpriced (rds, us-east-1): no longer priced, was 70.00 USD (the cost pass looked and AWS returned nothing)",
 		"! rebased (rds, us-east-1): not compared — currency changed (USD → EUR) (100.00 USD → 100.00 EUR)",
-		"[coh]",
+		"[modelled]",
 		"note: these are modelled monthly rates",
 	} {
 		if !strings.Contains(out, want) {

@@ -79,7 +79,7 @@ func scanCmd() *cobra.Command {
 					// The fixture's meter honestly reports zero requests and
 					// zero charge, because --demo makes no AWS calls at all.
 					snap.Cost = demo.CostReport()
-					demo.AddResourceCosts(snap)
+					demo.AddRecommendations(snap)
 					if costs.resources {
 						demo.AddResourceCostOverlay(snap)
 					}
@@ -127,7 +127,7 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&comparePath, "compare", "", "previous census JSON to diff against instead of the automatic history baseline")
 	cmd.Flags().BoolVar(&failOnChange, "fail-on-change", false, "exit non-zero when the diff (auto or --compare) finds differences")
 	cmd.Flags().BoolVar(&noHistory, "no-history", false, "do not archive this scan in local history or auto-diff against the previous one")
-	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer, plus free per-resource estimates from Cost Optimization Hub (AWS BILLS $0.01 per Cost Explorer request; off by default)")
+	cmd.Flags().BoolVar(&costs.enabled, "costs", false, "also report account spend for the last full month from AWS Cost Explorer, plus free per-resource savings suggestions from Cost Optimization Hub (AWS BILLS $0.01 per Cost Explorer request; off by default)")
 	cmd.Flags().StringVar(&costs.metric, "cost-metric", cost.DefaultMetric, "Cost Explorer metric with --costs: "+strings.Join(cost.Metrics(), ", "))
 	cmd.Flags().IntVar(&costs.maxRequests, "cost-max-requests", cost.DefaultMaxRequests, "hard cap on billed Cost Explorer requests per run")
 	cmd.Flags().BoolVar(&costs.resources, "cost-resources", false, "with --costs, also ask Cost Explorer what it billed per resource over the last 14 days (AWS BILLS $0.01 per request — at least one per service probed, more if a service's answer paginates — from the same --cost-max-requests budget; requires the account-level \"resource-level data\" preference in the Cost Explorer console, which is not retroactive)")
@@ -267,12 +267,14 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 	}
 	var costHubStage *enrich.CostHub
 	if costs.enabled {
-		// Per-resource cost rides on --costs rather than a flag of its own:
-		// both answer "what does this cost", and splitting them would leave a
-		// user who asked about cost with only half an answer for no reason.
+		// Savings advice rides on --costs rather than a flag of its own. It
+		// answers a different question from Cost Explorer — what you could
+		// stop paying, not what you paid — but it is the question a reader
+		// asks immediately after seeing the bill, and a suggestion is only
+		// worth acting on next to the spend it would reduce.
 		// Unlike Cost Explorer it is free, which is worth saying out loud next
 		// to a flag whose help text warns about being billed.
-		fmt.Fprintln(cmd.OutOrStdout(), "  … cost-hub: reading per-resource estimates from Cost Optimization Hub — not billed by AWS")
+		fmt.Fprintln(cmd.OutOrStdout(), "  … cost-hub: reading savings suggestions from Cost Optimization Hub — not billed by AWS")
 		// Constructed with the caller's own credentials, like the Cost
 		// Explorer phase and for the same reason: the hub is one org-wide
 		// endpoint in the payer account, so there is no member role to assume
@@ -287,13 +289,18 @@ func runScan(ctx context.Context, cmd *cobra.Command, profile string, regions []
 			meter.Series, meter.GetCalls, enrich.ChargeUSD(meter.Series))
 	}
 	if costHubStage != nil {
-		// Priced is reported against Recommendations, not on its own: the two
+		// Tipped is reported against Recommendations, not on its own: the two
 		// together are the coverage figure. Cost Optimization Hub does not
 		// model every resource type, so a gap is expected — but "2,000 read,
-		// 0 attached" is an ARN mismatch, and only the pair shows it.
+		// 0 attached" is an ARN mismatch, and only the pair shows it. The
+		// unattached count is printed only when there is one, because on a
+		// healthy run it is zero and a zero here reads as a warning.
 		meter := costHubStage.Meter()
-		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost-hub: %d resource(s) priced from %d recommendation(s) in %d call(s), no charge\n",
-			meter.Priced, meter.Recommendations, meter.Requests)
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ cost-hub: %d resource(s) with suggestions from %d recommendation(s) in %d call(s), no charge\n",
+			meter.Tipped, meter.Recommendations, meter.Requests)
+		if meter.Unattached > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "    %d recommendation(s) named a resource this census does not hold\n", meter.Unattached)
+		}
 	}
 	// Org-mode pre-scan failures (unassumable member roles) belong in the
 	// same ledger as per-unit scan failures; re-sort so the artifact stays

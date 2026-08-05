@@ -91,11 +91,11 @@ func TestCompareIgnoresPerResourceCost(t *testing.T) {
 		s.Finalize()
 		return s
 	}
-	priced := &model.ResourceCost{Amount: "412.50", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
-	dearer := &model.ResourceCost{Amount: "980.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
+	priced := &model.ResourceCost{Amount: "412.50", Currency: "USD", Method: model.CostMethodCE}
+	dearer := &model.ResourceCost{Amount: "980.00", Currency: "USD", Method: model.CostMethodCE}
 	// A resource priced at exactly zero is a real reading, not an absent one,
 	// and must be as invisible to the diff as any other figure.
-	free := &model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCOH, Estimated: true}
+	free := &model.ResourceCost{Amount: "0.00", Currency: "USD", Method: model.CostMethodCE}
 
 	for _, tc := range []struct {
 		name      string

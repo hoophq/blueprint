@@ -91,6 +91,13 @@ func decodeTable(tb testing.TB, t resourceTable) []model.Resource {
 		if i < len(t.Costs) {
 			out[i].Costs = t.Costs[i]
 		}
+		// Read from its own array, never from Costs. On the page the same
+		// separation is what stops a code path reaching a modelled saving while
+		// it believes it is reading billed spend, and a decoder that merged the
+		// two here would stop testing for that.
+		if i < len(t.Tips) {
+			out[i].Recommendations = t.Tips[i]
+		}
 		if split[i] {
 			out[i].ARN = decodeARN(head[i], infix[i], out[i].Region, out[i].AccountID, out[i].Name)
 		}
@@ -436,5 +443,104 @@ func TestPayloadColumnLengthsChecked(t *testing.T) {
 	table.Str[colName].Append("only-one", true)
 	if err := table.checkLengths(); err == nil {
 		t.Fatal("checkLengths accepted a column with 1 cell for 2 resources")
+	}
+
+	// The dense arrays are checked by the same guard and for a worse version of
+	// the same reason: a short tip column would hand one resource another one's
+	// advice, which reads as a specific instruction about a specific thing.
+	for _, tc := range []struct {
+		name  string
+		table resourceTable
+	}{
+		{"costs", resourceTable{N: 2, Costs: make([][]model.ResourceCost, 1)}},
+		{"tips", resourceTable{N: 2, Tips: make([][]model.Recommendation, 1)}},
+	} {
+		if err := tc.table.checkLengths(); err == nil {
+			t.Errorf("checkLengths accepted a %s column with 1 cell for 2 resources", tc.name)
+		}
+	}
+}
+
+// Advice rides in its own array, keeps every state AWS reports, and is absent
+// entirely from a census the hub had nothing to say about — an empty array in
+// the page would read as "we asked and there is nothing to save".
+func TestPayloadCarriesAdviceSeparatelyFromSpend(t *testing.T) {
+	tipped := model.Resource{
+		ARN: "arn:aws:rds:us-east-1:1:db:orders", Name: "orders",
+		Service: "rds", Region: "us-east-1", Type: model.TypeRDSInstance, AccountID: "1",
+	}
+	tipped.AddCost(model.ResourceCost{
+		Amount: "602.00", Currency: "USD", Method: model.CostMethodCE, Estimated: true,
+	})
+	// Two suggestions on one row, and every optional field in a different
+	// state: a reported zero, an unreported saving, a stated "no restart" and
+	// an unstated one.
+	tipped.AddRecommendation(model.Recommendation{
+		ID: "a", ActionType: "Rightsize", EstimatedMonthlySavings: "0.00",
+		Currency: "USD", RestartNeeded: ptrTo(false),
+	})
+	tipped.AddRecommendation(model.Recommendation{ID: "b", ActionType: "Upgrade"})
+	silent := model.Resource{
+		ARN: "arn:aws:s3:::logs", Name: "logs", Service: "s3", Type: model.TypeS3Bucket,
+	}
+
+	table, err := buildTable([]model.Resource{tipped, silent})
+	if err != nil {
+		t.Fatalf("buildTable: %v", err)
+	}
+	if len(table.Tips) != 2 {
+		t.Fatalf("tip column has %d cells for 2 resources", len(table.Tips))
+	}
+	if len(table.Tips[0]) != 2 {
+		t.Errorf("the tipped resource carries %d suggestions, want both", len(table.Tips[0]))
+	}
+	if len(table.Tips[1]) != 0 {
+		t.Errorf("a resource the hub said nothing about carries %+v", table.Tips[1])
+	}
+	// The separation is structural: nothing about the saving may appear in the
+	// cost array, where a reader would take it for money that was charged.
+	for _, c := range table.Costs[0] {
+		if c.Amount != "602.00" || c.Method != model.CostMethodCE {
+			t.Errorf("cost cell holds %+v, want only the billed figure", c)
+		}
+	}
+
+	got := decodeTable(t, table)
+	assertResourcesEqual(t, []model.Resource{tipped, silent}, got)
+	if r := got[0].Recommendations[0]; r.RestartNeeded == nil || *r.RestartNeeded {
+		t.Errorf("a stated 'no restart' decoded as %v", r.RestartNeeded)
+	}
+	if r := got[0].Recommendations[1]; r.RestartNeeded != nil {
+		t.Errorf("an unstated restart flag decoded as %v", *r.RestartNeeded)
+	}
+	if got[0].Recommendations[0].EstimatedMonthlySavings != "0.00" {
+		t.Errorf("a saving reported as zero decoded as %q",
+			got[0].Recommendations[0].EstimatedMonthlySavings)
+	}
+	if got[0].Recommendations[1].EstimatedMonthlySavings != "" {
+		t.Errorf("an unpriced suggestion gained %q",
+			got[0].Recommendations[1].EstimatedMonthlySavings)
+	}
+}
+
+// A census nobody advised drops the column from the wire entirely rather than
+// shipping N empty arrays — the same rule Costs follows, and the reason both
+// are omitempty.
+func TestPayloadOmitsAdviceColumnWhenNothingWasSuggested(t *testing.T) {
+	table, err := buildTable([]model.Resource{
+		{ARN: "arn:aws:s3:::logs", Name: "logs", Service: "s3", Type: model.TypeS3Bucket},
+	})
+	if err != nil {
+		t.Fatalf("buildTable: %v", err)
+	}
+	if table.Tips != nil {
+		t.Errorf("tip column present for an unadvised census: %+v", table.Tips)
+	}
+	data, err := json.Marshal(table)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"tips"`) {
+		t.Errorf("tip column reached the page: %s", data)
 	}
 }

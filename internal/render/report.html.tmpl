@@ -190,39 +190,58 @@
   .rr-cost-note p { margin: 0 0 7px; }
   .rr-cost-note p:last-child { margin-bottom: 0; }
 
-  .rr-method { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 20px; }
-  .rr-method-label { font-size: 11.5px; color: rgba(247, 247, 247, 0.42); }
-  .rr-method-btn {
-    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px;
-    color: rgba(247, 247, 247, 0.55);
-    background: rgba(247, 247, 247, 0.05);
-    border: 1px solid rgba(247, 247, 247, 0.1);
-    border-radius: 999px;
-    padding: 4px 12px;
-    cursor: pointer;
+  /* Savings suggestions. Deliberately not styled like the cost tiles: nothing
+     in this block is money the account was charged, and a reader scanning the
+     page should be able to tell the two apart before reading a word. */
+  /* The suggestions are a table, and they borrow the census table's chrome
+     wholesale: `table`, `thead th`, `tbody td`, `tr.group-row`, `.group-btn`,
+     `.th-btn` and `.num` are all bare or shared selectors, so the two read as
+     one page. The one thing that must NOT be inherited is the height cap —
+     .table-wrap stops at 72vh, and a second capped scroller sitting under the
+     census's would give the page two nested scrollbars with identical chrome
+     and no way to tell which one you were in. Uncapped, the wrap still scrolls
+     sideways if the columns outrun the page, which is the only axis this table
+     ever needs. */
+  #tips-wrap { max-height: none; }
+  /* A band with nothing to unfold is still a band: same row, same layout, no
+     caret and no pointer, because a control that does nothing is worse than no
+     control. */
+  div.group-btn { cursor: default; }
+  /* The action is the column the section exists for, so it is the one at full
+     strength; everything else on the row is context for it. */
+  td.rr-tip-action { color: rgba(247, 247, 247, 0.9); }
+  /* Full-width rows that are prose rather than data: the folded tail, and the
+     caveats AWS attached. tbody td is nowrap for the census's virtualizer,
+     which has no say over this table. */
+  tbody tr.tip-note-row td {
+    white-space: normal;
+    font-size: 11px;
+    color: rgba(247, 247, 247, 0.4);
   }
-  .rr-method-btn:hover { color: #F7F7F7; }
-  .rr-method-btn[aria-pressed="true"] {
+  tbody tr.tip-note-row:hover td { background: none; }
+  .rr-tip-amount {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
     color: #F7F7F7;
-    border-color: rgba(247, 247, 247, 0.35);
-    background: rgba(247, 247, 247, 0.12);
   }
-
-  .rr-recon { margin-top: 20px; }
-  /* Standing alone in its own section, the panel already has the section's padding. */
-  #cost-audit-section .rr-recon { margin-top: 0; }
-  .rr-recon summary { cursor: pointer; font-size: 12px; color: rgba(247, 247, 247, 0.45); }
-  .rr-recon summary:hover { color: #F7F7F7; }
-  .rr-recon dl { margin: 10px 0 0; }
-  .rr-recon dt { font-size: 11.5px; font-weight: 600; color: rgba(247, 247, 247, 0.55); margin-top: 13px; }
-  .rr-recon dd {
-    margin: 4px 0 0;
-    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  .rr-tip-cur { font-size: 10px; color: rgba(247, 247, 247, 0.4); margin-left: 4px; }
+  .rr-tip-arrow { color: rgba(247, 247, 247, 0.4); }
+  /* An unstated flag is drawn as an outline nobody filled in. The two stated
+     answers are solid and coloured; this one is dashed and colourless, so the
+     three states are told apart at a glance and the one AWS did not answer is
+     the one that looks unanswered rather than the one that looks calm. */
+  .tag-unstated {
+    color: rgba(247, 247, 247, 0.38);
+    border-style: dashed;
+    border-color: rgba(247, 247, 247, 0.2);
+    background: none;
+  }
+  .rr-tip-note {
+    max-width: 76ch;
     font-size: 11.5px;
-    line-height: 1.65;
-    color: rgba(247, 247, 247, 0.42);
-    overflow-wrap: anywhere;
+    line-height: 1.6;
+    color: rgba(247, 247, 247, 0.4);
+    margin-top: 10px;
   }
 
   /* ── Section ── */
@@ -587,17 +606,7 @@
 
   <section class="rr-section" id="cost-section" hidden>
     <div class="rr-cost-hero" id="cost-hero"></div>
-    <div class="rr-method" id="cost-method" hidden>
-      <span class="rr-method-label">Cost source</span>
-    </div>
     <div class="rr-cost-note" id="cost-note"></div>
-  </section>
-
-  <section class="rr-section" id="cost-audit-section" hidden>
-    <details class="rr-recon" id="cost-recon">
-      <summary>Cost reconciliation and coverage</summary>
-      <dl id="cost-recon-body"></dl>
-    </details>
   </section>
 
   <section class="rr-section" id="stats-section">
@@ -649,12 +658,26 @@
     </div>
   </section>
 
+  <section class="rr-section" id="tips-section" hidden>
+    <div class="rr-section-head">
+      <h2 class="rr-section-title">Ways to cut this bill</h2>
+      <span class="rr-section-sub" id="tips-sub"></span>
+    </div>
+    <div class="table-wrap" id="tips-wrap">
+      <table id="tips-table">
+        <thead><tr id="tips-head-row"></tr></thead>
+        <tbody id="tips-rows"></tbody>
+      </table>
+    </div>
+    <div class="rr-tip-note" id="tips-note"></div>
+  </section>
+
   <section id="decode-error" class="rr-section empty" hidden>
     <h2>This browser cannot open the inventory</h2>
     <p id="decode-error-msg"></p>
   </section>
 
-  <footer class="rr-foot">generated locally by blueprint &mdash; open source: <a href="https://github.com/hoophq/blueprint" target="_blank" rel="noreferrer">github.com/hoophq/blueprint</a> &middot; nothing leaves your machine</footer>
+  <footer class="rr-foot">generated locally by blueprint &mdash; open source: <a href="https://github.com/hoophq/blueprint" target="_blank" rel="noreferrer">github.com/hoophq/blueprint</a> &middot; nothing leaves your machine<span id="foot-meter"></span></footer>
 
 </div>
 
@@ -862,12 +885,11 @@
     document.getElementById("decode-error").hidden = false;
     // Repaint the cost panels now that the rows are known not to be coming.
     // They survive a failed decode because they never needed the census: the
-    // account rollup, the per-service and per-account breakdowns, the
-    // reconciliation trail and the request meter all come out of the plain
-    // JSON metadata block, which parsed synchronously before this ran. Taking
-    // them down because a different block failed would be the failure mode
-    // #cost-audit-section exists to prevent — the reader was billed per
-    // request for these answers, and this is the run that most needs them.
+    // account rollup, its unattributed records and the request meter all come
+    // out of the plain JSON metadata block, which parsed synchronously before
+    // this ran. Taking them down because a different block failed would lose
+    // the footer's paid-API disclosure on exactly the run that most needs it —
+    // the reader was billed per request for answers this file cannot show them.
     renderCostViews();
   }
 
@@ -943,6 +965,16 @@
     if (t.costs) {
       for (i = 0; i < n; i++) {
         if (t.costs[i]) rows[i].costs = t.costs[i];
+      }
+    }
+
+    // Suggestions ride in their own column for the same reason they have their
+    // own array in the payload: they are not money the account was charged, and
+    // no code path that reaches for a cost should be able to find one of these
+    // instead.
+    if (t.tips) {
+      for (i = 0; i < n; i++) {
+        if (t.tips[i]) rows[i].recommendations = t.tips[i];
       }
     }
 
@@ -1184,10 +1216,16 @@
   var resourceCostReport = meta.resource_cost || null;
   var probes = (resourceCostReport && resourceCostReport.probes) || [];
 
-  // COST holds the single axis the whole overlay reads. Nothing here is ever
-  // summed or ranked across a method or a currency: "ce" is what AWS billed,
-  // "coh" is what Cost Optimization Hub modelled, and adding the two would
-  // publish a number neither service reported.
+  // COST holds the single axis the whole overlay reads. There is exactly one
+  // money source on this page — "ce", what AWS billed — and no control to
+  // change it, because a choice between one thing is not a choice. The method
+  // field survives that reduction: figures still carry the method that produced
+  // them, and grouping on it is what keeps a second billed source, if one ever
+  // lands, from being silently pooled with this one. Currencies are never
+  // pooled either, for the older reason that this tool holds no exchange rate.
+  //
+  // Cost Optimization Hub is not in here at all. It reports savings, not spend,
+  // and its numbers live in TIPS where nothing can add them to a bill.
   var COST = {
     attempted: false,
     // counted separates "the census has not been read" from "the census was
@@ -1206,7 +1244,7 @@
     caveated: 0
   };
 
-  var METHOD_LABELS = { ce: "Cost Explorer", coh: "Cost Optimization Hub" };
+  var METHOD_LABELS = { ce: "Cost Explorer" };
 
   function methodLabel(m) {
     return METHOD_LABELS[m] || m || "unnamed source";
@@ -1311,64 +1349,37 @@
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
   }
 
-  // methodWindow returns the observation window every figure from one source
-  // shares, or null when they do not all share one. One window can be stated as
-  // a fact about the whole set; a mixture cannot be collapsed into one without
-  // claiming coverage no single figure has, so in that case the per-row tooltips
-  // carry each figure's own window and the summary states none.
-  function methodWindow(method) {
-    // The window is a fact about the figures, so it cannot be stated before the
-    // census is read — or ever, if it fails to decode. Null is already this
-    // function's word for "the figures do not share one window", and every
-    // caller renders nothing for it, which is the same silence an unread census
-    // is owed. What must not happen is the throw: the panels that call this run
-    // at boot, and they carry the account rollup, which was never in the
-    // census.
-    //
-    // The predicate is COST.counted rather than !resources, because one of the
-    // two decode failures leaves the rows behind: the continuation assigns
-    // resources before it checks their number against the summary's, so a
-    // census that contradicts its own summary reaches failCensus fully
-    // populated. Folding a window out of those rows would print a
-    // census-derived figure one panel below a banner promising the trail
-    // "comes from the report's metadata, which read fine" — and it would print
-    // on exactly one of the two failures, which is worse than printing on
-    // neither. COST.counted is set by initCost, which neither failure reaches.
-    if (!COST.counted) return null;
+  // sharedWindow returns the observation window every member of a list shares,
+  // or null when they do not all share one. One window can be stated as a fact
+  // about the whole set; a mixture cannot be collapsed into one without claiming
+  // coverage no single member has, so in that case the caller states none and
+  // the per-row detail carries each figure's own.
+  //
+  // Both ends or nothing, which is what Go's sharedWindow does: a record with
+  // one endpoint places no period. A half-placed window rendered as "modelled
+  // from usage from  up to 2026-07-01 UTC" — a real date given an origin the
+  // source never stated — so it is refused here rather than formatted around.
+  function sharedWindow(records) {
     var seen = null;
     var mixed = false;
-    resources.forEach(function (r) {
-      (r.costs || []).forEach(function (c) {
-        if ((c.method || "") !== method) return;
-        // Both ends or nothing, which is what Go's sharedWindow does: a figure
-        // with one endpoint places no period, and the joined key only catches
-        // the case where *both* are missing. A half-placed window rendered as
-        // "modelled from usage from  up to 2026-07-01 UTC" — a real date given
-        // an origin the source never stated. Cost Optimization Hub can emit
-        // exactly that, so it is refused here rather than formatted around.
-        if (!c.observed_from || !c.observed_to) { mixed = true; return; }
-        var key = c.observed_from + "|" + c.observed_to;
-        if (seen === null) { seen = key; } else if (seen !== key) { mixed = true; }
-      });
+    records.forEach(function (c) {
+      if (!c.observed_from || !c.observed_to) { mixed = true; return; }
+      var key = c.observed_from + "|" + c.observed_to;
+      if (seen === null) { seen = key; } else if (seen !== key) { mixed = true; }
     });
     if (mixed || seen === null) return null;
     var p = seen.split("|");
     return { from: p[0], to: p[1] };
   }
 
-  // methodBasis describes what a figure from the active source actually is, and
-  // it is the only place that decides. The two sources answer different
-  // questions over different periods: Cost Explorer reports what was billed over
-  // a closed window, Cost Optimization Hub a modelled rate for a month that has
-  // not happened. Reading the window and metric off resource_cost regardless of
-  // the active source would stamp Cost Explorer's billed period onto a modelled
-  // figure that never covered it — a real period attached to the wrong number,
-  // which is the fabrication the honesty guardrails exist to prevent. It also
-  // supplies the noun, so a modelled rate is never labelled "spend".
+  // methodBasis describes what the figures on this page actually are, and it is
+  // the only place that decides. Every one of them is billed: a Cost Explorer
+  // amount over a closed window, with a real period to name and "spend" as the
+  // honest noun. It stays a function rather than becoming two constants because
+  // the window and metric are read off the run's own resource_cost report, and
+  // a report that recorded neither must produce an unlabelled figure rather
+  // than a figure wearing a period nobody observed.
   function methodBasis() {
-    if (COST.method === "coh") {
-      return { noun: "modelled cost", metric: "modelled monthly rate", window: "", monthly: true };
-    }
     // The label is left as the pass wrote it. costPartialSuffix belongs to the
     // account rollup, whose window is a calendar month and is labelled as one —
     // "2026-06 (12 of 30 days)" tells a reader how much of the month they are
@@ -1456,16 +1467,23 @@
   // nothing. Outcomes with no action behind them get no sentence rather than a
   // filler one, and every IAM action named here is one docs/iam-policy.json
   // already grants.
+  //
+  // A probe is a Cost Explorer probe and nothing else, so Cost Optimization Hub
+  // is not offered as a remedy for one. It used to be, back when the hub's
+  // estimate was written as a second per-resource price; it reports savings
+  // now, so enrolling would cost the reader an afternoon and return no figure
+  // at all. An instruction that cannot produce what it promises is worse than
+  // no instruction.
   function probeFix(outcome) {
     switch (outcome) {
       case "denied":
-        return "Grant ce:GetCostAndUsageWithResources, or cost-optimization-hub:ListEnrollmentStatuses and " +
-          "cost-optimization-hub:ListRecommendations, and check the account is opted in to that service.";
+        return "Grant ce:GetCostAndUsageWithResources and check resource-level data is switched on in Billing " +
+          "preferences.";
       case "empty":
       case "unsupported":
         return "Resource-level Cost Explorer data has to be switched on in Billing preferences and reaches back " +
-          "about 14 days. For services Cost Explorer will not break down, enroll the account in Cost Optimization " +
-          "Hub and rerun with --costs --cost-resources.";
+          "about 14 days. For services Cost Explorer will not break down, AWS reports no per-resource spend at " +
+          "all — Cost Optimization Hub does not fill this gap, because it reports savings rather than spend.";
       case "skipped":
         return "Raise the request budget or narrow the scan so the remaining services get asked.";
       case "uncensused":
@@ -1478,46 +1496,11 @@
     }
   }
 
-  // commitmentNote is the commitment disclosure in plain prose. A resource
-  // covered by a Savings Plan or a Reserved Instance is not one you stop paying
-  // for by deleting it, and the report says that in words.
-  //
-  // The metric alone cannot decide the wording, because Cost Optimization Hub
-  // has no metric: passing it the empty string picked the branch for a Cost
-  // Explorer figure whose metric went unrecorded, which ends "what a resource
-  // was charged". Nothing has been charged for a modelled monthly rate. The
-  // method is therefore asked first, and only Cost Explorer's branches read a
-  // metric name.
-  function commitmentNote(metric, method) {
-    if (method === "coh") {
-      return "Commitments and prepaid capacity are billed whether or not the resource they cover still exists, so a " +
-        "figure here is what a resource is modelled to cost, not what removing it frees.";
-    }
-    var m = String(metric || "");
-    if (m === "AmortizedCost" || m === "NetAmortizedCost") {
-      return "Amortized cost spreads Savings Plans and Reserved Instance charges across the resources they covered. " +
-        "That is the right signal for ranking what a resource costs and the wrong one for reading a saving: the " +
-        "commitment is already bought, so deleting a covered row does not return the amount shown.";
-    }
-    if (m === "UnblendedCost" || m === "NetUnblendedCost") {
-      return "Unblended cost is what AWS billed on the day, so commitment charges stay on the account instead of " +
-        "the resources they covered. A covered resource can show far less here than it actually consumes.";
-    }
-    if (m === "BlendedCost") {
-      return "Blended cost averages rates across the organization, so a figure here is an accounting allocation " +
-        "rather than what this account was charged for this resource.";
-    }
-    if (!m) {
-      return "Commitments and prepaid capacity are billed whether or not the resource they cover still exists, so a " +
-        "figure here is what a resource was charged, not what removing it frees.";
-    }
-    return "Figures use the " + m + " metric. Commitments and prepaid capacity are billed whether or not the " +
-      "resource they cover still exists, so a figure here is what a resource was charged, not what removing it frees.";
-  }
-
-  var NO_ESTIMATE_NOTE = "This report therefore does not estimate what deleting a resource returns: that depends on " +
-    "commitment coverage, rate plans, and what else moves onto the same commitment — none of which a read-only " +
-    "census can see.";
+  // The commitment disclosure used to live here — a per-metric paragraph saying
+  // that a resource covered by a Savings Plan is not one you stop paying for by
+  // deleting it, and that this census cannot see rate plans and so will not
+  // guess what removing anything frees. Cut for density along with the block
+  // that rendered it. The metric each figure came from is still on the tile.
 
   // ---- Cost aggregates ------------------------------------------------------
 
@@ -1542,15 +1525,15 @@
   // The two exclusions are not absences and may not be worded as any: the row
   // has an amount, printed in the table, with costText explaining the exclusion
   // in its tooltip. Reporting those under "no cause recorded" contradicts the
-  // page's own row. And silence is not a reason either — only Cost Optimization
-  // Hub writes one, the resource-level Cost Explorer pass deliberately writes
-  // nothing rather than guess at a cause — so each caller words that group
-  // itself rather than printing a reason string that was never recorded.
+  // page's own row. And silence is not a reason either — no pass writes one
+  // today, the resource-level Cost Explorer pass deliberately writing nothing
+  // rather than guessing at a cause — so each caller words that group itself
+  // rather than printing a reason string that was never recorded.
   //
-  // A row can qualify for two of these at once: Cost Optimization Hub recording
-  // that it has no recommendation says nothing about why the active Cost
-  // Explorer figure is in euros. The kind stamped by stampCosts wins, because
-  // it is about the figure the reader is looking at.
+  // A row can qualify for two of these at once, so the kind stamped by
+  // stampCosts wins over a recorded reason: it is about the figure the reader is
+  // looking at, and a reason written by some other pass says nothing about why
+  // that figure is in euros.
   var REASON_KINDS = ["recorded", "offCurrency", "unparsed", "silent"];
 
   function groupReasons(rows) {
@@ -1654,12 +1637,12 @@
     if (!c) {
       // The reason is quoted, not offered as the explanation for this absence.
       // cost_unavailable is written by whichever pass had something to say, and
-      // only Cost Optimization Hub writes one at all — the resource-level Cost
-      // Explorer pass deliberately records none, because naming a cause for a
-      // row Cost Explorer simply did not return would be a guess. Splicing the
-      // two with an em dash made a Hub sentence answer for Cost Explorer: "No
-      // Cost Explorer figure — no Cost Optimization Hub recommendation for this
-      // resource", which reads as one source explaining the other's silence.
+      // no pass writes one today — the resource-level Cost Explorer pass
+      // deliberately records none, because naming a cause for a row Cost
+      // Explorer simply did not return would be a guess. Splicing the two with
+      // an em dash once let another source's sentence answer for Cost Explorer:
+      // "No Cost Explorer figure — no recommendation for this resource", which
+      // reads as one source explaining the other's silence. Hence the quote.
       return {
         text: "",
         dim: true,
@@ -1938,9 +1921,11 @@
     var hasReasons = resources.some(function (r) { return !!r.cost_unavailable; });
     COST.attempted = COST.attempted || COST.methods.length > 0 || hasReasons;
     if (COST.methods.length > 0) {
-      // Default to whichever source priced the most resources; ties go to
-      // Cost Explorer, which reports what was billed rather than what a model
-      // expects to be billed.
+      // Cost Explorer is the only source that writes a per-resource figure, so
+      // this reads the one entry methodCounts found rather than choosing. The
+      // shape stays plural because the census is data: a file written by a
+      // future version, or by a version that had a second source, must render
+      // its figures under a source it names rather than under Cost Explorer's.
       COST.method = COST.methods[0].method;
       COST.currency = dominantCurrency(COST.methods[0]);
     }
@@ -1956,22 +1941,6 @@
   // decode fails, without — the rows.
   function costAttemptedFromMeta() {
     COST.attempted = !!costReport || !!resourceCostReport;
-  }
-
-  function setMethod(m) {
-    if (m === COST.method) return;
-    var entry = null;
-    COST.methods.forEach(function (e) { if (e.method === m) entry = e; });
-    if (!entry) return;
-    COST.method = m;
-    COST.currency = dominantCurrency(entry);
-    activeService = null;
-    stampCosts();
-    COST.active = COST.priced > 0;
-    renderCostViews();
-    renderAttrBar();
-    syncCostHeader();
-    rebuild(false);
   }
 
   // The noun is "issue" and not "caveat" because caveat already names something
@@ -2030,18 +1999,36 @@
         issues.push({
           text: "The inventory in this file could not be read, so nothing here is per-resource: spend cannot be " +
             "ranked per resource, attributed to an owner, or split by service. What is still shown — the account " +
-            "total, the reconciliation trail, what the questions cost — comes from the report's metadata, which " +
-            "read fine.",
+            "total and what the questions cost — comes from the report's metadata, which read fine.",
           fix: "The reason is printed where the table would be. If it names DecompressionStream, open this file in " +
             "Safari 16.4+, Firefox 113+ or Chrome 80+; otherwise rerun the scan to regenerate it."
         });
       }
     } else if (!COST.active) {
+      // The window is named here and only here. Everywhere else it rides on a
+      // figure — the column sub-header, the untagged tile, a row's tooltip —
+      // and this is the run with no figures to ride on, so a reader deciding
+      // whether the answer is worth re-asking for would otherwise not know what
+      // period came back empty.
+      //
+      // It is named only when the resource-level pass actually ran. A --costs
+      // run without --cost-resources reaches this branch too, and telling that
+      // reader which window came back empty would be describing a question
+      // nobody put.
+      var asked = "";
+      if (resourceCostReport) {
+        asked = " AWS was asked over " +
+          ((resourceCostReport.window && resourceCostReport.window.label) ||
+            "a window this report does not record") + ".";
+      }
       issues.push({
         text: "No resource-level figure reached any resource, so spend cannot be ranked per resource, attributed to " +
-          "an owner, or split by service. The account total above, where present, is all AWS reported.",
-        fix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources, or " +
-          "enroll the account in Cost Optimization Hub (cost-optimization-hub:ListRecommendations)."
+          "an owner, or split by service." + asked +
+          " The account total above, where present, is all AWS reported.",
+        // Cost Explorer is the only thing that can fill this gap. The hub is
+        // not an alternative source of the missing figure — it answers the
+        // other question, and it is offered in its own section.
+        fix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources."
       });
     } else if (COST.priced < total) {
       issues.push({
@@ -2079,8 +2066,15 @@
         issues.push({ text: text, fix: "" });
       });
     }
+    // A probe is only silent when it answered in full AND every row it returned
+    // found a resource. "rows — 3 row(s), 0 matched to census resources" is
+    // spend AWS attributed to things this census never saw, which is a gap in
+    // the page and not a clean probe; it used to be reported in the audit panel
+    // and nowhere else. probeFix has no advice for the "rows" outcome and
+    // returns "", so the line arrives without a remedy rather than with a
+    // borrowed one.
     probes.forEach(function (p) {
-      if (p.outcome === "rows" && !p.truncated) return;
+      if (p.outcome === "rows" && !p.truncated && p.matched === p.rows) return;
       issues.push({ text: p.service + ": " + probeLine(p), fix: probeFix(p.outcome) });
     });
     return issues;
@@ -2107,40 +2101,35 @@
     section.hidden = false;
   }
 
-  // untaggedShare is the sub-line under the untagged tile, kept out of the tile
-  // so the branch that refuses to state a percentage can be tested without a
-  // DOM. A share of a whole that is zero is not a small share; it is not a
-  // share, and decPercent says so by returning null — which concatenates into
-  // the literal word "null" if it is used unguarded.
+  // untaggedCounts is the sub-line under the untagged tile: how many of the
+  // priced resources carry neither an owner nor an environment tag.
   //
-  // The test is the one renderAttrBar uses rather than a null check, because a
-  // whole that nets negative would yield a signed number here while the bar has
-  // already refused to weight by spend at all, and the two must not disagree.
-  // Zero is reached by an estate of stored zeros and, more often, by credits
-  // cancelling out the charges — where a real untagged amount still sits above
-  // this line, so the missing percentage is explained rather than dropped.
-  function untaggedShare(sum, whole, nUntagged, nPriced, noun, currency) {
-    var counts = nUntagged.toLocaleString() + " of " + nPriced.toLocaleString() + " priced resources";
-    if (!whole) return counts;
-    if (whole.u <= 0n) {
-      return counts + " · priced " + noun + " totals " + formatMoney(decFormat(whole), currency) +
-        ", so no share of it can be stated";
-    }
-    return decPercent(sum, whole) + "% of priced " + noun + " · " + counts;
+  // It used to lead with a percentage of priced spend, and that percentage came
+  // with a page of care — a whole of zero is not a small share but no share at
+  // all, a whole that nets negative would yield a signed one, and both are
+  // reachable through credits cancelling the charges out. All of it went with
+  // the total-spend tile, because the denominator went with it: a percentage of
+  // a number the page no longer prints is a figure a reader cannot check. The
+  // counts stand on their own, and renderAttrBar still holds the same guard for
+  // the same reason where a share is genuinely being taken.
+  function untaggedCounts(nUntagged, nPriced) {
+    return nUntagged.toLocaleString() + " of " + nPriced.toLocaleString() +
+      " priced resources have no owner or environment tag";
   }
 
-  // heroCoverage is the sub-line under the spend tile. The gap it names belongs
-  // to the active source in the active currency and has to be worded that way:
-  // priced excludes resources the *other* source priced, resources priced in
-  // another currency, and amounts that would not parse — all of them things AWS
-  // did report, two of which are printed in the Cost column of the very rows
-  // this line is describing. The coverage banner already says it correctly;
-  // this is the same sentence.
-  function heroCoverage(priced, total, method, currency) {
-    var line = "across " + priced.toLocaleString() + " of " + plural(total, "resource");
-    if (priced >= total) return line;
-    return line + " · " + (total - priced).toLocaleString() + " carry no " +
-      methodLabel(method) + " figure" + (currency ? " in " + currency : "");
+  // unattributedRecords names what the unattributed figure is made of, in AWS's
+  // own words and AWS's own amounts. It is a parenthetical rather than a list
+  // because it hangs off the total it explains, and it is empty rather than
+  // "(none)" when AWS broke nothing out: a bill with no tax line is not a bill
+  // with a tax line of nothing.
+  //
+  // Amounts are passed through as strings. They are already formatted decimals
+  // from the wire and one of them is routinely negative — a credit — so nothing
+  // here may take an absolute value, floor, or otherwise tidy them.
+  function unattributedRecords(roll) {
+    var recs = (roll && roll.unattributed_records) || [];
+    if (recs.length === 0) return "";
+    return " (" + recs.map(function (s) { return s.name + " " + s.amount; }).join(" · ") + ")";
   }
 
   // renderCostHero returns how many tiles it drew, so the caller can hide the
@@ -2166,103 +2155,90 @@
     var spend = COST.active ? tierSpend(resources) : null;
     var basis = methodBasis();
 
+    // There is no total-spend tile, on purpose.
+    //
+    // Summing the per-resource figures produces a number that looks like a bill
+    // and is not one: it covers only the resources Cost Explorer priced
+    // individually and this census could see, over a rolling fourteen days,
+    // with tax, credits, support and commitment fees excluded because they
+    // belong to no resource. Printed beside the account total it invited the
+    // one inference this tool refuses — scale the fortnight up, compare to the
+    // month, conclude the two agree. They are not the same measurement over
+    // different lengths.
+    //
+    // What that tile carried lives on elsewhere: the figures themselves are in
+    // the table, one per row, which is the number a reader acts on; and the
+    // coverage gap it disclosed is already a line in the banner above.
     if (spend && spend.total) {
-      var source = methodLabel(COST.method);
-      if (basis.metric) source += " · " + basis.metric;
-      // A modelled monthly rate has no billed period to name, so it is titled by
-      // what it is rather than dressed in a window it did not cover.
-      var headline = basis.monthly
-        ? "Modelled monthly cost"
-        : "Spend" + (basis.window ? " · " + basis.window : "");
-      tile(headline, decFormat(spend.total), COST.currency, [
-        { text: heroCoverage(COST.priced, total, COST.method, COST.currency) },
-        { text: source }
-      ]);
-
       var untagged = null;
       spend.tiers.forEach(function (t) { if (t.key === "untagged") untagged = t; });
       var unowned = decSum(resources
         .filter(function (r) { return !r.owner && r._costDec; })
         .map(function (r) { return r._costDec; }));
       var hasUntagged = !!(untagged && untagged.sum);
-      tile("Untagged " + basis.noun, hasUntagged ? decFormat(untagged.sum) : "—", hasUntagged ? COST.currency : "", [
+      // This one stays, because it is not a bill. It is how much of the priced
+      // spend nobody has claimed — a governance number, and one that reads on
+      // its own. It carries its window for the same reason the bill carries
+      // its month: the two tiles sit side by side and cover different periods.
+      tile("Untagged " + basis.noun + (basis.window ? " · " + basis.window : ""),
+        hasUntagged ? decFormat(untagged.sum) : "—", hasUntagged ? COST.currency : "", [
         {
           text: !hasUntagged
             ? "no priced resource is missing both owner and environment"
-            : untaggedShare(untagged.sum, spend.total, untagged.priced, COST.priced, basis.noun, COST.currency),
+            : untaggedCounts(untagged.priced, COST.priced),
           bad: hasUntagged && untagged.sum.u > 0n
         },
         { text: unowned ? "no owner tag at all: " + formatMoney(decFormat(unowned), COST.currency) : "" }
       ]);
     }
 
+    // Every currency gets its own tile. There used to be one, for the currency
+    // the per-resource figures happened to be in, and a sub-line pointing the
+    // reader at a panel that no longer exists for the rest. Amounts in different
+    // currencies are never summed, so the only honest way to show a second one
+    // is as a second figure — a tile each, never a total.
     var rollups = (costReport && costReport.currencies) || [];
-    var roll = rollups.length > 0 ? rollups[0] : null;
-    rollups.forEach(function (c) { if (c.currency === COST.currency) roll = c; });
-    if (roll) {
-      var rollWin = costReport.window || null;
-      var rollLabel = rollWin ? (rollWin.label || "") + costPartialSuffix(rollWin) : "";
-      tile("Account total" + (rollLabel ? " · " + rollLabel : ""), roll.total, roll.currency, [
-        { text: "attributed " + roll.attributed + " · unattributed " + roll.unattributed },
+    var rollWin = costReport && costReport.window;
+    var rollLabel = rollWin ? (rollWin.label || "") + costPartialSuffix(rollWin) : "";
+    rollups.forEach(function (roll) {
+      // Named as the bill it is. "Account total" read as a total of the page,
+      // which is what the tile beside it used to look like — this one is the
+      // whole invoice for a closed calendar month, and the only figure here
+      // that is.
+      tile("Last month's AWS bill" + (rollLabel ? " · " + rollLabel : ""), roll.total, roll.currency, [
+        // The named unattributed records come with the total they add up to,
+        // because the panel that used to list them is gone and this is the only
+        // line that says what "unattributed 808.27" is made of — tax, support,
+        // a credit that runs negative. The minus sign survives every formatter
+        // on the way here and must survive this one.
+        {
+          text: "attributed " + roll.attributed + " · unattributed " + roll.unattributed +
+            unattributedRecords(roll)
+        },
         {
           text: (costReport.metric ? costReport.metric + " · " : "") +
             plural((costReport.accounts || []).length, "account") +
             (costReport.estimated === true ? " · AWS still marks this estimated" : ""),
           bad: costReport.estimated === true
-        },
-        { text: rollups.length > 1 ? plural(rollups.length - 1, "further currency") + " in the details below" : "" }
+        }
       ]);
-    }
+    });
 
     document.getElementById("cost-hero").replaceChildren(frag);
     return tiles;
   }
 
-  function renderMethodSelector() {
-    var box = document.getElementById("cost-method");
-    // One source is not a choice, and a control that cannot change anything is
-    // just something else to read.
-    if (COST.methods.length < 2) { box.hidden = true; return; }
-    var frag = document.createDocumentFragment();
-    frag.appendChild(el("span", "rr-method-label", "Cost source"));
-    COST.methods.forEach(function (m) {
-      var btn = el("button", "rr-method-btn", methodLabel(m.method) + " · " + plural(m.priced, "resource"));
-      btn.type = "button";
-      btn.setAttribute("aria-pressed", m.method === COST.method ? "true" : "false");
-      btn.title = "Cost Explorer reports what AWS billed; Cost Optimization Hub reports a modelled monthly rate. " +
-        "One source is shown at a time — the two are never added together or ranked against each other.";
-      btn.addEventListener("click", function () { setMethod(m.method); });
-      frag.appendChild(btn);
-    });
-    box.replaceChildren(frag);
-    box.hidden = false;
-  }
-
+  // What is left here is the † key and nothing else.
+  //
+  // This block used to carry three paragraphs of prose under the tiles: the
+  // commitment disclosure, the refusal to estimate what deleting a resource
+  // returns, and a note that the rollup and the per-resource figures are two
+  // meters over two windows. They were cut for density. The claims they denied
+  // are still ones this report must never make — nothing here may present a
+  // cost as a saving — but that is now enforced by what the page does not say
+  // rather than by a paragraph saying it.
   function renderCostNote() {
     var frag = document.createDocumentFragment();
-    // The commitment disclosure describes the figure actually in front of the
-    // reader. Cost Explorer's metric name says nothing true about a Cost
-    // Optimization Hub rate, so the method goes with it and the note picks its
-    // own wording rather than being handed a blank metric to interpret.
-    var metric = (resourceCostReport && resourceCostReport.metric) || (costReport && costReport.metric) || "";
-    frag.appendChild(el("p", "", commitmentNote(metric, COST.method)));
-    frag.appendChild(el("p", "", NO_ESTIMATE_NOTE));
-    if (COST.method === "coh") {
-      var lookback = methodWindow("coh");
-      var over = lookback
-        ? ", modelled from usage from " + costWindowStamp(lookback.from) + " up to " +
-          costWindowStamp(lookback.to) + " UTC"
-        : "";
-      frag.appendChild(el("p", "", "Cost Optimization Hub figures are modelled monthly rates for each resource's " +
-        "current configuration, not amounts AWS billed" + over + ". The lookback is what the model read, not a " +
-        "period anything was charged for; the rate itself already covers a whole month, so these figures are never " +
-        "added to or ranked against the billed windows elsewhere on this page."));
-    }
-    if (COST.active && (costReport && costReport.currencies || []).length > 0) {
-      frag.appendChild(el("p", "", "The account total and the per-resource figures are two meters over two different " +
-        "windows and are not meant to add up: the rollup covers the whole bill, the per-resource figures cover only " +
-        "what AWS reported against a resource this census could see."));
-    }
     if (COST.caveated > 0) {
       frag.appendChild(el("p", "", "† " + plural(COST.caveated, "figure") + " below " +
         (COST.caveated === 1 ? "is a lower bound" : "are lower bounds") + ": they cover part of a resource's charges " +
@@ -2272,85 +2248,621 @@
     document.getElementById("cost-note").replaceChildren(frag);
   }
 
-  function renderRecon() {
-    var frag = document.createDocumentFragment();
-    var any = false;
+  // ---- Savings suggestions --------------------------------------------------
+  //
+  // Cost Optimization Hub answers the question a reader asks straight after
+  // reading the bill: what could I stop paying? Its figures are modelled forward
+  // over a month that has not happened and were never invoiced, so they live
+  // here rather than in COST, and no line in this block adds one of them to a
+  // billed amount, subtracts one from a billed amount, or states either as a
+  // fraction of the other.
 
-    function entry(term, lines) {
-      var text = lines.filter(Boolean);
-      if (text.length === 0) return;
-      any = true;
-      frag.appendChild(el("dt", "", term));
-      text.forEach(function (t) { frag.appendChild(el("dd", "", t)); });
-    }
+  // How many suggestions one currency paints before the tail is folded, and how
+  // many the fold opens to. The page holds every one of them — the count and the
+  // total in the band are over the whole currency, the JSON carries them all and
+  // the CSV each resource's largest — so this bounds the reading, never the data.
+  //
+  // The second number is not decoration. A --demo-scale 50000 census carries
+  // 22,260 suggestions across 16,382 resources, and #tips-rows is not
+  // virtualized the way the census body is; painting all of them would hang the
+  // tab. So the fold opens to a bounded window and the row under it says how
+  // many it still left folded, rather than stopping without saying so.
+  var MAX_TIPS_LISTED = 25;
+  var MAX_TIPS_EXPANDED = 200;
 
-    ((costReport && costReport.currencies) || []).forEach(function (c) {
-      var cur = c.currency || "unlabelled currency";
-      entry("Cost Explorer rollup · " + cur, [formatMoney(c.total, c.currency) + "   " + reconcileLine(c)]);
-      entry("By service · " + cur, (c.services || []).map(function (s) {
-        return s.name + " " + formatMoney(s.amount, c.currency);
-      }));
-      entry("Unattributed · " + cur, (c.unattributed_records || []).map(function (s) {
-        return s.name + " " + formatMoney(s.amount, c.currency);
-      }));
-      entry("By account · " + cur, (c.accounts || []).map(function (s) {
-        return s.name + " " + formatMoney(s.amount, c.currency);
-      }));
+  // The columns. Every one of them sorts, because the question a reader brings
+  // decides which order is the useful one: the largest saving, the ones that
+  // need no restart, the ones AWS graded easy, everything in one region.
+  // Nothing here is a computed figure — each column is a field AWS reported, or
+  // an ordering over one.
+  var TIP_COLUMNS = [
+    { key: "saving",   label: "Saving",     num: true, startDir: -1 },
+    { key: "action",   label: "Action",     startDir: 1 },
+    { key: "resource", label: "Resource",   startDir: 1 },
+    { key: "where",    label: "Where",      startDir: 1 },
+    { key: "effort",   label: "Effort",     startDir: 1 },
+    { key: "restart",  label: "Restart",    startDir: 1 },
+    { key: "rollback", label: "Reversible", startDir: 1 }
+  ];
+
+  // Sorting has two states per column, not the census's three. Clearing the
+  // census's sort falls back to the order the file arrived in, which is a real
+  // order someone may want back; clearing this one would fall back to
+  // saving-descending, which is what the Saving column already does. A third
+  // click that changes nothing reads as a broken control.
+  var tipSortKey = "saving";
+  var tipSortDir = -1;
+
+  // Which currencies have had their tail unfolded, keyed by currency so a page
+  // carrying two of them unfolds them independently.
+  var tipsOpen = {};
+
+  var TIPS = {
+    groups: [],
+    unquantified: 0,
+    count: 0,
+    resources: 0,
+    // The lookback every suggestion shares, or null when they do not all share
+    // one — sharedWindow's rule, and the reason it is not COST's window: this
+    // is the period AWS read to build a model, not a period anything was
+    // billed over.
+    window: null
+  };
+
+  // initTips folds the census into per-currency rankings. It runs once, beside
+  // initCost, and reads only r.recommendations.
+  function initTips() {
+    var byCurrency = {};
+    var order = [];
+    var all = [];
+    TIPS.count = 0;
+    TIPS.resources = 0;
+    TIPS.unquantified = 0;
+    TIPS.window = null;
+    resources.forEach(function (r) {
+      var recs = r.recommendations || [];
+      if (recs.length > 0) TIPS.resources++;
+      recs.forEach(function (rec) {
+        TIPS.count++;
+        all.push(rec);
+        // Split on the amount being absent, never on its value. A change AWS
+        // modelled at exactly zero is an answer — the change is worth making and
+        // pays for nothing — and it ranks at the bottom of its currency with the
+        // rest. Dropping it would turn "AWS priced this at nothing" into "AWS
+        // said nothing", which is a different statement.
+        var amount = rec.estimated_monthly_savings;
+        if (typeof amount !== "string" || amount === "") { TIPS.unquantified++; return; }
+        var cur = rec.currency || "";
+        var g = byCurrency[cur];
+        if (!g) {
+          g = byCurrency[cur] = { currency: cur, tips: [], total: null, caveats: [] };
+          order.push(g);
+        }
+        g.tips.push({ r: r, rec: rec, dec: decParse(amount) });
+      });
     });
 
-    // Both windows are listed whichever source is active: the panel is the audit
-    // trail for the data the run collected, not a view of the current selection.
-    var win = resourceCostReport && resourceCostReport.window;
-    entry("Resource-level window", [win ? costWindowSentence(win.start, win.end) : ""]);
-    var lookback = methodWindow("coh");
-    entry("Modelled-from window", [lookback
-      ? "Cost Optimization Hub modelled its monthly rates from usage from " + costWindowStamp(lookback.from) +
-        " up to " + costWindowStamp(lookback.to) + " UTC; the rate each figure states covers a month."
-      : ""]);
-    entry("Resource-level probes", probes.map(function (p) { return p.service + ": " + probeLine(p); }));
+    order.sort(function (a, b) {
+      return a.currency < b.currency ? -1 : (a.currency > b.currency ? 1 : 0);
+    });
+    order.forEach(function (g) {
+      g.tips.sort(function (a, b) {
+        if (a.dec && b.dec) {
+          var c = decCmp(b.dec, a.dec);
+          if (c !== 0) return c;
+        } else if (a.dec || b.dec) {
+          // An amount that will not parse sinks rather than reordering the rest.
+          return a.dec ? -1 : 1;
+        }
+        var an = a.r.arn || "", bn = b.r.arn || "";
+        if (an !== bn) return an < bn ? -1 : 1;
+        // One resource can carry two suggestions worth the same — the hub models
+        // a database's compute and its storage apart — so the id is the last
+        // tie-break, exactly as Resource.SortRecommendations ends there.
+        var ai = a.rec.id || "", bi = b.rec.id || "";
+        return ai < bi ? -1 : (ai > bi ? 1 : 0);
+      });
+      // One unreadable amount voids the group total rather than being quietly
+      // left out of it: a sum missing a term it does not mention is worse than
+      // no sum.
+      var readable = g.tips.every(function (t) { return !!t.dec; });
+      g.total = readable ? decSum(g.tips.map(function (t) { return t.dec; })) : null;
+      var seen = {};
+      g.tips.forEach(function (t) {
+        (t.rec.caveats || []).forEach(function (c) {
+          if (seen[c]) return;
+          seen[c] = true;
+          g.caveats.push(c);
+        });
+      });
+    });
 
-    // Two of the four kinds are exclusions rather than absences, and they are
-    // worded as such: AWS did price the resource, this page is declining to add
-    // that figure into a total. Calling either "no cause recorded" would sit in
-    // an audit panel contradicting the amount printed in the row above it.
-    //
-    // Gated on COST.counted because this panel paints before the census
-    // decodes and again if the decode fails: `resources` is null in the first
-    // case and stays null in the second, and an empty breakdown would read as
-    // "every resource has a figure" on a page that has no resources.
-    var unpriced = COST.counted ? resources.filter(function (r) { return !r._costDec; }) : [];
-    entry("Why a figure is missing", groupReasons(unpriced).map(function (g) {
-      var why;
-      if (g.kind === "recorded") why = g.reason;
-      else if (g.kind === "offCurrency") why = "priced in another currency, so excluded from the totals";
-      else if (g.kind === "unparsed") why = "amount could not be read as a decimal, so excluded from the totals";
-      else why = "no cause recorded";
-      return plural(g.count, "resource") + " — " + why;
-    }));
-
-    var meters = [];
-    if (costReport) meters.push(meterLine("rollup", costReport.meter));
-    if (resourceCostReport) meters.push(meterLine("resource-level", resourceCostReport.meter));
-    entry("What asking cost", meters);
-
-    document.getElementById("cost-recon-body").replaceChildren(frag);
-    // The panel hides itself, from its own section, rather than riding along
-    // inside #cost-section. That section hides when the hero drew no tiles, and
-    // [hidden] takes every descendant with it — which is exactly the run this
-    // panel exists for: cost was asked for, AWS was paid per request for the
-    // asking, and nothing came back. Nested, the one run the reader was billed
-    // for was the one run that never said what they paid.
-    document.getElementById("cost-audit-section").hidden = !any;
+    TIPS.groups = order;
+    TIPS.window = sharedWindow(all);
   }
+
+  // tipResourceLabel mirrors render.spenderName: the resource as a reader would
+  // point at it, with the scope needed to find it among namesakes.
+  function tipResourceLabel(r) {
+    var name = r.name || r.arn || "";
+    var scope = [];
+    if (r.service) scope.push(r.service);
+    if (r.region) scope.push(r.region);
+    if (scope.length === 0) return name;
+    return name + " (" + scope.join(", ") + ")";
+  }
+
+  // tipWhere is the scope tipResourceLabel folds into its parentheses, given a
+  // column of its own so the table can be ordered by it. Sorting by "orders
+  // (rds, us-east-1)" sorts by the name; a reader asking what a single region is
+  // costing them wants the scope to be the key, not a suffix of it.
+  function tipWhere(r) {
+    return [r.service || "", r.region || ""].filter(Boolean).join(" · ");
+  }
+
+  // effortLabel puts AWS's effort rating into a sentence. The five values are a
+  // closed enum, so lower-casing them is presentation; anything outside the set
+  // is passed through as AWS wrote it, because a value this tool does not
+  // recognise is not one it may rephrase.
+  function effortLabel(s) {
+    switch (s) {
+      case "": case undefined: case null: return "";
+      case "VeryLow": return "very low effort";
+      case "Low": return "low effort";
+      case "Medium": return "medium effort";
+      case "High": return "high effort";
+      case "VeryHigh": return "very high effort";
+    }
+    return s + " effort";
+  }
+
+  // effortGrade is effortLabel with the noun taken off, because the column
+  // header already supplies it: the cell reads "low", not "low effort". It is
+  // derived from effortLabel rather than repeating its switch so the two can
+  // never disagree about what AWS's five values are called, and a value this
+  // tool does not recognise still comes back exactly as AWS wrote it.
+  function effortGrade(s) {
+    return effortLabel(s).replace(/ effort$/, "");
+  }
+
+  // effortRank orders the grade. Only AWS's five values have a place in that
+  // order: a grade this tool does not recognise is one it cannot position, and
+  // inventing a position would reorder the table on a guess. Anything else ranks
+  // null and is partitioned to the bottom in both directions, like every other
+  // absence on this page.
+  function effortRank(s) {
+    switch (s) {
+      case "VeryLow": return 0;
+      case "Low": return 1;
+      case "Medium": return 2;
+      case "High": return 3;
+      case "VeryHigh": return 4;
+    }
+    return null;
+  }
+
+  // effortClass coarsens five grades onto three colours so the column can be
+  // read without being read. The coarsening is presentation only — the chip
+  // still carries AWS's own word — and the ramp is monotone, so no two grades
+  // swap places on the way to a colour. An unrecognised grade gets the plain
+  // chip: it is stated, so it is not drawn as unstated, but this tool does not
+  // know which end of the ramp it belongs on.
+  function effortClass(s) {
+    switch (s) {
+      case "VeryLow": case "Low": return "tag-green";
+      case "Medium": return "tag-amber";
+      case "High": case "VeryHigh": return "tag-red";
+    }
+    return "";
+  }
+
+  // tipFlagRank orders a tri-state operational flag: 0 for the answer that makes
+  // the change easier to make, 1 for the one that makes it harder, null for the
+  // one AWS did not give. Unstated is not "probably fine" and not "probably
+  // bad", so it sorts out of the way in both directions and the cell says so.
+  function tipFlagRank(v, easier) {
+    if (v === true || v === false) return v === easier ? 0 : 1;
+    return null;
+  }
+
+  // tipActionParts splits the "what to do" cell: the action AWS named together
+  // with what it acts on, and what it changes that thing into. The summaries are
+  // the readable end — "db.r5.xlarge" — and the resource types are the fallback,
+  // because a suggestion about a database's storage and one about its compute
+  // are otherwise indistinguishable on the row. Everything is passed through
+  // verbatim.
+  function tipActionParts(rec) {
+    var from = rec.current_resource_summary || rec.current_resource_type || "";
+    var to = rec.recommended_resource_summary || "";
+    if (!to && rec.recommended_resource_type && rec.recommended_resource_type !== rec.current_resource_type) {
+      to = rec.recommended_resource_type;
+    }
+    return {
+      lead: [rec.action_type || "", from].filter(Boolean).join(" "),
+      to: to && to !== from ? to : ""
+    };
+  }
+
+  // tipActionText is what the Action column sorts on: the same string the cell
+  // shows, arrow and all, so the order on screen is an order over what is on
+  // screen.
+  function tipActionText(rec) {
+    var p = tipActionParts(rec);
+    return p.to ? p.lead + " → " + p.to : p.lead;
+  }
+
+  function tipAction(rec) {
+    var box = el("td", "rr-tip-action");
+    var p = tipActionParts(rec);
+    if (p.lead) box.appendChild(document.createTextNode(p.lead));
+    if (p.to) {
+      box.appendChild(el("span", "rr-tip-arrow", " → "));
+      box.appendChild(document.createTextNode(p.to));
+    }
+    return box;
+  }
+
+  // tipMeta is the second line: which resource, and what acting on it takes.
+  //
+  // Both flags are tri-state and all three states render, because "AWS did not
+  // say whether this needs a restart" is something a reader planning the change
+  // has to know, and printing nothing for it is indistinguishable from "no".
+  // The bare else catches both shapes an unsaid flag arrives in: null from a
+  // decoded census, undefined from a key omitempty left out.
+  //
+  // Effort is deliberately not treated the same way. An unstated grade does not
+  // invert a risk judgment; an unstated restart does.
+  function tipMeta(t) {
+    var bits = [tipResourceLabel(t.r)];
+    var effort = effortLabel(t.rec.implementation_effort);
+    if (effort) bits.push(effort);
+    if (t.rec.restart_needed === true) bits.push("restart needed");
+    else if (t.rec.restart_needed === false) bits.push("no restart");
+    else bits.push("restart not stated");
+    if (t.rec.rollback_possible === true) bits.push("reversible");
+    else if (t.rec.rollback_possible === false) bits.push("not reversible");
+    else bits.push("reversibility not stated");
+    return bits.join("  ·  ");
+  }
+
+  // ---- The suggestions table ------------------------------------------------
+
+  function tipColumn(key) {
+    for (var i = 0; i < TIP_COLUMNS.length; i++) {
+      if (TIP_COLUMNS[i].key === key) return TIP_COLUMNS[i];
+    }
+    return null;
+  }
+
+  // tipSortValue is what a column orders on. null means "nothing to order this
+  // row by", and it is the only way a row leaves the ordering — never a zero
+  // standing in for a missing amount, never an empty string standing in for a
+  // missing name.
+  function tipSortValue(t, key) {
+    switch (key) {
+      case "saving": return t.dec || null;
+      case "action": return tipActionText(t.rec) || null;
+      case "resource": return t.r.name || t.r.arn || null;
+      case "where": return tipWhere(t.r) || null;
+      case "effort": return effortRank(t.rec.implementation_effort);
+      case "restart": return tipFlagRank(t.rec.restart_needed, false);
+      case "rollback": return tipFlagRank(t.rec.rollback_possible, true);
+    }
+    return null;
+  }
+
+  // tipCompare partitions absence before the direction is applied — nullRank and
+  // compareRows do the same for the census. A row AWS said nothing about is not
+  // the smallest value or the largest one, so it sits at the bottom whichever
+  // way the arrow points.
+  function tipCompare(a, b, key, dir) {
+    var av = tipSortValue(a, key), bv = tipSortValue(b, key);
+    var an = av === null || av === undefined, bn = bv === null || bv === undefined;
+    if (an || bn) return an && bn ? 0 : (an ? 1 : -1);
+    var c = key === "saving" ? decCmp(av, bv) : (av < bv ? -1 : (av > bv ? 1 : 0));
+    return c * dir;
+  }
+
+  // The tie-break is initTips's, which is Resource.SortRecommendations's: the
+  // ARN, then the suggestion id, because one resource can carry two suggestions
+  // worth the same — the hub models a database's compute and its storage apart.
+  // Broken the same way everywhere, ties keep the table stable when a column is
+  // clicked and byte-stable between runs.
+  function tipTieBreak(a, b) {
+    var an = a.r.arn || "", bn = b.r.arn || "";
+    if (an !== bn) return an < bn ? -1 : 1;
+    var ai = a.rec.id || "", bi = b.rec.id || "";
+    return ai < bi ? -1 : (ai > bi ? 1 : 0);
+  }
+
+  // tipSorted orders the whole currency and lets the caller slice. Sorting the
+  // slice instead would make "Effort ▲" mean "the easiest of the 25 largest
+  // savings", which is not what the header says and not what the click asked
+  // for; the count in the band would say "25 of 44 shown" and still be
+  // describing a different 25 than the reader thinks.
+  function tipSorted(g) {
+    var rows = g.tips.slice();
+    rows.sort(function (a, b) {
+      var c = tipCompare(a, b, tipSortKey, tipSortDir);
+      return c !== 0 ? c : tipTieBreak(a, b);
+    });
+    return rows;
+  }
+
+  // tipShownCap is how many of a currency's suggestions are painted. Neither
+  // number bounds the data — see MAX_TIPS_LISTED.
+  function tipShownCap(g) {
+    return tipsOpen[g.currency] ? MAX_TIPS_EXPANDED : MAX_TIPS_LISTED;
+  }
+
+  // buildTipHead mirrors the census header down to the class names, so one page
+  // has one kind of sortable table on it.
+  function buildTipHead() {
+    var row = document.getElementById("tips-head-row");
+    TIP_COLUMNS.forEach(function (c) {
+      var th = document.createElement("th");
+      th.scope = "col";
+      if (c.num) th.className = "num";
+      var btn = el("button", "th-btn");
+      btn.type = "button";
+      btn.appendChild(el("span", "th-lab", c.label));
+      var dir = el("span", "dir");
+      btn.appendChild(dir);
+      btn.addEventListener("click", function () {
+        if (tipSortKey === c.key) tipSortDir = -tipSortDir;
+        else { tipSortKey = c.key; tipSortDir = c.startDir || 1; }
+        renderTips();
+      });
+      th.appendChild(btn);
+      row.appendChild(th);
+      c._th = th;
+      c._dir = dir;
+    });
+  }
+
+  function syncTipSortIndicators() {
+    TIP_COLUMNS.forEach(function (c) {
+      var active = c.key === tipSortKey;
+      c._dir.textContent = active ? (tipSortDir === 1 ? "▲" : "▼") : "";
+      c._th.setAttribute("aria-sort", active ? (tipSortDir === 1 ? "ascending" : "descending") : "none");
+    });
+  }
+
+  // tipOrderLabel names the order the table is actually in. "Ranked by modelled
+  // monthly saving" is the order it opens in and the one the section exists for,
+  // but a sub-line that keeps claiming it after a reader has sorted by Effort is
+  // the same class of untruth as a figure carrying the wrong window.
+  function tipOrderLabel() {
+    if (tipSortKey === "saving" && tipSortDir === -1) return "Ranked by modelled monthly saving";
+    var c = tipColumn(tipSortKey);
+    return "Sorted by " + (c ? c.label.toLowerCase() : tipSortKey) +
+      (tipSortDir === 1 ? ", ascending" : ", descending");
+  }
+
+  // tipFlagCell draws one tri-state operational flag. All three states render,
+  // because "AWS did not say whether this needs a restart" is something whoever
+  // plans the change has to know, and an empty cell under a header that promises
+  // an answer is indistinguishable from a stated no. The bare else catches both
+  // shapes an unsaid flag arrives in: null from a decoded census, undefined from
+  // a key omitempty left out.
+  function tipFlagCell(v, yes, yesCls, no, noCls) {
+    var td = document.createElement("td");
+    if (v === true) td.appendChild(el("span", "tag " + yesCls, yes));
+    else if (v === false) td.appendChild(el("span", "tag " + noCls, no));
+    else td.appendChild(el("span", "tag tag-unstated", "not stated"));
+    return td;
+  }
+
+  // The effort cell parts company with tipMeta on purpose. tipMeta drops an
+  // unstated grade because it writes a sentence, and a sentence is not missing
+  // anything when a clause it never promised is absent. A column is: the header
+  // says "Effort" over every row, so a blank cell under it reads as a value
+  // rather than as silence.
+  function tipEffortCell(s) {
+    var td = document.createElement("td");
+    var grade = effortGrade(s);
+    if (!grade) td.appendChild(el("span", "tag tag-unstated", "not stated"));
+    else td.appendChild(el("span", ("tag " + effortClass(s)).trim(), grade));
+    return td;
+  }
+
+  function tipRow(t, g) {
+    var tr = el("tr", "rr-tip");
+    // The meta line the old list printed under every suggestion rides as the
+    // row's tooltip. The columns carry the parts that sort; this carries them
+    // the way a reader would say them, in one place, unchanged.
+    tr.title = tipMeta(t);
+
+    var amount = el("td", "num");
+    // AWS's own decimal string, printed as it arrived. Nothing here parses it
+    // into a number to display it; decSum touches it only for the band total.
+    amount.appendChild(el("span", "rr-tip-amount", t.rec.estimated_monthly_savings));
+    if (g.currency) amount.appendChild(el("span", "rr-tip-cur", g.currency));
+    tr.appendChild(amount);
+
+    tr.appendChild(tipAction(t.rec));
+
+    var res = document.createElement("td");
+    res.textContent = t.r.name || t.r.arn || "";
+    tr.appendChild(res);
+
+    tr.appendChild(el("td", "sub", tipWhere(t.r)));
+    tr.appendChild(tipEffortCell(t.rec.implementation_effort));
+    tr.appendChild(tipFlagCell(t.rec.restart_needed, "needed", "tag-amber", "none", "tag-green"));
+    tr.appendChild(tipFlagCell(t.rec.rollback_possible, "yes", "tag-green", "no", "tag-red"));
+    return tr;
+  }
+
+  // buildTipBand is the currency header: what the currency is, how much of it is
+  // on screen, and what the whole of it adds up to.
+  function buildTipBand(g, shown) {
+    var tr = el("tr", "group-row");
+    var td = document.createElement("td");
+    td.colSpan = TIP_COLUMNS.length;
+    var total = g.tips.length;
+    var open = !!tipsOpen[g.currency];
+    var box;
+    if (total > MAX_TIPS_LISTED) {
+      box = el("button", "group-btn");
+      box.type = "button";
+      box.setAttribute("aria-expanded", open ? "true" : "false");
+      box.appendChild(el("span", "group-caret", open ? "▼" : "▶"));
+      box.addEventListener("click", function () {
+        tipsOpen[g.currency] = !tipsOpen[g.currency];
+        renderTips();
+      });
+    } else {
+      box = el("div", "group-btn");
+    }
+    // A heading with nothing after it reads like a rendering bug, and a currency
+    // AWS did not report is a property of AWS's answer the reader has to know
+    // about, so it is named rather than left blank.
+    box.appendChild(el("span", "group-name", g.currency || "currency not reported by AWS"));
+    box.appendChild(el("span", "group-count", shown < total
+      ? shown.toLocaleString() + " of " + plural(total, "suggestion") + " shown"
+      : plural(total, "suggestion")));
+
+    // What AWS's own figures add up to across the whole currency — not the
+    // painted slice — and nothing more. Not a forecast of the next bill, not a
+    // share of the spend above, and not conditional on anything the reader has
+    // told this tool. A currency holding one suggestion has nothing to add up:
+    // Σ over a single row already on screen is furniture.
+    if (total > 1) {
+      var cost = el("span", "group-cost");
+      if (g.total) {
+        cost.appendChild(document.createTextNode(
+          "Σ " + formatMoney(decFormat(g.total), g.currency) + " if every one were acted on"));
+      } else {
+        // One unreadable amount voids the total rather than being quietly left
+        // out of it — initTips's rule — and the reason goes where the total
+        // would have been, because a gap there reads as nothing to add up.
+        cost.appendChild(el("span", "group-partial", "no total — an amount AWS sent will not parse"));
+      }
+      box.appendChild(cost);
+    }
+    td.appendChild(box);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  // tipNoteRow is a full-width row of prose under a band: the folded tail, or a
+  // caveat AWS attached to one of its own suggestions.
+  function tipNoteRow(text) {
+    var tr = el("tr", "tip-note-row");
+    var td = document.createElement("td");
+    td.colSpan = TIP_COLUMNS.length;
+    td.textContent = text;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  // renderTips paints #tips-section, which is a top-level section and is
+  // deliberately not nested inside #cost-section. That one hides when the spend
+  // hero draws no tiles, and [hidden] takes every descendant with it — so a run
+  // that got no per-resource spend but a page of savings suggestions would show
+  // none of them. The two are separate answers and they hide separately.
+  //
+  // It repaints in full on every sort and every unfold. The census needs a
+  // virtualizer because it carries fifty thousand rows; this carries at most
+  // MAX_TIPS_EXPANDED per currency, and a repaint that simple is not worth the
+  // machinery that would make it partial.
+  function renderTips() {
+    var section = document.getElementById("tips-section");
+    if (TIPS.count === 0) { section.hidden = true; return; }
+    if (!TIP_COLUMNS[0]._th) buildTipHead();
+
+    var frag = document.createDocumentFragment();
+    TIPS.groups.forEach(function (g) {
+      var rows = tipSorted(g);
+      var shown = Math.min(rows.length, tipShownCap(g));
+      frag.appendChild(buildTipBand(g, shown));
+      rows.slice(0, shown).forEach(function (t) { frag.appendChild(tipRow(t, g)); });
+      if (rows.length > shown) {
+        // The CSV is qualified rather than named flatly: it holds one row per
+        // resource carrying that resource's largest saving, so a second
+        // suggestion on the same resource is in the JSON only.
+        frag.appendChild(tipNoteRow("… and " + plural(rows.length - shown, "more suggestion") +
+          " in this currency, listed in full in the JSON output; the CSV carries each resource's largest " +
+          "saving and a tip_count"));
+      }
+      g.caveats.forEach(function (c) { frag.appendChild(tipNoteRow("† " + c)); });
+    });
+    document.getElementById("tips-rows").replaceChildren(frag);
+    syncTipSortIndicators();
+
+    var sub = document.getElementById("tips-sub");
+    var line = plural(TIPS.count, "suggestion") + " across " + plural(TIPS.resources, "resource") +
+      " · " + tipOrderLabel();
+    // Suggestions AWS named without pricing are counted in the sub-line rather
+    // than dropped: they are in the census and in the JSON, and a section that
+    // silently listed only the priced ones would be under-reporting what AWS
+    // said. They cannot be rows here — the table is ordered by an amount they
+    // do not have — so the count carries them and the tooltip says where they
+    // went.
+    if (TIPS.unquantified > 0) {
+      var one = TIPS.unquantified === 1;
+      line += " · " + plural(TIPS.unquantified, "more") + (one ? " carries no figure" : " carry no figure");
+      sub.title = "AWS named " + (one ? "that change" : "those changes") + " without putting a number on " +
+        (one ? "it" : "them") + ". " + (one ? "It is" : "They are") +
+        " in the JSON output, unranked, because there is nothing to rank " + (one ? "it" : "them") + " by.";
+    } else {
+      sub.title = "";
+    }
+    sub.textContent = line;
+
+    var over = TIPS.window
+      ? " from usage between " + costWindowStamp(TIPS.window.from) + " and " +
+        costWindowStamp(TIPS.window.to) + " UTC"
+      : "";
+    document.getElementById("tips-note").textContent = "AWS Cost Optimization Hub modelled these" + over +
+      ". Each figure is a monthly rate for a month that has not happened, not an amount anyone was charged, so " +
+      "nothing here is added to or subtracted from the spend above and no figure on this page is a share of the " +
+      "other.";
+    section.hidden = false;
+  }
+
+  // There used to be a "Cost reconciliation and coverage" panel here: a
+  // definition list of the rollup's arithmetic, its per-service, per-account and
+  // unattributed records, both windows, every probe, every reason a figure was
+  // missing, and what the run's questions cost. It was the densest block of text
+  // in the report and most of it was a second telling. The rollup arithmetic is
+  // only interesting when it fails, and the coverage banner already says so; the
+  // unpriced reasons, the probes and the resource-level window are the banner's
+  // and the column header's job; the suggestion window is stated under the
+  // suggestions themselves. Those all stayed where a reader was already looking.
+  //
+  // One entry was not a second telling. "What asking cost" is the only place any
+  // artifact says what this run was billed for asking, and the report is the
+  // artifact people keep — so it moved to the footer rather than going with the
+  // panel, and meterLine below is unchanged.
 
   // meterLine reports what this report's own questions cost, including when the
   // answer is nothing: a reader deciding whether to rerun deserves the number.
   function meterLine(which, meter) {
     if (!meter) return "";
-    var line = which + ": " + plural(meter.requests || 0, "request");
+    var line = plural(meter.requests || 0, which + " request");
     if (meter.estimated_charge_usd) line += ", " + formatMoney(meter.estimated_charge_usd, "USD");
     if (meter.capped) line += " ⚠ request budget reached, so some services were never asked";
     return line;
+  }
+
+  // meterFootLine is the paid-API disclosure, and it lives in the footer for the
+  // reason the panel it came from lived in its own section: it has to render on
+  // the runs the rest of the cost views do not. The banner hides when nothing is
+  // wrong, the hero hides when it drew no tiles, and a run that paid Cost
+  // Explorer per request and got a clean complete answer would then be the one
+  // run that never said what it cost. It reads only the two metadata reports,
+  // never the census, so a file whose inventory will not decode still says it.
+  //
+  // Empty when no paid pass ran at all: a run without --costs is not a run that
+  // spent nothing, it is a run with nothing to disclose.
+  function meterFootLine() {
+    var parts = [];
+    if (costReport) parts.push(meterLine("rollup", costReport.meter));
+    if (resourceCostReport) parts.push(meterLine("resource-level", resourceCostReport.meter));
+    parts = parts.filter(Boolean);
+    if (parts.length === 0) return "";
+    return " · what asking AWS cost: " + parts.join(" · ");
   }
 
   function renderSpend() {
@@ -2416,14 +2928,38 @@
     // ranking spend, and one word is the whole difference between the two.
     document.getElementById("spend-title").textContent =
       basis.monthly ? "Modelled monthly cost by service" : "Spend by service";
-    document.getElementById("spend-sub").textContent =
+    var sub = document.getElementById("spend-sub");
+    sub.textContent =
       pricedServices.toLocaleString() + " of " + plural(groups.length, "service") + " have a " +
       methodLabel(COST.method) + " figure · this sums only what AWS reported per resource, so it does not equal " +
       "the account total";
+    // The claim above ends by saying these figures do not equal the bill, and
+    // until now nothing on the page let a reader check it. The rollup's own
+    // per-service breakdown is a different method over a different window across
+    // a wider population — it lists services no census row exists for — so it
+    // cannot be shown as a column beside these amounts. It is the tooltip
+    // instead: same question, different answer, one hover apart and never summed
+    // with the numbers underneath it.
+    sub.title = rollupServiceLine();
     section.hidden = false;
     // The platform breakdown moves into each service row rather than staying a
     // section of its own.
     document.getElementById("engines-section").hidden = true;
+  }
+
+  // rollupServiceLine is last month's bill broken out by service, as Cost
+  // Explorer reported it — the figures the panel this replaced listed under
+  // "By service". Every currency is listed, each under its own label, because
+  // two currencies are two bills and joining them with a "·" would read as one.
+  function rollupServiceLine() {
+    var out = [];
+    ((costReport && costReport.currencies) || []).forEach(function (c) {
+      var svcs = c.services || [];
+      if (svcs.length === 0) return;
+      out.push("Last month's bill by service" + (c.currency ? " in " + c.currency : "") + ": " +
+        svcs.map(function (s) { return s.name + " " + s.amount; }).join(" · "));
+    });
+    return out.join("\n");
   }
 
   function setSpendFilter(service) {
@@ -2432,14 +2968,17 @@
     rebuild(false);
   }
 
+  // renderTips is called from here but hides on its own account: a run can end
+  // with suggestions and no per-resource spend, or the reverse, and neither
+  // section may decide the other's visibility.
   function renderCostViews() {
     renderCostBanner();
     var tiles = renderCostHero();
-    renderMethodSelector();
     renderCostNote();
-    renderRecon();
+    document.getElementById("foot-meter").textContent = meterFootLine();
     document.getElementById("cost-section").hidden = !COST.attempted || tiles === 0;
     renderSpend();
+    renderTips();
   }
 
   // ---- Inventory table ----------------------------------------------------
@@ -2516,8 +3055,10 @@
     c._dir = dir;
   });
 
-  // syncCostHeader states the window and the meter in the column header itself.
-  // A cost with no window named beside it is a number without a question.
+  // syncCostHeader states the source, the metric, the window and the currency in
+  // the column header itself. A cost with no window named beside it is a number
+  // without a question. (What the asking cost is a different disclosure and
+  // lives in the footer — see meterFootLine.)
   function syncCostHeader() {
     COLUMNS.forEach(function (c) {
       if (!c.cost || !c._sub) return;
@@ -2937,22 +3478,18 @@
   }
 
   var COST_METHODS = {
-    ce: "Cost Explorer — what AWS billed over a closed window",
-    coh: "Cost Optimization Hub — modelled monthly rate for the current configuration"
+    ce: "Cost Explorer — what AWS billed over a closed window"
   };
 
   // groupBucket picks the one total a group header is allowed to print: the
-  // (method, currency) pair the reader selected as the report's source.
+  // (method, currency) pair the rest of the page is reading.
   //
-  // A group carries one total per pair its members were priced in. Printing
-  // them side by side sets a billed Cost Explorer window total next to a
-  // modelled Cost Optimization Hub monthly rate, same currency suffix,
-  // separated by a middot and distinguishable only by hovering — which is the
-  // ranking the rest of this page refuses to do, performed in the one place
-  // the eye goes first. It also strands the header on whatever the summary
-  // happened to list first while every row beneath it changes source, so a
-  // group whose figure comes from the source the reader just switched away
-  // from keeps printing money over a column of "—".
+  // A group carries one total per pair its members were priced in, and printing
+  // them side by side would set two figures with the same currency suffix a
+  // middot apart, distinguishable only by hovering. That is the ranking across
+  // incomparable figures the rest of this page refuses to do, performed in the
+  // one place the eye goes first — so the header prints the pair the rows below
+  // it are showing, or says it has none.
   function groupBucket(spend) {
     var costs = (spend && spend.costs) || [];
     for (var i = 0; i < costs.length; i++) {
@@ -3279,6 +3816,7 @@
     // After precompute, which is what puts _tier on a row, and before anything
     // reads a cost off one.
     initCost();
+    initTips();
     // The table opens ranked by money when there is money to rank by. Set here
     // rather than beside the other sort state, because "is anything priced" is
     // a fact about the rows.

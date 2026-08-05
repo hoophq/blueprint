@@ -672,16 +672,44 @@ func TestHTMLCostOverlayShipsItsVocabulary(t *testing.T) {
 	html := renderDemoCosts(t)
 	for _, needle := range []string{
 		// Structure the JS renders into.
-		`id="cost-section"`, `id="cost-banner"`, `id="cost-hero"`, `id="cost-method"`,
-		`id="cost-note"`, `id="cost-recon"`, `id="cost-recon-body"`,
+		`id="cost-section"`, `id="cost-banner"`, `id="cost-hero"`,
+		`id="cost-note"`,
 		`id="spend-section"`, `id="spend-title"`, `id="spend-sub"`, `id="spend-rows"`,
+		// The paid-API disclosure. It is a footer span rather than a panel
+		// because it has to render on runs where every cost view is empty — see
+		// TestHTMLPaidAPIDisclosureSurvivesAnEmptyCostSection.
+		`id="foot-meter"`, "function meterLine", "function meterFootLine",
+		// The advice, which is its own top-level section rather than a panel
+		// inside the spend one. Nesting it there would hide every suggestion on
+		// a run that got no per-resource spend, which is the run they are most
+		// worth reading on.
+		`id="tips-section"`, `id="tips-sub"`, `id="tips-rows"`, `id="tips-note"`,
+		// It is a sortable table sharing the census's chrome, so it needs the
+		// census's anchors too: a head row to build columns into, and a wrap
+		// that does not inherit the 72vh cap.
+		`id="tips-table"`, `id="tips-wrap"`, `id="tips-head-row"`,
 		// The overlay's own behaviour.
 		"function methodBasis", "function renderCostHero", "function renderSpend",
 		"function costCell", "function nullRank", "function coverageIssues",
 		"_costSort",
+		"function initTips", "function renderTips", "function tipAction",
+		"function effortLabel", "function buildTipHead", "function tipSorted",
+		"function tipCompare", "function tipOrderLabel",
 		// Vocabulary the rulings depend on.
 		"Untagged ", "carry no ", " figure", "modelled monthly rate",
 		"is not the same as costing nothing",
+		// The two sentences the whole section exists to keep apart. A saving is
+		// a modelled monthly figure for a month that has not happened; spend is
+		// what AWS billed. Neither is the other's arithmetic.
+		"Ways to cut this bill", "Ranked by modelled monthly saving",
+		"not an amount anyone was charged",
+		"nothing here is added to or subtracted from the spend above",
+		// The table's own honesty vocabulary. A flag AWS did not answer draws as
+		// unanswered rather than as a calm "no"; the band total is over the whole
+		// currency and says what it is conditional on; and a suggestion AWS named
+		// without pricing is counted in the sub-line rather than dropped, because
+		// a table ordered by an amount cannot hold a row that has none.
+		"not stated", "if every one were acted on", " carry no figure",
 	} {
 		if !strings.Contains(html, needle) {
 			t.Errorf("cost overlay is missing %q", needle)
@@ -701,15 +729,20 @@ func TestHTMLCostOverlayShipsItsVocabulary(t *testing.T) {
 	}
 }
 
-// The reconciliation panel is the audit trail for the cost passes: which
-// services were probed and what came back, the windows each pass asked over,
-// and "What asking cost" — the Cost Explorer request meter, which matters
-// because AWS bills per request. #cost-section hides itself when the hero drew
-// no tiles, and `[hidden] { display: none !important; }` takes every descendant
-// with it. That is precisely the run the panel exists for: cost was asked for,
-// AWS was paid for the asking, and nothing came back. Nested, the one run the
-// reader was billed for was the one run that never said what they paid.
-func TestHTMLCostReconciliationSurvivesAnEmptyCostSection(t *testing.T) {
+// "What asking cost" is the Cost Explorer and CloudWatch request meter, and it
+// is the one line of the old reconciliation panel that had to outlive it: AWS
+// bills per request, the paid-API rule says every such call reports what it
+// actually spent, and the HTML report is the artifact people keep. Everything
+// else the panel held was a second telling of the coverage banner or the column
+// header. This is not.
+//
+// #cost-section hides itself when the hero drew no tiles, and
+// `[hidden] { display: none !important; }` takes every descendant with it. That
+// is precisely the run the meter exists for: cost was asked for, AWS was paid
+// for the asking, and nothing came back. Nested there, the one run the reader
+// was billed for is the one run that never says what they paid. So it lives in
+// the footer, which hides on no run at all.
+func TestHTMLPaidAPIDisclosureSurvivesAnEmptyCostSection(t *testing.T) {
 	html := renderDemoCosts(t)
 
 	const anchor = `id="cost-section"`
@@ -721,22 +754,23 @@ func TestHTMLCostReconciliationSurvivesAnEmptyCostSection(t *testing.T) {
 	if end < 0 {
 		t.Fatal("the cost section is never closed")
 	}
-	if body := html[i : i+end]; strings.Contains(body, "cost-recon") {
-		t.Error("the reconciliation panel is inside the section that hides itself when there are no figures")
+	if body := html[i : i+end]; strings.Contains(body, "foot-meter") {
+		t.Error("the request meter is inside the section that hides itself when there are no figures")
 	}
 
-	// It needs a container of its own to hide, or moving it out just makes it
-	// permanent furniture.
-	for _, needle := range []string{
-		`id="cost-audit-section"`,
-		`document.getElementById("cost-audit-section").hidden = !any;`,
-	} {
-		if !strings.Contains(html, needle) {
-			t.Errorf("the reconciliation panel has no emptiness test of its own: missing %q", needle)
-		}
+	// The footer carries no `hidden` of its own and is not inside a section that
+	// does, so there is nothing to assert about its emptiness test — there is
+	// none. What has to hold is that the meter is in the footer and that the
+	// footer is outside every section.
+	foot := strings.LastIndex(html, "<footer")
+	if foot < 0 {
+		t.Fatal("the report has no footer")
 	}
-	if strings.Contains(html, `document.getElementById("cost-recon").hidden`) {
-		t.Error("two nested hidden flags govern one panel; the section owns it now")
+	if !strings.Contains(html[foot:], `id="foot-meter"`) {
+		t.Error("the request meter is not in the footer")
+	}
+	if strings.Contains(html, "cost-recon") || strings.Contains(html, "cost-audit-section") {
+		t.Error("the reconciliation panel is back; the meter is the only part of it that had to survive")
 	}
 }
 
@@ -767,6 +801,18 @@ func TestHTMLCostReportStaysOffline(t *testing.T) {
 // already bought. A census that cannot see rate plans or what else would move
 // onto the same commitment cannot know what deleting anything saves, and this
 // pins that it never says otherwise.
+//
+// This used to have a second half checking the page said so in a paragraph as
+// well as declining to claim it. The paragraphs under the cost tiles were cut
+// for density, so the silence is now the whole of the guarantee and this sweep
+// is the whole of the guard.
+//
+// Which makes the savings section the thing to be careful about, not this one.
+// It is allowed to talk about savings — that is what Cost Optimization Hub
+// reports — so the needles below have to stay narrow enough to miss its
+// wording and specific enough to catch a *billed* figure being sold as a
+// saving. "modelled monthly saving" is fine. "you could save" is not, wherever
+// it appears.
 func TestHTMLNoSavingsIfDeletedClaim(t *testing.T) {
 	html := renderDemoCosts(t)
 	for _, claim := range []string{
@@ -775,15 +821,6 @@ func TestHTMLNoSavingsIfDeletedClaim(t *testing.T) {
 	} {
 		if strings.Contains(strings.ToLower(html), claim) {
 			t.Errorf("report makes a savings claim it cannot support: %q", claim)
-		}
-	}
-	// And says so, rather than merely omitting it.
-	for _, disclosure := range []string{
-		"does not estimate what deleting a resource returns",
-		"deleting a covered row does not return the amount shown",
-	} {
-		if !strings.Contains(html, disclosure) {
-			t.Errorf("report is missing the commitment disclosure %q", disclosure)
 		}
 	}
 }

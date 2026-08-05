@@ -26,9 +26,10 @@ func grouped(service, name, amount string) model.Resource {
 }
 
 // pricedBy adds one more figure to a resource, from a named source. It exists
-// because a real census is priced by more than one: Cost Explorer bills a
-// window, Cost Optimization Hub models a month, and the two coexist on the same
-// resource without ever being summed.
+// because buildGroups totals per source rather than per group, and that
+// distinction cannot be shown with one source: a single bucket is trivially
+// also the group's total. See modelledMethod for why the second source is a
+// name no build produces.
 func pricedBy(r model.Resource, method, amount string) model.Resource {
 	r.AddCost(model.ResourceCost{Amount: amount, Currency: "USD", Method: method})
 	return r
@@ -94,14 +95,14 @@ func TestBuildGroupsCountsEveryMemberNotOnlyThePricedOnes(t *testing.T) {
 // bucket at a time. A group-wide count answers "did anything price this
 // member", which is not the question a reader looking at a Cost Explorer total
 // is asking: a total over two of twelve resources is not made whole by the
-// other ten carrying a Cost Optimization Hub estimate instead. Counted at the
+// other ten carrying a figure from somewhere else instead. Counted at the
 // group, this fixture reports full coverage under both sources and the
 // disclosure never fires.
 func TestBuildGroupsCountsCoveragePerBucketNotPerGroup(t *testing.T) {
 	resources := []model.Resource{
-		grouped("s3", "billed", "10.00"),                                     // ce only
-		pricedBy(grouped("s3", "modelled", ""), model.CostMethodCOH, "5.00"), // coh only
-		pricedBy(grouped("s3", "both", "2.00"), model.CostMethodCOH, "7.00"),
+		grouped("s3", "billed", "10.00"),                                // ce only
+		pricedBy(grouped("s3", "modelled", ""), modelledMethod, "5.00"), // the other source only
+		pricedBy(grouped("s3", "both", "2.00"), modelledMethod, "7.00"),
 		grouped("s3", "neither", ""),
 	}
 
@@ -117,10 +118,10 @@ func TestBuildGroupsCountsCoveragePerBucketNotPerGroup(t *testing.T) {
 			"the four are priced by something, but only two by this source",
 			ce.Amount, ce.Priced)
 	}
-	coh := bucket(t, s3, model.CostMethodCOH)
-	if coh.Amount != "12.00" || coh.Priced != 2 {
-		t.Errorf("Cost Optimization Hub bucket = %s over %d, want 12.00 over 2",
-			coh.Amount, coh.Priced)
+	other := bucket(t, s3, modelledMethod)
+	if other.Amount != "12.00" || other.Priced != 2 {
+		t.Errorf("%s bucket = %s over %d, want 12.00 over 2",
+			modelledMethod, other.Amount, other.Priced)
 	}
 }
 

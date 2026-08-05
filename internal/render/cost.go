@@ -50,17 +50,21 @@ const maxSpendersListed = 5
 // failure as the missing caveat itself.
 const maxCaveatsListed = 3
 
-// costSection prints the cost census: the account-level rollup from the billing
-// system, then the per-resource figures, kept visibly apart.
+// costSection prints the cost census in two movements: what AWS billed, then
+// what AWS suggests you could stop paying.
 //
-// They are never combined into one total. A Cost Explorer figure is what AWS
-// billed over a closed window; a Cost Optimization Hub figure is a
-// forward-looking monthly rate modelled from recent usage. Adding them, or
-// ranking one against the other, produces a number that answers no question.
+// The order is the argument. Everything above tipsSection is money the account
+// was charged, all of it from one source, so there is no second price to weigh
+// it against and no basis to choose between. The savings below are a different
+// kind of number entirely — modelled, forward-looking, monthly, and contingent
+// on someone doing the work — and they are printed after the bill, under their
+// own heading, never added to it or subtracted from it. A total that mixed the
+// two would answer no question anyone has.
 func costSection(w io.Writer, snap *model.Snapshot) {
 	reportSection(w, snap.Cost)
 	resourceCostSection(w, snap.Resources)
 	probeSection(w, snap.ResourceCost)
+	tipsSection(w, snap.Resources)
 }
 
 // reportSection prints the account-level rollup, one block per currency.
@@ -246,11 +250,10 @@ func probeLine(p model.ServiceProbe) string {
 
 // pricedFigure is one reported figure together with the resource it describes.
 //
-// The ranking walks figures rather than resources because a resource can carry
-// more than one: a billed Cost Explorer window and a modelled Cost Optimization
-// Hub rate are two answers to two different questions, and each belongs in its
-// own ranking. Walking resources and reading "the" cost would silently drop
-// whichever figure happened to sort second.
+// The ranking walks figures rather than resources even though only one source
+// reports spend today, because Resource.Costs is a list and a renderer that
+// reads "the" cost off a resource is one that silently drops whichever figure
+// sorts second the day a second billed source lands.
 type pricedFigure struct {
 	res  model.Resource
 	cost model.ResourceCost
@@ -289,8 +292,8 @@ func splitPriced(resources []model.Resource) (figures []pricedFigure, unavailabl
 // number is a lower bound on what the resource costs and its distance from the
 // real total is unknown. Ranking that against a figure covering a whole
 // resource asserts an ordering the data does not support — the same error as
-// ranking a billed figure against a modelled one, on a different axis. So the
-// two are separated and the qualifiers are printed with the group.
+// ranking across currencies, on a different axis. So the two are separated and
+// the qualifiers are printed with the group.
 //
 // Grouping reads only whether Caveats is empty, never what the caveats say.
 // Classifying a figure from the wording of its disclosure would be this
@@ -301,9 +304,9 @@ type spenderGroup struct {
 	qualified bool
 	// window is the usage period shared by every figure in the group, or empty
 	// when they do not share one. It is deliberately not part of the group key:
-	// Cost Optimization Hub stamps each recommendation with its own refresh
-	// time, so keying on the window would split that method into one group per
-	// resource and destroy the ranking.
+	// a source that stamps each figure with its own observation instant would
+	// otherwise be split into one group per resource, and a ranking of
+	// one-element groups is not a ranking.
 	window string
 	// caveats holds the distinct qualifier texts across the whole group, in
 	// the order they are first met walking the ranked figures — which is
@@ -405,10 +408,8 @@ func sharedWindow(fs []pricedFigure) (from, to time.Time, ok bool) {
 // windowSentence states the period a group's figures cover.
 //
 // "up to" rather than a second date joined by an arrow, because ObservedTo is
-// the exclusive end of the period for both sources — Cost Explorer's window end
-// and Cost Optimization Hub's refresh instant. An arrow between two dates reads
-// as an inclusive range, which would claim a day of usage that is not in the
-// figure.
+// the exclusive end of the period. An arrow between two dates reads as an
+// inclusive range, which would claim a day of usage that is not in the figure.
 func windowSentence(from, to time.Time, ok bool) string {
 	if !ok {
 		return ""
@@ -418,8 +419,9 @@ func windowSentence(from, to time.Time, ok bool) string {
 
 // windowStamp prints a window endpoint, keeping the time of day only when there
 // is one. Cost Explorer's window ends on a midnight boundary and printing
-// "00:00" on it is noise; Cost Optimization Hub's ends at whatever instant the
-// model last refreshed, and rounding that to a date would move the boundary.
+// "00:00" on it is noise; a source that ends its window at whatever instant it
+// last refreshed keeps the time, because rounding it to a date would move the
+// boundary.
 func windowStamp(t time.Time) string {
 	u := t.UTC()
 	if u.Hour() == 0 && u.Minute() == 0 && u.Second() == 0 && u.Nanosecond() == 0 {
@@ -543,6 +545,322 @@ func groupReasons(unavailable []model.Resource) []reasonGroup {
 		return out[i].reason < out[j].reason
 	})
 	return out
+}
+
+// maxTipsListed caps the ranked suggestion list printed per currency. The full
+// set is in the JSON and CSV; the terminal shows the head of it and counts out
+// loud what it withheld.
+const maxTipsListed = 5
+
+// resourceTip is one suggestion together with the resource it is about. Like
+// pricedFigure, the ranking walks suggestions rather than resources: the hub
+// models a database's compute and its storage separately, so one resource can
+// carry several, and reading "the" suggestion off a resource would drop
+// whichever sorted second.
+type resourceTip struct {
+	res model.Resource
+	rec model.Recommendation
+}
+
+// tipGroup is one ranked list of suggestions in a single currency.
+//
+// Currency is the only grouping axis, and it is not optional: two amounts in
+// different currencies cannot be ranked against each other, let alone added,
+// without an exchange rate this tool does not have. An amount whose currency
+// AWS did not report gets its own group for the same reason — it may be dollars
+// and it may not, and assuming is how a euro becomes a dollar.
+//
+// There is no method axis here, unlike spenderGroup. Every suggestion in the
+// census comes from Cost Optimization Hub and is a modelled forward-looking
+// monthly rate; there is no second kind to keep apart.
+type tipGroup struct {
+	currency string
+	// total is the exact sum of the amounts below it, at the widest scale any
+	// of them was written at, or "" if one of them would not parse.
+	total   string
+	tips    []resourceTip
+	caveats []string
+}
+
+// tipsSection prints what AWS suggests could be changed to spend less.
+//
+// Every figure here is modelled and forward-looking: AWS's estimate of a
+// monthly rate the account would stop paying if someone made the change. None
+// of it was billed, none of it is in the rollup above, and no line in this
+// section is subtracted from any line in that one. The two sit under separate
+// headings because they answer separate questions, and the arithmetic that
+// joins them does not exist.
+//
+// A suggestion with no savings figure is still printed. AWS naming a change
+// worth making and declining to price it is advice, and dropping the row
+// because the money is missing would report silence AWS did not give.
+func tipsSection(w io.Writer, resources []model.Resource) {
+	groups, unquantified := groupTips(resources)
+	if len(groups) == 0 && len(unquantified) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n  ── ways to cut this bill ── AWS Cost Optimization Hub  ·  modelled monthly, never billed\n")
+
+	for _, g := range groups {
+		label := g.currency
+		if label == "" {
+			// Named rather than left blank: a heading with nothing after the
+			// bullet reads like a rendering bug, and the missing currency is a
+			// property of AWS's answer that the reader has to know about.
+			label = "currency not reported by AWS"
+		}
+		fmt.Fprintf(w, "    ranked by modelled monthly saving (%s)\n", label)
+		shown := min(len(g.tips), maxTipsListed)
+		// Right-align across the rows actually printed, the same way the spend
+		// ranking does, so the column can be read down. Padding is layout; the
+		// figures are still printed exactly as AWS reported them.
+		width := 0
+		for _, t := range g.tips[:shown] {
+			width = max(width, len(t.rec.EstimatedMonthlySavings))
+		}
+		for _, t := range g.tips[:shown] {
+			amount := fmt.Sprintf("%*s", width, t.rec.EstimatedMonthlySavings)
+			fmt.Fprintf(w, "      %s  %s\n", FormatMoney(amount, t.rec.Currency), tipLine(t))
+		}
+		if len(g.tips) > shown {
+			// Where the tail actually is, stated exactly. The CSV is one row per
+			// resource and reports that resource's largest saving, so a resource
+			// the hub gave two suggestions puts only one of them in a cell —
+			// naming the CSV here without that qualifier would send a reader to
+			// an artifact that does not have what they were sent for.
+			fmt.Fprintf(w, "      … and %d more (full list in the JSON output; the CSV carries each resource's "+
+				"largest saving and a tip_count)\n", len(g.tips)-shown)
+		}
+		if g.total != "" {
+			// The sum of the suggestions in this group, and nothing more. It is
+			// not a forecast of the next bill, not a percentage of the rollup
+			// above, and not conditional on anything the reader has told this
+			// tool — it is what AWS's own numbers add up to, stated so a reader
+			// who only sees the top five knows the size of the tail.
+			fmt.Fprintf(w, "      Σ %s across %d suggestion(s), if every one were acted on\n",
+				FormatMoney(g.total, g.currency), len(g.tips))
+		}
+		writeCaveats(w, g.caveats)
+	}
+
+	if len(unquantified) > 0 {
+		fmt.Fprintf(w, "    %d further suggestion(s) carry no savings figure — AWS named the change "+
+			"without pricing it\n", len(unquantified))
+	}
+	fmt.Fprintf(w, "    ⓘ modelled by AWS from recent usage, not amounts you were charged; nothing here is "+
+		"added to or subtracted from the spend above\n")
+}
+
+// groupTips collects every suggestion in the census into per-currency rankings,
+// and separates the ones AWS declined to put a figure on.
+//
+// The split is on the amount being absent, never on its value. A suggestion
+// modelled to save exactly zero is a real answer and ranks with the rest at the
+// bottom; treating it as unquantified would turn "AWS priced this at nothing"
+// into "AWS said nothing", which is a different statement.
+func groupTips(resources []model.Resource) (groups []tipGroup, unquantified []resourceTip) {
+	byCurrency := map[string][]resourceTip{}
+	for _, r := range resources {
+		for _, rec := range r.Recommendations {
+			t := resourceTip{res: r, rec: rec}
+			if rec.EstimatedMonthlySavings == "" {
+				unquantified = append(unquantified, t)
+				continue
+			}
+			byCurrency[rec.Currency] = append(byCurrency[rec.Currency], t)
+		}
+	}
+	currencies := make([]string, 0, len(byCurrency))
+	for c := range byCurrency {
+		currencies = append(currencies, c)
+	}
+	sort.Strings(currencies)
+
+	for _, c := range currencies {
+		tips := byCurrency[c]
+		sort.SliceStable(tips, func(i, j int) bool {
+			a, aok := parseDecimal(tips[i].rec.EstimatedMonthlySavings)
+			b, bok := parseDecimal(tips[j].rec.EstimatedMonthlySavings)
+			if !aok || !bok {
+				// Unparseable amounts sink rather than reorder the rest; the
+				// tie-breaks below keep the order fixed either way.
+				return aok
+			}
+			if cmp := b.Cmp(a); cmp != 0 {
+				return cmp < 0
+			}
+			if tips[i].res.ARN != tips[j].res.ARN {
+				return tips[i].res.ARN < tips[j].res.ARN
+			}
+			// One resource can carry two suggestions of equal value; the
+			// recommendation id is what separates them, for the same reason
+			// Resource.SortRecommendations ends there.
+			return tips[i].rec.ID < tips[j].rec.ID
+		})
+		amounts := make([]string, 0, len(tips))
+		for _, t := range tips {
+			amounts = append(amounts, t.rec.EstimatedMonthlySavings)
+		}
+		total, ok := sumDecimals(amounts)
+		if !ok {
+			// One bad amount voids the total rather than being skipped over. A
+			// sum missing a term it does not mention is worse than no sum.
+			total = ""
+		}
+		groups = append(groups, tipGroup{
+			currency: c,
+			total:    total,
+			tips:     tips,
+			caveats:  distinctTipCaveats(tips),
+		})
+	}
+	return groups, unquantified
+}
+
+// tipLine renders one suggestion as a sentence: what to do, to what, and what
+// it takes. The saving is printed by the caller, in its own column.
+func tipLine(t resourceTip) string {
+	parts := []string{}
+	if change := tipChange(t.rec); change != "" {
+		parts = append(parts, change)
+	}
+	parts = append(parts, spenderName(t.res))
+	if e := effortLabel(t.rec.ImplementationEffort); e != "" {
+		parts = append(parts, e)
+	}
+	// Both flags are tri-state and both are rendered in all three states,
+	// because "AWS did not say whether this needs a restart" is a thing a
+	// reader planning the change has to know, and printing nothing for it is
+	// indistinguishable from printing "no".
+	//
+	// This is a "  ·  "-joined sentence rather than a table, which is why the
+	// silence has to be named here and does not in the CSV: a blank cell under a
+	// fixed header is unambiguous, a missing clause in prose is just a terse
+	// row. The reader most at risk is the one scanning for a low-risk change,
+	// and an unsaid restart reads to them as reassurance.
+	//
+	// Effort is deliberately not treated the same way. An unstated grade does
+	// not invert a risk judgment; an unstated restart does.
+	switch {
+	case t.rec.RestartNeeded == nil:
+		parts = append(parts, "restart not stated")
+	case *t.rec.RestartNeeded:
+		parts = append(parts, "restart needed")
+	default:
+		parts = append(parts, "no restart")
+	}
+	switch {
+	case t.rec.RollbackPossible == nil:
+		parts = append(parts, "reversibility not stated")
+	case *t.rec.RollbackPossible:
+		parts = append(parts, "reversible")
+	default:
+		parts = append(parts, "not reversible")
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// tipChange names the action and what it changes, using whatever AWS reported.
+//
+// The summaries are the readable end — "db.r5.xlarge" — and the resource types
+// are the fallback, because a suggestion about a database's storage and one
+// about its compute are otherwise indistinguishable on the row. Both are passed
+// through verbatim; nothing here is translated into a shape AWS did not name.
+func tipChange(rec model.Recommendation) string {
+	from, to := rec.CurrentResourceSummary, rec.RecommendedResourceSummary
+	if from == "" {
+		from = rec.CurrentResourceType
+	}
+	if to == "" && rec.RecommendedResourceType != rec.CurrentResourceType {
+		to = rec.RecommendedResourceType
+	}
+	change := from
+	if to != "" && to != from {
+		change = strings.TrimSpace(from + " → " + to)
+	}
+	switch {
+	case rec.ActionType == "":
+		return change
+	case change == "":
+		return rec.ActionType
+	}
+	return rec.ActionType + " " + change
+}
+
+// effortLabel puts AWS's effort rating into a sentence.
+//
+// The five values are a closed enum, so lower-casing and spacing them is
+// presentation rather than interpretation. Anything outside the set is passed
+// through exactly as AWS wrote it: a value this tool does not recognise is not
+// one it may rephrase.
+func effortLabel(s string) string {
+	switch s {
+	case "":
+		return ""
+	case "VeryLow":
+		return "very low effort"
+	case "Low":
+		return "low effort"
+	case "Medium":
+		return "medium effort"
+	case "High":
+		return "high effort"
+	case "VeryHigh":
+		return "very high effort"
+	}
+	return s + " effort"
+}
+
+// distinctTipCaveats collects the qualifier texts across a ranked group of
+// suggestions, dropping exact repeats. Same rule as distinctCaveats over spend
+// figures, and separate from it only because the two walk different types.
+func distinctTipCaveats(tips []resourceTip) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range tips {
+		for _, c := range t.rec.Caveats {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sumDecimals adds reported amounts exactly and renders the total at the widest
+// scale any of them was written at, or at cents, whichever is wider.
+//
+// Fixing the output at two places would round a sum whose terms carry more, and
+// Cost Optimization Hub's amounts arrive off a float64 and can run to seventeen
+// digits. A rounded total printed over an unrounded list is a total that does
+// not add up, which is exactly the thing a reader checks a total for.
+func sumDecimals(amounts []string) (string, bool) {
+	if len(amounts) == 0 {
+		return "", false
+	}
+	total := new(big.Rat)
+	places := 2
+	for _, a := range amounts {
+		r, ok := parseDecimal(a)
+		if !ok {
+			return "", false
+		}
+		total.Add(total, r)
+		places = max(places, decimalPlaces(a))
+	}
+	return total.FloatString(places), true
+}
+
+// decimalPlaces counts the digits after the point in an already-validated
+// decimal string.
+func decimalPlaces(s string) int {
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 {
+		return 0
+	}
+	return len(s) - dot - 1
 }
 
 func formatAmounts(amounts []model.NamedAmount, currency string) string {
