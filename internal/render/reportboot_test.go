@@ -51,25 +51,33 @@ type bootProbe struct {
 	DecodeFailed  bool `json:"decodeFailed"`
 	// HeroText is the cost hero tile's text, empty when the overlay is off.
 	HeroText string `json:"heroText"`
-	// The reconciliation panel and the coverage banner. None of what these hold
-	// comes from the census — the account rollup, its breakdowns, the collection
-	// windows and the request meter are all in the metadata block — so they are
-	// read separately from the table's own state, and a failed decode must not
-	// empty them.
-	AuditHidden  bool   `json:"auditHidden"`
-	ReconBody    string `json:"reconBody"`
+	// The paid-API disclosure and the coverage banner. None of what these hold
+	// comes from the census — the account rollup, the collection windows and the
+	// request meter are all in the metadata block — so they are read separately
+	// from the table's own state, and a failed decode must not empty them.
+	FootMeter    string `json:"footMeter"`
 	BannerHidden bool   `json:"bannerHidden"`
 	BannerTitle  string `json:"bannerTitle"`
 	BannerList   string `json:"bannerList"`
 	CountText    string `json:"countText"`
 	// TipsHidden is the savings section's hidden flag, TipRows the number of
-	// suggestion rows it painted, and TipsSub/TipsNote its subtitle and closing
-	// disclosure. The section is a sibling of the spend one rather than a child,
-	// so its visibility is a separate fact and is read separately.
-	TipsHidden bool   `json:"tipsHidden"`
-	TipRows    int    `json:"tipRows"`
-	TipsSub    string `json:"tipsSub"`
-	TipsNote   string `json:"tipsNote"`
+	// suggestion rows it painted, TipBands the per-currency headers above them,
+	// and TipsSub/TipsNote its subtitle and closing disclosure. The section is a
+	// sibling of the spend one rather than a child, so its visibility is a
+	// separate fact and is read separately.
+	TipsHidden bool     `json:"tipsHidden"`
+	TipRows    int      `json:"tipRows"`
+	TipBands   int      `json:"tipBands"`
+	TipHeaders []string `json:"tipHeaders"`
+	TipsSub    string   `json:"tipsSub"`
+	TipsNote   string   `json:"tipsNote"`
+	// And the same table after its Effort header was clicked. The suggestions
+	// table sorts on its own comparator and repaints itself whole, so a sort that
+	// threw would leave the section painted and stale rather than visibly broken
+	// — the row count and the sub-line's claim about the order are what catch it.
+	TipRowsSorted int      `json:"tipRowsSorted"`
+	TipsSubSorted string   `json:"tipsSubSorted"`
+	TipSortAria   []string `json:"tipSortAria"`
 	// AttrLegend is the attribution bar's legend, which ends in the sentence
 	// naming what the bar is weighted by.
 	AttrLegend string `json:"attrLegend"`
@@ -192,6 +200,48 @@ func TestReportBootsAndDrivesWithCost(t *testing.T) {
 	if !strings.Contains(probe.TipsSub, "suggestion") {
 		t.Errorf("the savings section's subtitle says nothing about what it holds: %q",
 			probe.TipsSub)
+	}
+	// Every suggestion sits under a currency, and the band is where the currency
+	// and the group's total are stated. Rows with no band over them are amounts
+	// with no unit.
+	if probe.TipBands == 0 {
+		t.Error("the savings table painted rows with no currency band over them")
+	}
+	// The columns, in the order they are declared. Effort, Restart and Reversible
+	// are the operational half — the reason the section is a table rather than a
+	// ranked list — and a reader planning a change reads them before the amount.
+	wantTipHeaders := []string{"Saving", "Action", "Resource", "Where", "Effort", "Restart", "Reversible"}
+	if len(probe.TipHeaders) != len(wantTipHeaders) {
+		t.Errorf("the savings table has %d columns, want %d: %q",
+			len(probe.TipHeaders), len(wantTipHeaders), probe.TipHeaders)
+	} else {
+		for i, want := range wantTipHeaders {
+			// The header cell carries the sort arrow too, so the label is a prefix.
+			if !strings.HasPrefix(probe.TipHeaders[i], want) {
+				t.Errorf("savings column %d reads %q, want it to start with %q",
+					i, probe.TipHeaders[i], want)
+			}
+		}
+	}
+
+	// Sorting by Effort ran and kept every row. The whole currency is sorted and
+	// then sliced, so a repaint that lost rows means the comparator dropped the
+	// ones it could not order rather than partitioning them to the bottom.
+	if probe.TipRowsSorted != probe.TipRows {
+		t.Errorf("sorting the savings table by effort left %d rows, was %d: absence "+
+			"is partitioned, never dropped", probe.TipRowsSorted, probe.TipRows)
+	}
+	if len(probe.TipSortAria) != 1 || probe.TipSortAria[0] != "ascending" {
+		t.Errorf("the savings table's sorted column is announced as %q, want exactly "+
+			"one ascending", probe.TipSortAria)
+	}
+	// And the sub-line stopped claiming an order the table is no longer in.
+	if strings.Contains(probe.TipsSubSorted, "Ranked by modelled monthly saving") {
+		t.Errorf("the savings table is sorted by effort and still says it is ranked "+
+			"by saving: %q", probe.TipsSubSorted)
+	}
+	if !strings.Contains(probe.TipsSubSorted, "Sorted by effort") {
+		t.Errorf("the savings table does not say what it is sorted by: %q", probe.TipsSubSorted)
 	}
 	// The one sentence the section exists for. A page that ranks savings beside
 	// a bill without saying the two are different questions is the report this
@@ -329,8 +379,8 @@ func TestReportBootsFromACompressedCensus(t *testing.T) {
 		t.Error("the census decoded and nothing ranked it by spend; the second " +
 			"pass never reached renderSpend")
 	}
-	if probe.AuditHidden || probe.ReconBody == "" {
-		t.Error("the reconciliation panel is empty on a census that decoded")
+	if probe.FootMeter == "" {
+		t.Error("the footer does not say what asking AWS cost on a census that decoded")
 	}
 	if strings.Contains(probe.BannerList, "could not be read") {
 		t.Errorf("the banner reports an unreadable inventory on a census it read: %q",
@@ -433,8 +483,8 @@ func TestReportGroupedHeadersSayNothingAboutCostOnAnUnpricedCensus(t *testing.T)
 //
 // Drawing the overlay only inside the decode continuation made every one of
 // those a hostage of the census. A browser without DecompressionStream — Safari
-// before 16.4, Firefox before 113 — got a report with no account total, no
-// reconciliation trail and no request meter, on the run that most needs them:
+// before 16.4, Firefox before 113 — got a report with no account total and no
+// request meter, on the run that most needs them:
 // the reader was billed per Cost Explorer request for exactly these answers.
 //
 // So the panels paint from the metadata at boot, and again when the rows land.
@@ -458,10 +508,9 @@ func TestReportKeepsTheCostOverlayWhenTheCensusCannotBeRead(t *testing.T) {
 	if probe.HeroText == "" {
 		t.Error("the cost hero is empty; the account total is in the metadata block")
 	}
-	if probe.AuditHidden || probe.ReconBody == "" {
-		t.Errorf("the reconciliation panel is gone (hidden=%v, body=%q): it is the "+
-			"audit trail for figures that are still in this file",
-			probe.AuditHidden, probe.ReconBody)
+	if probe.FootMeter == "" {
+		t.Error("the footer does not say what asking AWS cost: the reader was " +
+			"billed per request for figures that are still in this file")
 	}
 
 	// And it says why the per-resource half is missing, in the banner that
@@ -533,9 +582,8 @@ func TestReportShowsTheCostOverlayWhileTheCensusIsStillDecoding(t *testing.T) {
 	if probe.HeroText == "" {
 		t.Error("the cost hero is empty while the census decodes")
 	}
-	if probe.AuditHidden || probe.ReconBody == "" {
-		t.Errorf("the reconciliation panel is empty while the census decodes "+
-			"(hidden=%v, body=%q)", probe.AuditHidden, probe.ReconBody)
+	if probe.FootMeter == "" {
+		t.Error("the footer does not say what asking AWS cost while the census decodes")
 	}
 
 	// What it must not do is fill that interval with findings about rows nobody
@@ -790,14 +838,26 @@ setTimeout(function () {
   // headings, the "and N more" line, the totals and the caveats, and counting
   // those would let a section that painted nothing but furniture pass.
   const tipRows = el("tips-rows").children.filter((d) => d.className === "rr-tip");
+  const tipBands = el("tips-rows").children.filter((d) => d.className === "group-row");
+  const tipHeaders = el("tips-head-row").children.map((th) => th.textContent);
+  const tipsSub = el("tips-sub").textContent;
   const sortable = el("head-row").children
     .map((th) => th.children[0])
     .filter((b) => b && (b.listeners.click || []).length);
+  // The suggestions table is the second sortable table on the page, with its own
+  // header buttons, its own comparator and its own full repaint. Clicking one is
+  // the only way any of that runs, and Effort is the column whose ordering is
+  // not the amount: it ranks a five-value enum and partitions the suggestions
+  // AWS graded nothing.
+  const tipEffort = el("tips-head-row").children
+    .map((th) => th.children[0])
+    .find((b) => b && (b.listeners.click || []).length && b.textContent.indexOf("Effort") === 0);
 
   // Sorting first, while the whole census is in view: the cost column is the
   // default sort on a priced report, so clicking it twice walks it through
   // both directions and back off.
   sortable.slice(0, 3).forEach((b, i) => drive("click header " + i, () => { b.click(); b.click(); }));
+  if (tipEffort) drive("sort tips by effort", () => tipEffort.click());
   // Last, because it narrows the table and the row count afterwards is the
   // assertion that the filter reached the body.
   if (spendBars.length) drive("click spend bar", () => spendBars[0].click());
@@ -811,16 +871,24 @@ setTimeout(function () {
     enginesHidden: el("engines-section").hidden,
     decodeFailed: !el("decode-error").hidden,
     heroText: el("cost-hero").textContent,
-    auditHidden: el("cost-audit-section").hidden,
-    reconBody: el("cost-recon-body").textContent,
+    footMeter: el("foot-meter").textContent,
     bannerHidden: el("cost-banner").hidden,
     bannerTitle: el("cost-banner-title").textContent,
     bannerList: el("cost-banner-list").textContent,
     countText: el("row-count").textContent,
     tipsHidden: el("tips-section").hidden,
     tipRows: tipRows.length,
-    tipsSub: el("tips-sub").textContent,
+    tipBands: tipBands.length,
+    tipHeaders,
+    tipsSub,
     tipsNote: el("tips-note").textContent,
+    // After the Effort click: the rows the repaint left behind, the sub-line's
+    // claim about the order, and the header's aria-sort.
+    tipRowsSorted: el("tips-rows").children.filter((d) => d.className === "rr-tip").length,
+    tipsSubSorted: el("tips-sub").textContent,
+    tipSortAria: el("tips-head-row").children
+      .map((th) => th.getAttribute("aria-sort"))
+      .filter((a) => a && a !== "none"),
     groupHeaders,
     attrLegend,
     sortedBy,

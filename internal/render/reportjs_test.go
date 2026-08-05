@@ -1375,6 +1375,7 @@ func TestReportTipActionStatesTheChangeWithoutInventingOne(t *testing.T) {
 			script := strings.Join([]string{
 				tipDOMShim,
 				jsFunc(t, "el"),
+				jsFunc(t, "tipActionParts"),
 				jsFunc(t, "tipAction"),
 				`var box = tipAction(` + c.rec + `);`,
 				`console.log(JSON.stringify([tipText(box), tipArrows(box), box.className]));`,
@@ -1768,12 +1769,15 @@ func TestReportTipNoteKeepsSavingsOutOfTheBill(t *testing.T) {
 		// read out of the template, not out of the rendered page, so a string
 		// split across two JS lines has to be matched on one of them.
 		"no figure on this page is a share of the",
-		"only a later scan can say by how much",
-		// Commitments cut the other way here: a covered resource keeps costing
-		// the account after it is gone, so a modelled saving can overstate what
-		// the next bill actually drops by. AWS models it; this tool reports what
-		// AWS said and adjusts nothing.
-		"keeps costing the account after it is gone",
+		// Two sentences that were here are gone with the paragraphs they were in.
+		// "Only a later scan can say by how much" said what the surviving sentence
+		// already implies — a modelled rate for a month that has not happened is
+		// not a measurement — and the commitment-drift paragraph explained one
+		// reason the modelled figure and the billed one diverge. Neither was load
+		// bearing: nothing on the page adds, subtracts or divides the two, which
+		// is what the remaining sentence promises and what the banned list below
+		// enforces. The section is a table now, and three paragraphs of caveat
+		// under it were read by nobody.
 	} {
 		if !strings.Contains(reportTemplate, want) {
 			t.Errorf("the savings section no longer says %q", want)
@@ -2211,14 +2215,20 @@ func TestReportMissingFigureReasonsAccountForEveryUnpricedResource(t *testing.T)
 	}
 
 	// And no caller may collapse the four back into two. Each kind that is not
-	// silence has to be worded where it is rendered — once in the coverage
-	// banner, once in the audit panel — or an exclusion goes out as an absence
-	// again and the page contradicts its own table.
+	// silence has to be worded where it is rendered, or an exclusion goes out as
+	// an absence again and the page contradicts its own table.
+	//
+	// There is one such place now. There were two: the coverage banner and the
+	// audit panel said the same three sentences from the same groupReasons call,
+	// and the panel went when the reconciliation section did. The count is
+	// pinned at one rather than dropped, because the failure this guards against
+	// is a caller that folds the kinds together, and that reads the same whether
+	// there is one caller or five.
 	for _, kind := range []string{"recorded", "offCurrency", "unparsed"} {
 		snippet := `g.kind === "` + kind + `"`
-		if n := strings.Count(reportTemplate, snippet); n != 2 {
-			t.Errorf("the template words the %s group %d times, want 2 "+
-				"(the coverage banner and the audit panel)", kind, n)
+		if n := strings.Count(reportTemplate, snippet); n != 1 {
+			t.Errorf("the template words the %s group %d times, want 1 "+
+				"(the coverage banner)", kind, n)
 		}
 	}
 }
@@ -2321,22 +2331,40 @@ func TestReportNoRemedySendsAReaderToTheHubForSpend(t *testing.T) {
 	states := []struct {
 		name, setup string
 		wantFix     string
+		wantText    string
 	}{
 		{
 			// No resource-level figure reached any resource — the gap the hub
 			// was once offered for. Cost Explorer is the only thing that can
 			// close it, so that is what the remedy has to say.
+			//
+			// resourceCostReport is null here on purpose: this is the --costs
+			// run that never passed --cost-resources. The branch may not name a
+			// window that came back empty when nothing was asked.
 			name: "no per-resource figure at all",
-			setup: `var costReport = null, censusUnreadable = false, total = 3, probes = [];` +
+			setup: `var costReport = null, resourceCostReport = null, censusUnreadable = false;` +
+				`var total = 3, probes = [];` +
 				`var COST = {attempted: true, counted: true, active: false};` +
 				`var resources = [];`,
 			wantFix: "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources.",
 		},
 		{
+			// The same gap, but the pass ran and came back with nothing. Now the
+			// window is worth naming: it is the only place on such a run that
+			// says what period was asked about.
+			name: "the resource-level pass ran and priced nothing",
+			setup: `var costReport = null, censusUnreadable = false, total = 3, probes = [];` +
+				`var resourceCostReport = {window: {label: "2026-07-22 → 2026-08-04"}};` +
+				`var COST = {attempted: true, counted: true, active: false};` +
+				`var resources = [];`,
+			wantFix:  "Switch on resource-level data in Billing preferences and rerun with --costs --cost-resources.",
+			wantText: "AWS was asked over 2026-07-22 → 2026-08-04.",
+		},
+		{
 			// A service Cost Explorer would not break down. The reader is told
 			// what the hub is not, rather than sent to it.
 			name: "a probe that returned nothing",
-			setup: `var costReport = null, censusUnreadable = false, total = 3;` +
+			setup: `var costReport = null, resourceCostReport = null, censusUnreadable = false, total = 3;` +
 				`var COST = {attempted: true, counted: true, active: true, priced: 3};` +
 				`var resources = [], probes = [{service: "s3", outcome: "empty"}];`,
 		},
@@ -2360,6 +2388,9 @@ func TestReportNoRemedySendsAReaderToTheHubForSpend(t *testing.T) {
 			}
 			if s.wantFix != "" && got[0].Fix != s.wantFix {
 				t.Errorf("remedy reads\n  %q\nwant\n  %q", got[0].Fix, s.wantFix)
+			}
+			if s.wantText != "" && !strings.Contains(got[0].Text, s.wantText) {
+				t.Errorf("finding reads\n  %q\nwant it to contain\n  %q", got[0].Text, s.wantText)
 			}
 			fixes = append(fixes, got[0].Fix, got[0].Text)
 		})
