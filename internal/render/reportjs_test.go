@@ -1743,66 +1743,12 @@ func TestReportCostTextNeverPrintsZeroForAbsence(t *testing.T) {
 	}
 }
 
-// The commitment disclosure has to describe the figure actually in front of the
-// reader, because each accounting treatment is wrong about a resource in a
-// different direction: amortized spreads a commitment over what it covered,
-// unblended leaves it on the account, blended averages rates across the
-// organization. Whichever it is, the note may not turn a cost into a saving:
-// this tool cannot see rate plans or what else would move onto the commitment,
-// so it has no basis for the claim and never makes it.
-//
-// The savings section makes the opposite claim on purpose, and it is the reason
-// this one has to hold. Everything the hub suggests is a modelled figure for a
-// change that has not happened; everything the note describes is money already
-// billed. A page carrying both must never let the second read as the first.
-func TestReportCommitmentNoteNeverPromisesASaving(t *testing.T) {
-	metrics := []string{
-		"AmortizedCost", "NetAmortizedCost",
-		"UnblendedCost", "NetUnblendedCost",
-		"BlendedCost", "UsageQuantity",
-		"", "a metric AWS has not shipped yet",
-	}
-
-	in, err := json.Marshal(metrics)
-	if err != nil {
-		t.Fatalf("encoding cases: %v", err)
-	}
-	script := jsFunc(t, "commitmentNote") + "\n" +
-		"console.log(JSON.stringify((" + string(in) + ").map(commitmentNote)));"
-
-	var got []string
-	evalJSON(t, script, &got)
-	if len(got) != len(metrics) {
-		t.Fatalf("got %d notes, want %d", len(got), len(metrics))
-	}
-	for i, metric := range metrics {
-		note := got[i]
-		if note == "" {
-			t.Errorf("%q gets no commitment disclosure at all", metric)
-			continue
-		}
-		// The amortized note uses "saving" to deny one, so the bar is the claim
-		// itself rather than the word: no phrasing may tell a reader that
-		// deleting something returns money.
-		for _, claim := range []string{
-			"you could save", "would save", "saves you", "potential saving",
-			"estimated saving", "savings if deleted", "save by deleting",
-		} {
-			if strings.Contains(strings.ToLower(note), claim) {
-				t.Errorf("%q: disclosure makes a savings claim (%q):\n  %s", metric, claim, note)
-			}
-		}
-	}
-	// Amortized is the one that most invites the misreading, so it names it.
-	if !strings.Contains(got[0], "deleting a covered row does not return the amount shown") {
-		t.Errorf("the amortized disclosure does not say what deleting a covered resource returns:\n  %s", got[0])
-	}
-	// An unrecognized metric is quoted rather than described, so the report never
-	// explains a metric it has never seen.
-	if !strings.Contains(got[7], "a metric AWS has not shipped yet") {
-		t.Errorf("an unrecognized metric is not named in its own disclosure:\n  %s", got[7])
-	}
-}
+// The commitment disclosure this file used to pin is gone: the paragraphs under
+// the cost tiles were cut for density, and commitmentNote went with them. What
+// the disclosure denied is still a claim the report may not make, and
+// TestHTMLNoSavingsIfDeletedClaim is now the whole of that guard — it sweeps the
+// rendered page for the claim itself rather than checking a sentence that
+// disowns it.
 
 // The disclosure the savings section owes its reader is the mirror of the one
 // above, and it is the sentence this whole change exists to be able to print.
@@ -1845,147 +1791,85 @@ func TestReportTipNoteKeepsSavingsOutOfTheBill(t *testing.T) {
 	}
 }
 
-func TestReportHeroNamesTheSourceItsCoverageGapBelongsTo(t *testing.T) {
+// heroCoverage went with the total-spend tile it was the sub-line of, and the
+// test that pinned its wording went with it. The gap it named is not lost:
+// coverageIssues already writes "70 of 98 resources carry no AmortizedCost
+// figure in USD" into the banner above the tiles, which is where the sub-line
+// was copied from in the first place. This note is here so the next reader
+// knows the coverage gap is still stated, and does not add a second place to
+// state it.
+
+// The untagged tile lost its percentage when the total-spend tile that supplied
+// the denominator was removed, and what is left has to be a sentence rather than
+// two numbers with a middot between them. "7 of 28 priced resources" on its own
+// does not say what is wrong with those seven; the tile's own title says
+// "Untagged", but a title is not a predicate and the amount above it is the
+// thing a reader takes away.
+//
+// The counts are also not interchangeable. The denominator is priced resources,
+// not all resources: a resource nobody could price cannot be counted as tagged
+// or untagged by spend, and quietly widening the base would shrink the share of
+// the estate this line reports as a problem.
+func TestReportUntaggedSubLineSaysWhatIsUntaggedAboutThem(t *testing.T) {
 	cases := []struct {
-		name     string
-		priced   int
-		total    int
-		method   string
-		currency string
-		want     string
+		name             string
+		untagged, priced int
+		want             string
 	}{
 		{
-			name:   "the gap is scoped to the active source and currency",
-			priced: 28, total: 98, method: "ce", currency: "USD",
-			want: "across 28 of 98 resources · 70 carry no Cost Explorer figure in USD",
+			name: "the ordinary case", untagged: 7, priced: 28,
+			want: "7 of 28 priced resources have no owner or environment tag",
 		},
 		{
-			// A source this build has no label for is named as AWS named it. The
-			// gap belongs to that source and has to say so, and the tile has no
-			// business rewriting a token it does not recognize — that is a census
-			// from a later build, and inventing prose for it is inventing a claim
-			// about data this build cannot read.
-			name:   "an unrecognized source is named as it came",
-			priced: 4, total: 98, method: modelledMethod, currency: "USD",
-			want: "across 4 of 98 resources · 94 carry no " + modelledMethod + " figure in USD",
+			// Both tags missing on everything priced. Still a sentence, and still
+			// scoped to the priced set rather than promoted to the whole census.
+			name: "all of them", untagged: 28, priced: 28,
+			want: "28 of 28 priced resources have no owner or environment tag",
 		},
 		{
-			// No currency was settled on, so none is claimed; the source still is.
-			name:   "no active currency",
-			priced: 1, total: 3, method: "ce", currency: "",
-			want: "across 1 of 3 resources · 2 carry no Cost Explorer figure",
+			// The caller only reaches this with a real untagged amount above it,
+			// so a zero numerator would be a contradiction rather than a state to
+			// word — but it is rendered plainly rather than special-cased, because
+			// inventing prose for an impossible state is how the impossible state
+			// stops being visible when it happens.
+			name: "none of them", untagged: 0, priced: 28,
+			want: "0 of 28 priced resources have no owner or environment tag",
 		},
 		{
-			// Full coverage has no gap to describe, and "0 carry no figure" is a
-			// sentence about nothing.
-			name:   "everything priced states no gap",
-			priced: 12, total: 12, method: "ce", currency: "USD",
-			want: "across 12 of 12 resources",
-		},
-		{
-			name:   "one resource, singular",
-			priced: 1, total: 1, method: "coh", currency: "BRL",
-			want: "across 1 of 1 resource",
+			// Thousands separators come from toLocaleString on both counts, so a
+			// large estate reads the way the rest of the page does.
+			name: "a large estate", untagged: 1204, priced: 50000,
+			want: "1,204 of 50,000 priced resources have no owner or environment tag",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			script := strings.Join([]string{
-				jsVar(t, "METHOD_LABELS"),
-				jsFunc(t, "plural"),
-				jsFunc(t, "methodLabel"),
-				jsFunc(t, "heroCoverage"),
-				"console.log(JSON.stringify(heroCoverage(" +
-					strconv.Itoa(c.priced) + ", " + strconv.Itoa(c.total) + ", " +
-					strconv.Quote(c.method) + ", " + strconv.Quote(c.currency) + ")));",
-			}, "\n")
+			script := jsFunc(t, "untaggedCounts") + "\n" +
+				"console.log(JSON.stringify(untaggedCounts(" +
+				strconv.Itoa(c.untagged) + ", " + strconv.Itoa(c.priced) + ")));"
 
 			var got string
 			evalJSON(t, script, &got)
 			if got != c.want {
-				t.Errorf("heroCoverage() =\n  %q\nwant\n  %q", got, c.want)
+				t.Errorf("untaggedCounts() =\n  %q\nwant\n  %q", got, c.want)
 			}
-			// The phrasing this replaced, barred rather than merely corrected.
-			if strings.Contains(got, "reported by AWS") {
-				t.Errorf("a method-scoped gap is stated as a fact about AWS:\n  %s", got)
-			}
-		})
-	}
-}
-
-// A share of a whole that is zero is not a small share; it is not a share, and
-// decPercent says so by returning null — which concatenates into the literal
-// word "null" if it is used unguarded. Zero is reached by an estate of stored
-// zeros and, more often, by credits cancelling the charges out, which is when
-// the tile above this line is still showing a real untagged amount. So the
-// missing percentage gets a reason rather than a blank, and the guard is the
-// one renderAttrBar uses: a whole that nets negative would produce a signed
-// percentage here while the bar has already refused to weight by spend at all.
-func TestReportUntaggedTileStatesNoShareOfAWholeItCannotDivide(t *testing.T) {
-	cases := []struct {
-		name  string
-		sum   string // an amount as the collector writes it
-		whole string // "" for no total at all
-		want  string
-	}{
-		{
-			name: "an ordinary share",
-			sum:  "410.00", whole: "1000.00",
-			want: "41% of priced spend · 7 of 22 priced resources",
-		},
-		{
-			// Credits cancelling the charges: the amount above this line is real,
-			// the denominator is not divisible, and the tile says which.
-			name: "a zero whole states why there is no percentage",
-			sum:  "12.50", whole: "0.00",
-			want: "7 of 22 priced resources · priced spend totals 0.00 USD, so no share of it can be stated",
-		},
-		{
-			// A net-negative estate is refused for the same reason the attribution
-			// bar refuses it, not merely because decPercent returns null — here it
-			// would return a signed number, and the two must not disagree.
-			name: "a negative whole is refused, not signed",
-			sum:  "12.50", whole: "-50.00",
-			want: "7 of 22 priced resources · priced spend totals -50.00 USD, so no share of it can be stated",
-		},
-		{
-			name: "no total at all",
-			sum:  "12.50", whole: "",
-			want: "7 of 22 priced resources",
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			whole := "null"
-			if c.whole != "" {
-				whole = "decParse(" + strconv.Quote(c.whole) + ")"
-			}
-			script := strings.Join([]string{
-				jsVar(t, "DEC_RE"),
-				jsFunc(t, "pow10"),
-				jsFunc(t, "decParse"),
-				jsFunc(t, "decAlign"),
-				jsFunc(t, "decFormat"),
-				jsFunc(t, "decPercent"),
-				jsFunc(t, "formatMoney"),
-				jsFunc(t, "untaggedShare"),
-				"console.log(JSON.stringify(untaggedShare(decParse(" + strconv.Quote(c.sum) + "), " +
-					whole + `, 7, 22, "spend", "USD")));`,
-			}, "\n")
-
-			var got string
-			evalJSON(t, script, &got)
-			if got != c.want {
-				t.Errorf("untaggedShare() =\n  %q\nwant\n  %q", got, c.want)
-			}
-			for _, nonValue := range []string{"null", "NaN", "undefined"} {
+			// Nothing computed, so nothing to leak — but the line used to divide
+			// and this is the failure that produced: a null percentage
+			// concatenated into prose as the word itself.
+			for _, nonValue := range []string{"null", "NaN", "undefined", "%"} {
 				if strings.Contains(got, nonValue) {
-					t.Errorf("a JS non-value reached the reader (%q):\n  %s", nonValue, got)
+					t.Errorf("sub-line carries %q:\n  %s", nonValue, got)
 				}
 			}
 		})
+	}
+
+	// And the denominator is named. Dropping the word "priced" would restate the
+	// same seven resources as a share of the whole census, which is a different
+	// and smaller-sounding claim about the same gap.
+	if !strings.Contains(reportTemplate, `" priced resources have no owner or environment tag"`) {
+		t.Error("the untagged sub-line no longer scopes its denominator to priced resources")
 	}
 }
 

@@ -1510,40 +1510,11 @@
     }
   }
 
-  // commitmentNote is the commitment disclosure in plain prose. A resource
-  // covered by a Savings Plan or a Reserved Instance is not one you stop paying
-  // for by deleting it, and the report says that in words.
-  //
-  // Every figure it describes is a billed one, so the metric is enough to
-  // decide the wording: it names which of Cost Explorer's four accounting
-  // treatments produced the number, and each treats a commitment differently.
-  // An unrecorded metric still gets the disclosure, minus the treatment.
-  function commitmentNote(metric) {
-    var m = String(metric || "");
-    if (m === "AmortizedCost" || m === "NetAmortizedCost") {
-      return "Amortized cost spreads Savings Plans and Reserved Instance charges across the resources they covered. " +
-        "That is the right signal for ranking what a resource costs and the wrong one for reading a saving: the " +
-        "commitment is already bought, so deleting a covered row does not return the amount shown.";
-    }
-    if (m === "UnblendedCost" || m === "NetUnblendedCost") {
-      return "Unblended cost is what AWS billed on the day, so commitment charges stay on the account instead of " +
-        "the resources they covered. A covered resource can show far less here than it actually consumes.";
-    }
-    if (m === "BlendedCost") {
-      return "Blended cost averages rates across the organization, so a figure here is an accounting allocation " +
-        "rather than what this account was charged for this resource.";
-    }
-    if (!m) {
-      return "Commitments and prepaid capacity are billed whether or not the resource they cover still exists, so a " +
-        "figure here is what a resource was charged, not what removing it frees.";
-    }
-    return "Figures use the " + m + " metric. Commitments and prepaid capacity are billed whether or not the " +
-      "resource they cover still exists, so a figure here is what a resource was charged, not what removing it frees.";
-  }
-
-  var NO_ESTIMATE_NOTE = "This report therefore does not estimate what deleting a resource returns: that depends on " +
-    "commitment coverage, rate plans, and what else moves onto the same commitment — none of which a read-only " +
-    "census can see.";
+  // The commitment disclosure used to live here — a per-metric paragraph saying
+  // that a resource covered by a Savings Plan is not one you stop paying for by
+  // deleting it, and that this census cannot see rate plans and so will not
+  // guess what removing anything frees. Cut for density along with the block
+  // that rendered it. The metric each figure came from is still on the tile.
 
   // ---- Cost aggregates ------------------------------------------------------
 
@@ -2121,40 +2092,20 @@
     section.hidden = false;
   }
 
-  // untaggedShare is the sub-line under the untagged tile, kept out of the tile
-  // so the branch that refuses to state a percentage can be tested without a
-  // DOM. A share of a whole that is zero is not a small share; it is not a
-  // share, and decPercent says so by returning null — which concatenates into
-  // the literal word "null" if it is used unguarded.
+  // untaggedCounts is the sub-line under the untagged tile: how many of the
+  // priced resources carry neither an owner nor an environment tag.
   //
-  // The test is the one renderAttrBar uses rather than a null check, because a
-  // whole that nets negative would yield a signed number here while the bar has
-  // already refused to weight by spend at all, and the two must not disagree.
-  // Zero is reached by an estate of stored zeros and, more often, by credits
-  // cancelling out the charges — where a real untagged amount still sits above
-  // this line, so the missing percentage is explained rather than dropped.
-  function untaggedShare(sum, whole, nUntagged, nPriced, noun, currency) {
-    var counts = nUntagged.toLocaleString() + " of " + nPriced.toLocaleString() + " priced resources";
-    if (!whole) return counts;
-    if (whole.u <= 0n) {
-      return counts + " · priced " + noun + " totals " + formatMoney(decFormat(whole), currency) +
-        ", so no share of it can be stated";
-    }
-    return decPercent(sum, whole) + "% of priced " + noun + " · " + counts;
-  }
-
-  // heroCoverage is the sub-line under the spend tile. The gap it names belongs
-  // to the active source in the active currency and has to be worded that way:
-  // priced excludes resources the *other* source priced, resources priced in
-  // another currency, and amounts that would not parse — all of them things AWS
-  // did report, two of which are printed in the Cost column of the very rows
-  // this line is describing. The coverage banner already says it correctly;
-  // this is the same sentence.
-  function heroCoverage(priced, total, method, currency) {
-    var line = "across " + priced.toLocaleString() + " of " + plural(total, "resource");
-    if (priced >= total) return line;
-    return line + " · " + (total - priced).toLocaleString() + " carry no " +
-      methodLabel(method) + " figure" + (currency ? " in " + currency : "");
+  // It used to lead with a percentage of priced spend, and that percentage came
+  // with a page of care — a whole of zero is not a small share but no share at
+  // all, a whole that nets negative would yield a signed one, and both are
+  // reachable through credits cancelling the charges out. All of it went with
+  // the total-spend tile, because the denominator went with it: a percentage of
+  // a number the page no longer prints is a figure a reader cannot check. The
+  // counts stand on their own, and renderAttrBar still holds the same guard for
+  // the same reason where a share is genuinely being taken.
+  function untaggedCounts(nUntagged, nPriced) {
+    return nUntagged.toLocaleString() + " of " + nPriced.toLocaleString() +
+      " priced resources have no owner or environment tag";
   }
 
   // renderCostHero returns how many tiles it drew, so the caller can hide the
@@ -2180,28 +2131,37 @@
     var spend = COST.active ? tierSpend(resources) : null;
     var basis = methodBasis();
 
+    // There is no total-spend tile, on purpose.
+    //
+    // Summing the per-resource figures produces a number that looks like a bill
+    // and is not one: it covers only the resources Cost Explorer priced
+    // individually and this census could see, over a rolling fourteen days,
+    // with tax, credits, support and commitment fees excluded because they
+    // belong to no resource. Printed beside the account total it invited the
+    // one inference this tool refuses — scale the fortnight up, compare to the
+    // month, conclude the two agree. They are not the same measurement over
+    // different lengths.
+    //
+    // What that tile carried lives on elsewhere: the figures themselves are in
+    // the table, one per row, which is the number a reader acts on; and the
+    // coverage gap it disclosed is already a line in the banner above.
     if (spend && spend.total) {
-      var source = methodLabel(COST.method);
-      if (basis.metric) source += " · " + basis.metric;
-      // Named by the window it was billed over, and bare when the run recorded
-      // no window: a headline is not given a period nobody observed.
-      var headline = "Spend" + (basis.window ? " · " + basis.window : "");
-      tile(headline, decFormat(spend.total), COST.currency, [
-        { text: heroCoverage(COST.priced, total, COST.method, COST.currency) },
-        { text: source }
-      ]);
-
       var untagged = null;
       spend.tiers.forEach(function (t) { if (t.key === "untagged") untagged = t; });
       var unowned = decSum(resources
         .filter(function (r) { return !r.owner && r._costDec; })
         .map(function (r) { return r._costDec; }));
       var hasUntagged = !!(untagged && untagged.sum);
-      tile("Untagged " + basis.noun, hasUntagged ? decFormat(untagged.sum) : "—", hasUntagged ? COST.currency : "", [
+      // This one stays, because it is not a bill. It is how much of the priced
+      // spend nobody has claimed — a governance number, and one that reads on
+      // its own. It carries its window for the same reason the bill carries
+      // its month: the two tiles sit side by side and cover different periods.
+      tile("Untagged " + basis.noun + (basis.window ? " · " + basis.window : ""),
+        hasUntagged ? decFormat(untagged.sum) : "—", hasUntagged ? COST.currency : "", [
         {
           text: !hasUntagged
             ? "no priced resource is missing both owner and environment"
-            : untaggedShare(untagged.sum, spend.total, untagged.priced, COST.priced, basis.noun, COST.currency),
+            : untaggedCounts(untagged.priced, COST.priced),
           bad: hasUntagged && untagged.sum.u > 0n
         },
         { text: unowned ? "no owner tag at all: " + formatMoney(decFormat(unowned), COST.currency) : "" }
@@ -2214,7 +2174,11 @@
     if (roll) {
       var rollWin = costReport.window || null;
       var rollLabel = rollWin ? (rollWin.label || "") + costPartialSuffix(rollWin) : "";
-      tile("Account total" + (rollLabel ? " · " + rollLabel : ""), roll.total, roll.currency, [
+      // Named as the bill it is. "Account total" read as a total of the page,
+      // which is what the tile beside it used to look like — this one is the
+      // whole invoice for a closed calendar month, and the only figure here
+      // that is.
+      tile("Last month's AWS bill" + (rollLabel ? " · " + rollLabel : ""), roll.total, roll.currency, [
         { text: "attributed " + roll.attributed + " · unattributed " + roll.unattributed },
         {
           text: (costReport.metric ? costReport.metric + " · " : "") +
@@ -2230,19 +2194,17 @@
     return tiles;
   }
 
+  // What is left here is the † key and nothing else.
+  //
+  // This block used to carry three paragraphs of prose under the tiles: the
+  // commitment disclosure, the refusal to estimate what deleting a resource
+  // returns, and a note that the rollup and the per-resource figures are two
+  // meters over two windows. They were cut for density. The claims they denied
+  // are still ones this report must never make — nothing here may present a
+  // cost as a saving — but that is now enforced by what the page does not say
+  // rather than by a paragraph saying it.
   function renderCostNote() {
     var frag = document.createDocumentFragment();
-    // The commitment disclosure describes the figure actually in front of the
-    // reader, and every figure on this page is a billed one, so the metric that
-    // produced it is the whole of what the note needs.
-    var metric = (resourceCostReport && resourceCostReport.metric) || (costReport && costReport.metric) || "";
-    frag.appendChild(el("p", "", commitmentNote(metric)));
-    frag.appendChild(el("p", "", NO_ESTIMATE_NOTE));
-    if (COST.active && (costReport && costReport.currencies || []).length > 0) {
-      frag.appendChild(el("p", "", "The account total and the per-resource figures are two meters over two different " +
-        "windows and are not meant to add up: the rollup covers the whole bill, the per-resource figures cover only " +
-        "what AWS reported against a resource this census could see."));
-    }
     if (COST.caveated > 0) {
       frag.appendChild(el("p", "", "† " + plural(COST.caveated, "figure") + " below " +
         (COST.caveated === 1 ? "is a lower bound" : "are lower bounds") + ": they cover part of a resource's charges " +

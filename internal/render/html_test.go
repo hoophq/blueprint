@@ -780,6 +780,18 @@ func TestHTMLCostReportStaysOffline(t *testing.T) {
 // already bought. A census that cannot see rate plans or what else would move
 // onto the same commitment cannot know what deleting anything saves, and this
 // pins that it never says otherwise.
+//
+// This used to have a second half checking the page said so in a paragraph as
+// well as declining to claim it. The paragraphs under the cost tiles were cut
+// for density, so the silence is now the whole of the guarantee and this sweep
+// is the whole of the guard.
+//
+// Which makes the savings section the thing to be careful about, not this one.
+// It is allowed to talk about savings — that is what Cost Optimization Hub
+// reports — so the needles below have to stay narrow enough to miss its
+// wording and specific enough to catch a *billed* figure being sold as a
+// saving. "modelled monthly saving" is fine. "you could save" is not, wherever
+// it appears.
 func TestHTMLNoSavingsIfDeletedClaim(t *testing.T) {
 	html := renderDemoCosts(t)
 	for _, claim := range []string{
@@ -788,15 +800,6 @@ func TestHTMLNoSavingsIfDeletedClaim(t *testing.T) {
 	} {
 		if strings.Contains(strings.ToLower(html), claim) {
 			t.Errorf("report makes a savings claim it cannot support: %q", claim)
-		}
-	}
-	// And says so, rather than merely omitting it.
-	for _, disclosure := range []string{
-		"does not estimate what deleting a resource returns",
-		"deleting a covered row does not return the amount shown",
-	} {
-		if !strings.Contains(html, disclosure) {
-			t.Errorf("report is missing the commitment disclosure %q", disclosure)
 		}
 	}
 }
